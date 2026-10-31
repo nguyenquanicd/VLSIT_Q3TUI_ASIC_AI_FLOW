@@ -8,8 +8,9 @@ from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Static
+
+from q3tui.tui.dialog import Dialog
 
 SPEC_SECTIONS = ["Requirements", "Architecture", "Interfaces", "Clock/reset", "Parameters", "Function", "CSR", "Errors", "PPA",
                  "RTL contract", "Verification", "Timing", "Traceability", "Decisions"]
@@ -40,7 +41,7 @@ class Group(Vertical):
         self.screen.pick(self)  # type: ignore[attr-defined]
 
 
-class FlowMapScreen(ModalScreen[str | None]):
+class FlowMapScreen(Dialog[str | None]):
     """Dismisses with the flow's name, or None."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("enter", "select", "Select"), Binding("tab", "app.focus_next", show=False),
