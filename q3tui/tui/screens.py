@@ -7,9 +7,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.message import Message
-from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, TextArea
 
+from q3tui.tui.dialog import Dialog
 from q3tui.tui.picker import Choice, ChoiceResult, ChoiceScreen  # noqa: F401 - re-exported with the other screens
 
 
@@ -41,7 +41,7 @@ class GateScreen(ChoiceScreen):
         self.dismiss(result.value if result is not None and result.value else "later")
 
 
-class TextPromptScreen(ModalScreen[str | None]):
+class TextPromptScreen(Dialog[str | None]):
     """Text input: an answer, a change request, guidance (multi-line: Enter = new line, ctrl+s
     submits) or a short value like a title (one line: Enter submits). The body (e.g. the
     question) is shown in full, line breaks kept, scrollable."""
@@ -104,7 +104,7 @@ from q3tui.core.settings import EFFORTS, MODELS  # noqa: E402 - one list for the
 _NONE = "__none__"
 
 
-class SettingsScreen(ModalScreen[dict | None]):
+class SettingsScreen(Dialog[dict | None]):
     """Settings in tabs (General, LLM, one per step), built from q3tui/core/settings.py."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("ctrl+s", "apply", "Apply")]
@@ -264,7 +264,7 @@ class SettingsScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class ModelScreen(ModalScreen[dict | None]):
+class ModelScreen(Dialog[dict | None]):
     """Pick LLM model + effort; optionally remember in the project's q3tui.yaml."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -353,7 +353,7 @@ class ResetScreen(ChoiceScreen):
         self.dismiss(v if v in ("step", "all") else None)
 
 
-class PickToolsScreen(ModalScreen[list[int] | None]):
+class PickToolsScreen(Dialog[list[int] | None]):
     """Add tools: every tool found at a path as a checkbox row (all checked); the highlighted one shows its command and what code doubts about it.
 
     `items`: [(label, detail)]. ctrl+s dismisses with the indexes checked, Esc with None. Space toggles, `a` checks / unchecks all."""
@@ -414,7 +414,7 @@ class PickToolsScreen(ModalScreen[list[int] | None]):
         self.action_add() if event.button.id == "add" else self.action_cancel()
 
 
-class EditScreen(ModalScreen[dict | None]):
+class EditScreen(Dialog[dict | None]):
     """Small form: fields are (key, label, value, kind[, options]) with kind line | text | choice.
 
     ctrl+s saves, Esc cancels. Returns {key: value} for all fields. `buttons`: [(id, label, fn(screen))] extra buttons next to Save (a flow's
@@ -685,7 +685,7 @@ class HistoryInput(TextArea):
         self.value = text
 
 
-class StatsScreen(ModalScreen[None]):
+class StatsScreen(Dialog[None]):
     """Usage statistics: tokens per model / step / stage, cost, LLM time, step wall time."""
 
     BINDINGS = [Binding("escape,q", "close", "Close"), Binding("t", "toggle_scope", "All time / this session"),
@@ -798,7 +798,7 @@ class StatsScreen(ModalScreen[None]):
               for r in s.recent])
 
 
-class FlowScreen(ModalScreen[dict | None]):
+class FlowScreen(Dialog[dict | None]):
     """Flow editor: add / remove / reorder steps, and edit each step's dependencies, gate, view globs, pass conditions and notes.
 
     rows: [{step, title (shown), kind, deps, gate (mode | None), view, pass, notes, + whatever the app keeps (label, options…)}].
@@ -995,7 +995,7 @@ class FlowScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class PromptsScreen(ModalScreen[None]):
+class PromptsScreen(Dialog[None]):
     """Prompt editor: pick a step (all its stages) or a stage, read its built-in system prompt, edit your override.
 
     The override is appended to the built-in prompt (mode append) or replaces it (mode replace); empty removes it.
@@ -1067,7 +1067,7 @@ class PromptsScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class SkillScreen(ModalScreen[None]):
+class SkillScreen(Dialog[None]):
     """Skill editor: pick a step, edit its skill.md — front matter (kind, deps, gate, options, view, pass), notes for its LLM
     tasks, and the `<!-- NAME -->` sections that are its stage system prompts. `get(step) -> {text, file}`, `put(step, text)`."""
 
@@ -1137,7 +1137,7 @@ class SkillScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class DiagramScreen(ModalScreen[None]):
+class DiagramScreen(Dialog[None]):
     """Diagrams full screen: the whole terminal, scrolled both ways (arrows / h j k l, shift+←/→ a page sideways,
     Home / End), n / p for the next / previous diagram of the same view."""
 
@@ -1204,7 +1204,7 @@ class DiagramScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class LanesScreen(ModalScreen[None]):
+class LanesScreen(Dialog[None]):
     """Lanes (docs/spec/lanes.md): the tags and each lane's result on them, read from the files every 2 s. t tags the design; r runs the lanes
     on the latest tag, m merges their fixes, c converges (lanes → merge → … until every lane passes on one tag): in the background."""
 
