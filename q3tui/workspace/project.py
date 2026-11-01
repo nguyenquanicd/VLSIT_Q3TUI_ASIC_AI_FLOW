@@ -44,8 +44,9 @@ class Project:
 
     @property
     def has_run(self) -> bool:
-        """A project that has run before opens in the Workspace; one that never ran opens on Home."""
-        return self.state.is_dir()
+        """A project that has run before opens in the Workspace; one that never ran opens on Home. It has run when the
+        engine's state file exists: events (a toast, a download) also write into `state/`, but not this file."""
+        return self.pipeline_file.is_file()
 
     # -- paths --------------------------------------------------------------------------------
 

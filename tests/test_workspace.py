@@ -18,6 +18,11 @@ def test_find_goes_up_and_open_creates_in_cwd(tmp_path):
     project = Project.open(fresh)
     assert project.root == fresh.resolve() and project.q3.is_dir()
     assert not project.has_run
+    (project.state / "events.jsonl").parent.mkdir(parents=True)
+    (project.state / "events.jsonl").write_text("{}\n")
+    assert not project.has_run  # an event outside a run is not a run
+    project.pipeline_file.write_text("{}")
+    assert project.has_run
     ignored = (fresh / ".gitignore").read_text().splitlines()
     assert {".q3tui/state/", ".q3tui/sites/", ".q3tui/packages/"} <= set(ignored)
 
