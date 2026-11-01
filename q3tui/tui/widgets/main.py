@@ -79,11 +79,12 @@ class StepMain(Vertical):
 
     DEFAULT_CSS = """
     StepMain { height: 1fr; }
-    StepMain #main-header { height: 1; }
-    StepMain #main-title { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
-    StepMain #main-header Button { margin-left: 1; }
+    StepMain #main-title { height: 1; text-style: bold; color: $foreground; }  /* as CardTitle */
+    StepMain #main-state-row { height: 1; margin-bottom: 1; }
+    StepMain #main-state { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
+    StepMain #main-state-row Button { margin-left: 1; }
     StepMain Tabs { height: 1fr; }
-    StepMain TabsContent { height: 1fr; margin-top: 0; }
+    StepMain TabsContent { height: 1fr; margin-top: 1; }
     StepMain .missing { color: $text-muted; margin-top: 1; }
     StepMain #main-errors { height: 1fr; }
     StepMain #main-errors Alert { margin-bottom: 1; }
@@ -117,9 +118,9 @@ class StepMain(Vertical):
                                     EmptyDescription("Pick a step in the Flow tab.")))
             return
         st = self.engine.status(self.step)
-        with Horizontal(id="main-header"):
-            yield Static(Content.assemble((self.step, "bold"), (f" · stage {st.stage}   ", "dim"), state_content(st)),
-                         id="main-title")
+        yield Static(self.step, id="main-title", markup=False)
+        with Horizontal(id="main-state-row"):
+            yield Static(Content.assemble(state_content(st), (f" · stage {st.stage}", "dim")), id="main-state")
             for label, action, key in BUTTONS[st.display]:
                 yield Button(f"{label} {key}" if key else label, id=f"do-{action}")
         self.views = build_views(self.engine, self.step)
