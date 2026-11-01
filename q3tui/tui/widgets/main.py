@@ -263,7 +263,10 @@ class StepMain(Vertical):
         item = next((i for i in view.items if i.id == row.value), None) if view else None
         details = self.query(f"#detail-{artifact}")
         if item is not None and details:
-            details.first(Q3Markdown).update(item.detail)
+            detail = details.first(Q3Markdown)
+            detail.update(item.detail)
+            if isinstance(detail.parent, VerticalScroll):  # another item shows from its top
+                detail.parent.scroll_home(animate=False, immediate=True)
 
     @on(Tabs.Changed, "#main-tabs")
     def _tab_changed(self, event: Tabs.Changed) -> None:

@@ -437,3 +437,25 @@ async def test_a_click_on_a_line_inside_a_run_does_not_close_the_run():
         await pilot.click(header)
         await pilot.pause()
         assert not box.open
+
+
+async def test_another_section_shows_from_its_top(tmp_path, home):
+    long = "\n\n".join(f"line {n}" for n in range(200))
+    write(tmp_path / "proj/spec/spec.md",
+          f"<!-- section: a -->\n{long}\n<!-- section: b -->\n{long}\n")
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        main = app.screen.query_one(StepMain)
+        await main.show("spec")
+        await pilot.pause()
+        scroller = main.query_one("#detail-spec").parent
+        scroller.scroll_to(y=100, animate=False)
+        await pilot.pause()
+        assert scroller.scroll_y > 0
+        rows = main.query_one("#list-spec").query("Item")
+        rows[1].focus()
+        await pilot.pause(0.3)
+        assert scroller.scroll_y == 0
+        assert scroller.vertical_scrollbar.position == 0
