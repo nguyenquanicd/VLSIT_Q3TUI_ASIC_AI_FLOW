@@ -59,10 +59,11 @@ def hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
         if main is not None and main.step:
             ops = screen.app.opened.ops
             display = ops.status(main.step).display if ops else None
-            fid = getattr(focused, "id", "") or ""
-            if _find(focused, "ItemList") is not None and fid != "list-questions":
+            group = _find(focused, "ItemList")
+            fid = getattr(group, "id", "") or ""
+            if group is not None and fid != "list-questions":
                 keys = [("↑↓", "item"), ("c", "confirm"), ("shift+c", "all"), ("w", "change it"), ("m", "ask")]
-            elif fid == "list-questions":
+            elif group is not None:
                 keys = [("↑↓", "question"), ("enter", "answer")]
             elif type(focused).__name__ == "Button":
                 keys = [("enter", "press")]

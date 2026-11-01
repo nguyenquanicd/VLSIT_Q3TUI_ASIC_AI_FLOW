@@ -8,8 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.message import Message
-from textual.widgets import OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets import Static
 
 from q3tui.engine import Engine
 from q3tui.engine.events import read_events
@@ -18,6 +17,7 @@ from q3tui.tui.labels import state_content
 from q3tui.tui.ui.alert import Alert, AlertDescription, AlertTitle
 from q3tui.tui.ui.button import Button
 from q3tui.tui.ui.empty import Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle
+from q3tui.tui.ui.item import Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle
 from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePanelGroup
 from q3tui.tui.ui.tabs import Tabs, TabsContent, TabsList, TabsTrigger
 from q3tui.tui.views import View, build_views
@@ -36,19 +36,43 @@ BUTTONS: dict[str, list[tuple[str, str, str | None]]] = {
     "done": [("Change", "change", "r")],
     "running": [],
 }
-REVIEW_MARK = {"confirmed": ("✓", "$text-success"), "not_reviewed": ("•", "$text-warning"),
-               "change_requested": ("✎", "$text-warning"), "ok": ("✓", "$text-success"), "warn": ("!", "$text-warning"),
-               "error": ("✖", "$text-error"), "todo": ("○", "$text-muted")}
+# an item's state (its review status, or the `state` of a table view) -> its icon and colour class
+ITEM_STATE: dict[str, tuple[str, str]] = {
+    "confirmed": ("done", "ok"), "ok": ("done", "ok"), "not_reviewed": ("step_pending", "warn"),
+    "change_requested": ("warning", "warn"), "warn": ("warning", "warn"), "error": ("error", "error"),
+    "todo": ("step_pending", "plain"),
+}
 
 
-class ItemList(OptionList):
-    # The focus shows like everywhere else (the Flow tree, the alerts): the chosen row on $panel, never a border.
+class ItemList(ItemGroup):
+    """A list of a view tab (the Item component): Up / Down move, the focused row is the chosen one; without the
+    focus the chosen row stays marked on a fainter background."""
+
     DEFAULT_CSS = """
-    ItemList, ItemList:focus { height: 1fr; border: none; background: transparent; padding: 0; }
-    ItemList > .option-list--option-highlighted { background: $surface; text-style: none; }
-    ItemList:focus > .option-list--option-highlighted { background: $panel; text-style: none; }
-    ItemList > .option-list--option-hover { background: $panel; }
+    ItemList { height: auto; }
+    ItemList Item { padding: 0 1; }
+    ItemList Item.-chosen { background: $surface; }
+    ItemList Item:focus { background: $panel; }
+    ItemList Item.-tone-ok ItemMedia { color: $text-success; }
+    ItemList Item.-tone-warn ItemMedia { color: $text-warning; }
+    ItemList Item.-tone-error ItemMedia { color: $text-error; }
     """
+
+    def choose(self, item: Item) -> None:
+        for row in self.query(Item):
+            row.set_class(row is item, "-chosen")
+
+    @property
+    def chosen(self) -> Item | None:
+        rows = self.query("Item.-chosen")
+        return rows.first() if rows else None
+
+
+def _scroll(*children) -> VerticalScroll:
+    """A scrolling box that is not a stop of the focus itself: its rows are."""
+    box = VerticalScroll(*children)
+    box.can_focus = False
+    return box
 
 
 class StepMain(Vertical):
@@ -122,26 +146,34 @@ class StepMain(Vertical):
         if v.kind == "document":
             yield VerticalScroll(Q3Markdown(v.text, classes="view-detail"))
             return
-        options = []
+        rows = []
         for it in v.items:
-            mark, style = REVIEW_MARK.get(it.state, (" ", ""))
-            options.append(Option(Content.assemble((mark, style), f" {it.label}"), id=it.id))
+            known = ITEM_STATE.get(it.state)  # a mark only when the row has a state (review, or a table's `state`)
+            parts = [ItemMedia(known[0])] if known else []
+            rows.append(Item(*parts, ItemContent(ItemTitle(it.label)), value=it.id,
+                             classes=f"-tone-{known[1] if known else 'plain'}"))
+        if rows:
+            rows[0].add_class("-chosen")
         first = v.items[0].detail if v.items else ""
         yield ResizablePanelGroup(
-            ResizablePanel(ItemList(*options, id=f"list-{v.artifact}"), size=35),
+            ResizablePanel(_scroll(ItemList(*rows, id=f"list-{v.artifact}")), size=35),
             ResizableHandle(),
             ResizablePanel(VerticalScroll(Q3Markdown(first, classes="view-detail", id=f"detail-{v.artifact}")), size=65),
         )
 
     def _questions(self, questions):
         order = sorted(questions, key=lambda q: (q.status != "open", q.id))
-        options = []
+        rows = []
         for q in order:
-            style = "$text-warning" if q.status == "open" else "$text-muted"
-            block = " blocking" if q.blocking and q.status == "open" else ""
+            block = " · blocking" if q.blocking and q.status == "open" else ""
             answer = f" → {q.answer}" if q.answer is not None else ""
-            options.append(Option(Content.assemble((f"{q.id} {q.status}{block}", style), f"  {q.text}{answer}"), id=q.id))
-        yield ItemList(*options, id="list-questions")
+            glyph, tone = ("step_gate", "warn") if q.status == "open" else ("done", "plain")
+            rows.append(Item(ItemMedia(glyph), ItemContent(ItemTitle(f"{q.id} · {q.status}{block}"),
+                                                           ItemDescription(f"{q.text}{answer}")),
+                             value=q.id, classes=f"-tone-{tone}"))
+        if rows:
+            rows[0].add_class("-chosen")
+        yield _scroll(ItemList(*rows, id="list-questions"))
 
     def _log(self):
         lines = []
@@ -167,6 +199,17 @@ class StepMain(Vertical):
             self.tab = tabs.first().value
         await self.recompose()
 
+    def focus_target(self):
+        """Where Tab puts the focus in Main: the chosen row of the list in view, else its first focusable widget."""
+        tabs = self.query(Tabs)
+        if tabs:
+            content = next((c for c in self.query(TabsContent) if c.value == tabs.first().value), None)
+            lists = content.query(ItemList) if content is not None else []
+            if lists:
+                group = lists.first()
+                return group.chosen or next(iter(group.query(Item)), None)
+        return next((w for w in self.query("*") if w.focusable), None)
+
     def selected_item(self) -> tuple[str, str] | None:
         """(artifact, item) of the selected row of the view tab in view."""
         tabs = self.query(Tabs)
@@ -174,19 +217,13 @@ class StepMain(Vertical):
             return None
         artifact = tabs.first().value[5:]
         lists = self.query(f"#list-{artifact}")
-        if not lists:
-            return None
-        ol = lists.first(ItemList)
-        if ol.highlighted is None:
-            return None
-        return artifact, ol.get_option_at_index(ol.highlighted).id
+        chosen = lists.first(ItemList).chosen if lists else None
+        return (artifact, chosen.value) if chosen is not None else None
 
     def selected_question(self) -> str | None:
         lists = self.query("#list-questions")
-        if not lists:
-            return None
-        ol = lists.first(ItemList)
-        return ol.get_option_at_index(ol.highlighted).id if ol.highlighted is not None else None
+        chosen = lists.first(ItemList).chosen if lists else None
+        return chosen.value if chosen is not None else None
 
     def selected_text(self) -> str:
         sel = self.screen.get_selected_text() if hasattr(self.screen, "get_selected_text") else None
@@ -200,14 +237,19 @@ class StepMain(Vertical):
         values = [x.value for x in t.triggers]
         t.select(values[(values.index(t.value) + direction) % len(values)])
 
-    @on(OptionList.OptionHighlighted)
-    def _highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        list_id = event.option_list.id or ""
-        if not list_id.startswith("list-") or list_id == "list-questions":
+    def on_descendant_focus(self, event) -> None:
+        """A row that takes the focus is the chosen one; its detail shows."""
+        row = event.widget if isinstance(event.widget, Item) else None
+        group = row.parent if row is not None else None
+        if not isinstance(group, ItemList):
+            return
+        group.choose(row)
+        list_id = group.id or ""
+        if list_id == "list-questions" or not list_id.startswith("list-"):
             return
         artifact = list_id[5:]
         view = next((v for v in self.views if v.artifact == artifact), None)
-        item = next((i for i in view.items if i.id == event.option.id), None) if view else None
+        item = next((i for i in view.items if i.id == row.value), None) if view else None
         details = self.query(f"#detail-{artifact}")
         if item is not None and details:
             details.first(Q3Markdown).update(item.detail)
@@ -216,9 +258,10 @@ class StepMain(Vertical):
     def _tab_changed(self, event: Tabs.Changed) -> None:
         self.app.refresh_keys()
 
-    @on(OptionList.OptionSelected, "#list-questions")
-    def _question_chosen(self, event: OptionList.OptionSelected) -> None:
-        self.post_message(self.Do("answer_one", self.step, ("question", event.option.id)))
+    @on(Item.Selected, "#list-questions Item")
+    def _question_chosen(self, event: Item.Selected) -> None:
+        event.stop()
+        self.post_message(self.Do("answer_one", self.step, ("question", event.value)))
 
     @on(Button.Pressed)
     def _button(self, event: Button.Pressed) -> None:

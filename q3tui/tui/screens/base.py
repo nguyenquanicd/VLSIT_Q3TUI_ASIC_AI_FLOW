@@ -67,7 +67,10 @@ class PartScreen(Screen):
             at = next((n for n, p in enumerate(parts) if here is not None and (here is p or p in here.ancestors)), -1)
             target = parts[(at + step) % len(parts)] if at >= 0 else parts[0 if step > 0 else -1]
             last = getattr(target, "_q3_last_focus", None)
-            if last is not None and last.is_attached and last.focusable:
+            chosen = target.focus_target() if hasattr(target, "focus_target") else None
+            if chosen is not None and chosen.focusable:
+                chosen.focus()
+            elif last is not None and last.is_attached and last.focusable:
                 last.focus()
             elif target.focusable:
                 target.focus()
