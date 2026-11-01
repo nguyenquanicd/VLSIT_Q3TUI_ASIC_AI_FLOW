@@ -32,6 +32,8 @@ def _step_keys(display: str | None) -> list[tuple[str, str]]:
 def hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
     kind = type(screen).__name__
     move = [("tab", "next part")]
+    if _find(focused, "Menubar"):
+        return [("←→", "menu"), ("enter", "open"), ("escape", "back"), *move]
     if kind == "HomeScreen":
         if _find(focused, "PromptBox"):
             return [("enter", "write the file"), ("shift+enter", "new line"), *move]
@@ -90,9 +92,11 @@ def focus_label(screen, focused: Widget | None) -> str:
     """What has the focus, in a few words, shown before the keys: `Flow ▸ spec`, `Main ▸ spec ▸ Log`, `Activities`."""
     if focused is None:
         return ""
+    if _find(focused, "Menubar"):
+        label = str(getattr(focused, "label_text", "") or "").strip()
+        return f"Menubar ▸ {label}" if label else "Menubar"
     if _find(focused, "TitleBar"):
-        label = str(getattr(focused, "label", "") or "").strip()
-        return f"Title bar ▸ {label}" if label else "Title bar"
+        return "Title bar"
     kind = type(screen).__name__
     if kind == "HomeScreen":
         if _find(focused, "PromptBox"):
