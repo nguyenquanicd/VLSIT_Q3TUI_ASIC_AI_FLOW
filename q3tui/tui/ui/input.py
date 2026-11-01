@@ -6,6 +6,9 @@ half-cell top and bottom edges that take the color behind them, and a `$panel` f
 
 from __future__ import annotations
 
+import re
+
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
@@ -32,8 +35,20 @@ class Input(TextualInput):
     """
 
 
+def _lines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+_PASTE_TOKEN = re.compile(r"\[Pasted text #(\d+) \+\d+ lines?\]")
+
+
 class Textarea(TextArea):
-    """A multi-line field of `rows` text rows."""
+    """A multi-line field of `rows` text rows.
+
+    With `collapse_pastes`, a pasted text of several lines shows as one token,
+    `[Pasted text #1 +11 lines]`; Backspace after a token removes it whole, and `value` is the text
+    with each token replaced by what was pasted. See spec/tui.md "Input boxes".
+    """
 
     DEFAULT_CSS = """
     Textarea { padding: 0 1; background: $surface; color: $foreground; border: none;
@@ -53,7 +68,10 @@ class Textarea(TextArea):
         id: str | None = None,
         classes: str | None = None,
         disabled: bool = False,
+        collapse_pastes: bool = False,
     ) -> None:
+        self.collapse_pastes = collapse_pastes
+        self._pastes: dict[int, str] = {}
         super().__init__(
             text,
             show_line_numbers=False,
@@ -63,6 +81,45 @@ class Textarea(TextArea):
             disabled=disabled,
         )
         self.styles.height = rows + 2  # Border-box: the two half-cell edge rows count.
+
+    @property
+    def value(self) -> str:
+        """The text, each paste token replaced by the text it stands for."""
+
+        def expand(match: re.Match[str]) -> str:
+            return self._pastes.get(int(match[1]), match[0])
+
+        return _PASTE_TOKEN.sub(expand, self.text) if self._pastes else self.text
+
+    def load_text(self, text: str) -> None:
+        self._pastes.clear()
+        super().load_text(text)
+
+    def clear(self):
+        self._pastes.clear()
+        return super().clear()
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        text = _lines(event.text)
+        if not self.collapse_pastes or self.read_only or "\n" not in text.strip("\n"):
+            return  # Textual walks the MRO: TextArea's own handler pastes it as typed text
+        event.prevent_default()
+        number = max(self._pastes, default=0) + 1
+        self._pastes[number] = text
+        extra = text.count("\n")
+        token = f"[Pasted text #{number} +{extra} line{'s' if extra != 1 else ''}]"
+        if result := self._replace_via_keyboard(token, *self.selection):
+            self.move_cursor(result.end_location)
+
+    def action_delete_left(self) -> None:
+        if self._pastes and self.selection.is_empty:
+            row, column = self.cursor_location
+            line = self.document[row][:column]
+            for match in _PASTE_TOKEN.finditer(line):
+                if match.end() == column and int(match[1]) in self._pastes:
+                    self._delete_via_keyboard((row, match.start()), (row, column))
+                    return
+        super().action_delete_left()
 
 
 class InputGroupAddon(Horizontal):

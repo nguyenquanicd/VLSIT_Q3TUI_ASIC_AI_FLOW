@@ -319,3 +319,46 @@ async def test_a_step_is_one_line_with_its_llm_work_folded_under_it():
         assert len(live.query(TraceCollapsible)) == 1 and len(live.query(Marker)) == 2  # one line for the step
         past = app.query_one("#past", EventLog).query_one(TraceCollapsible)  # the Log tab: read back, closed
         assert not past.open and len(past.query_one(CollapsibleContent).query(EventLine)) == 3
+
+
+async def test_home_collapses_a_multiline_paste(tmp_path, home):
+    from textual import events
+
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        box = app.screen.query_one("PromptInput")
+        box.focus()
+        await pilot.press(*"A ")
+        pasted = "".join(f"line {i}\n" for i in range(12))
+        app.post_message(events.Paste(pasted))
+        await pilot.pause()
+        assert box.text == "A [Pasted text #1 +12 lines]"
+        assert box.value == "A " + pasted
+        app.post_message(events.Paste("one line"))
+        await pilot.pause()
+        assert box.text.endswith("lines]one line")
+        await pilot.press(*["backspace"] * 8, "backspace")
+        assert box.text == "A "
+        app.post_message(events.Paste("x\ny\n"))
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert (tmp_path / "proj/spec/intent.md").read_text() == "A x\ny\n"
+
+
+async def test_a_paste_while_the_terminal_lost_focus_reaches_the_box(tmp_path, home):
+    """A terminal's paste dialog takes the focus: the paste comes before the focus comes back."""
+    from textual import events
+
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        box = app.screen.query_one("PromptInput")
+        box.focus()
+        await pilot.pause()
+        app.post_message(events.AppBlur())
+        await pilot.pause()
+        app.post_message(events.Paste("a\rb\rc\r"))
+        await pilot.pause()
+        assert box.value == "a\nb\nc\n"

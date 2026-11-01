@@ -249,6 +249,16 @@ Provisional: kept as below until it has been built and used, then revisited.
    follow its state: `a` only while it waits for approval, `q` only while a question waits).
 6. No combination that terminals often do not send (Ctrl+, , Ctrl+Shift+…).
 
+### Input boxes
+
+The input box of Home and the chat box of the Assistant tab take a pasted text of several lines
+as one token, `[Pasted text #1 +11 lines]` (numbered from 1 in each box, the count being the
+line breaks in the paste). Enter sends the text with each token replaced by what was pasted.
+Backspace just after a token removes it whole. A paste of one line goes in as typed text.
+
+A paste goes to the field that had the focus even when it comes while the terminal has lost the
+focus (a terminal's paste confirmation dialog takes it until the paste is done).
+
 ### Global keys
 
 | Key                         | Action                                               |

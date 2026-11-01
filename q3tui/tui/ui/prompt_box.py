@@ -23,11 +23,11 @@ class PromptInput(Textarea):
             self.text = text
 
     def __init__(self, *, placeholder: str = "", id: str | None = None) -> None:
-        super().__init__(rows=PROMPT_ROWS, placeholder=placeholder, id=id)
+        super().__init__(rows=PROMPT_ROWS, placeholder=placeholder, id=id, collapse_pastes=True)
         self.styles.height = None  # the stylesheet sizes it: a short screen shrinks it
 
     def action_submit(self) -> None:
-        self.post_message(self.Submitted(self.text))
+        self.post_message(self.Submitted(self.value))
 
     def action_line_break(self) -> None:
         self.replace("\n", *self.selection)
@@ -71,7 +71,7 @@ class PromptBox(Widget):
         self.set_value("")
 
     def submit(self) -> None:
-        text = self.query_one(PromptInput).text.strip()
+        text = self.query_one(PromptInput).value.strip()
         if text:
             self.post_message(self.Submitted(text))
 

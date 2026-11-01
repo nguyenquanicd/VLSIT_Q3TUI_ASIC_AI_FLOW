@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from textual import events
 from textual.app import App
 from textual.binding import Binding
 
@@ -76,6 +77,14 @@ class Q3App(App):
         self._cost_before = 0.0  # spent in this session in the projects opened before this one
 
     # -- start --------------------------------------------------------------------------------------
+
+    async def on_event(self, event: events.Event) -> None:
+        """A paste gives the app its focus back, as a key does: a terminal's paste dialog takes
+        the focus, and the paste comes before the terminal says the focus is back
+        (spec/tui.md "Input boxes")."""
+        if isinstance(event, events.Paste) and not event.is_forwarded and not self.app_focus:
+            self.app_focus = True
+        await super().on_event(event)
 
     def on_mount(self) -> None:
         from q3tui.tui.scrollbars import install

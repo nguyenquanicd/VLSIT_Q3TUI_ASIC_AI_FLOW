@@ -59,7 +59,7 @@ class ChatInput(Textarea):
         if panel.commands_open() and not panel.command_typed():
             panel.query_one(Command).choose_highlighted()
             return
-        text = self.text.strip()
+        text = self.value.strip()
         if text:
             self.clear()
             panel.submit(text)
@@ -191,7 +191,8 @@ class ChatPanel(Vertical):
             yield TextButton(f"New chat {key_label('ctrl+l')}", id="chat-new", compact=True)
         yield MessageScroller(id="chat-log")
         yield Command(search=False, id="chat-commands")
-        yield ChatInput(rows=2, placeholder="Ask the assistant, or / for a command…", id="chat-input")
+        yield ChatInput(rows=2, placeholder="Ask the assistant, or / for a command…", id="chat-input",
+                        collapse_pastes=True)
 
     def on_mount(self) -> None:
         self.query_one(Command).display = False
