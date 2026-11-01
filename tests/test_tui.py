@@ -520,3 +520,53 @@ async def test_a_row_without_a_mark_stays_in_line_with_the_marked_rows(tmp_path,
         a, b = (r.query_one("ItemTitle").region.x for r in rows)
         header = main.query_one(".list-header")
         assert a == b and str(header.render()) == "  id" and header.region.x + 2 == a
+
+
+async def test_shift_q_answers_every_open_question_with_its_default(tmp_path, home):
+    write(home / "steps/spec/step.py", WRITE + '''
+        ctx.ask("design_choice", "a.one", "One?", "yes")
+        ctx.ask("design_choice", "a.two", "Two?", "no")
+        ctx.ask("design_choice", "a.three", "Three?", None)
+''')
+    write(tmp_path / "proj/spec/intent.md", "a FIFO\n")
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.5)
+        app.start_run(only="spec")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.5)
+        decisions = app.opened.engine.decisions
+        assert len(decisions.open_of("spec")) == 3
+        row = next(r for r in app.screen.query(FlowRow) if r.ident == "spec")
+        row.focus()
+        await pilot.press("Q")
+        await pilot.pause()
+        by_key = {q.key: q for q in decisions.of_step("spec")}
+        assert (by_key["a.one"].status, by_key["a.one"].answer) == ("answered", "yes")
+        assert (by_key["a.two"].status, by_key["a.two"].answer) == ("answered", "no")
+        assert by_key["a.three"].status == "open"  # no default: it waits for you
+
+
+async def test_the_answer_all_command_answers_every_open_question_with_its_default(tmp_path, home):
+    write(home / "steps/spec/step.py", WRITE + '''
+        ctx.ask("design_choice", "a.one", "One?", "yes")
+        ctx.ask("design_choice", "a.three", "Three?", None)
+''')
+    write(tmp_path / "proj/spec/intent.md", "a FIFO\n")
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.5)
+        app.start_run(only="spec")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.5)
+        from q3tui.tui.widgets.chat import ChatPanel
+
+        app.screen.query_one(ChatPanel).submit("/answer_all")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        by_key = {q.key: q for q in app.opened.engine.decisions.of_step("spec")}
+        assert by_key["a.one"].status == "answered" and by_key["a.three"].status == "open"
+        notes = [str(n.render()) for n in app.screen.query(".chat-note")]
+        assert any("1 answered with their default: spec-Q1" in n for n in notes)

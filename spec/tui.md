@@ -288,6 +288,7 @@ focus (a terminal's paste confirmation dialog takes it until the paste is done).
 | `a` / `A`     | approve / approve by force (asks)                                   |
 | `r`           | send the step a change request                                      |
 | `q`           | answer the next open question                                       |
+| `Q`           | answer every open question with its default (as if you picked it)   |
 | `c` / `C`     | confirm the selected review item / every review item                |
 | `w`           | ask for a change to the selected item                               |
 | `m`           | ask the assistant about the selected item                           |

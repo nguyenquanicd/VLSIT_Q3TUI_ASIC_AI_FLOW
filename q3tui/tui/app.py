@@ -36,7 +36,7 @@ SHORTCUTS = [
     ("F6 / F7 / F8", "the flow / the model and effort / the cost"), ("Alt+F/R/V/H", "the File / Run / View / Help menu"),
     ("Tab / Shift+Tab", "the next / previous part"), ("Alt+1..9", "the n-th tab of the tabs around the focus"),
     ("t / o / f", "run to / only / from this step"), ("s", "run the stage of this step"), (".", "run this step again"),
-    ("a / A", "approve / approve by force"), ("r", "send a change request"), ("q", "answer the next open question"),
+    ("a / A", "approve / approve by force"), ("r", "send a change request"), ("q / Q", "answer the next open question / every one with its default"),
     ("c / C", "confirm the selected item / every item"), ("w", "ask for a change to the selected item"),
     ("m", "ask the assistant about the selected item"),
     ("Shift+F10", "the menu of the Flow tree row"),

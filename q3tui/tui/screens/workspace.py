@@ -45,7 +45,8 @@ class WorkspaceScreen(PartScreen):
         Binding("f", "step('run_from')", show=False), Binding("s", "step('run_stage')", show=False),
         Binding("full_stop", "step('rerun')", show=False), Binding("a", "step('approve')", show=False),
         Binding("A", "step('approve_force')", show=False), Binding("r", "step('change')", show=False),
-        Binding("q", "step('answer')", show=False), Binding("c", "step('confirm_item')", show=False),
+        Binding("q", "step('answer')", show=False), Binding("Q", "step('answer_defaults')", show=False),
+        Binding("c", "step('confirm_item')", show=False),
         Binding("C", "step('confirm_all')", show=False), Binding("w", "step('change_item')", show=False),
         Binding("m", "step('ask_item')", show=False),
         Binding("ctrl+l", "new_chat", show=False),
@@ -297,6 +298,10 @@ class WorkspaceScreen(PartScreen):
                     app.toast(f"{sid} has no open question")
                 else:
                     self.answer(qs[0].id)
+            elif action == "answer_defaults":
+                done = ops.answer_all(sid)
+                app.toast(f"{len(done)} question(s) of {sid} answered with their default" if done
+                          else f"{sid} has no open question with a default", variant="success" if done else "default")
             elif action in ("confirm_item", "change_item", "ask_item", "confirm_all"):
                 self._item_action(action, sid)
             self.refresh_statuses()

@@ -17,7 +17,7 @@ from q3tui.workspace.sites import Site, Sites
 
 # The names an addon's action may not take.
 OPS_ACTIONS = (
-    "run", "stop", "approve", "request_change", "answer", "reset", "gate_mode", "settings", "cost", "review",
+    "run", "stop", "approve", "request_change", "answer", "answer_all", "reset", "gate_mode", "settings", "cost", "review",
     "install_package", "update_package", "fetch_site", "allow", "deny", "apply_preset",
 )
 GATES = ("manual", "auto", "unattended")
@@ -79,6 +79,15 @@ class Ops:
 
     def answer(self, question: str, answer: str, *, hint: str | None = None, kind: str | None = None):
         return self.engine.answer(question, answer, hint=hint, kind=kind)
+
+    def answer_all(self, step: str | None = None) -> list:
+        """Answer every open question with a default (of `step`, else of the flow) with it, each as `answer` does:
+        the decision goes to the step that answers it. A question without a default, or of a fix loop, stays open."""
+        done = []
+        for q in list(self.engine.decisions.questions):
+            if q.status == "open" and q.problem is None and q.default is not None and step in (None, q.step):
+                done.append(self.engine.answer(q.id, str(q.default)))
+        return done
 
     def review(self, step: str, artifact: str, item: str, *, confirm: bool = True, text: str = "") -> None:
         self.engine.review(step, artifact, item, confirm=confirm, text=text)

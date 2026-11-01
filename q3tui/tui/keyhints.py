@@ -23,7 +23,7 @@ def _step_keys(display: str | None) -> list[tuple[str, str]]:
     if display == "approval waiting":
         keys += [("a", "approve"), ("shift+a", "force")]
     if display == "question waiting":
-        keys.append(("q", "answer"))
+        keys += [("q", "answer"), ("shift+q", "all defaults")]
     if display in ("done", "approved", "approval waiting"):
         keys.append(("r", "change"))
     return keys
@@ -80,7 +80,7 @@ def _hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
                 keys = [("enter", "open / close")]
             else:
                 keys = [("←→", "tab")]
-            step = [k for k in _step_keys(display) if k[0] in ("a", "shift+a", "q", "r")]
+            step = [k for k in _step_keys(display) if k[0] in ("a", "shift+a", "q", "shift+q", "r")]
             return [*keys, *step, *move]
         if _find(focused, "Activities"):
             fold = [("enter", "open / close")] if type(focused).__name__ == "EventLine" else []

@@ -261,6 +261,12 @@ class Assistant:
             q = ops.answer(a["id"], a["answer"], hint=a.get("hint") or None, kind=a.get("kind") or None)
             return f"{q.id} {q.status}" + (f"; the decision goes to {q.owner}" if q.owner else "")
 
+        async def answer_all(a):
+            done = ops.answer_all(a.get("step") or None)
+            if not done:
+                return "No open question with a default."
+            return f"{len(done)} answered with their default: " + ", ".join(q.id for q in done)
+
         async def review_item(a):
             await self._confirm_other_step(a["step"], "Review an item of")
             ops.review(a["step"], a["artifact"], a["item"], confirm=not a.get("change"), text=a.get("text", ""))
@@ -322,6 +328,8 @@ class Assistant:
                  request_change),
             Tool("answer", "Answer a question by its id; for a stopped fix loop: fix_again (hint), other_input "
                            "(kind, hint) or accept", {"id": str, "answer": str, "hint": str, "kind": str}, answer),
+            Tool("answer_all", "Answer every open question that has a default with it, of one step or of the flow",
+                 {"step": str}, answer_all),
             Tool("review_item", "Confirm a review item, or ask for a change to it (change: true, text)",
                  {"step": str, "artifact": str, "item": str, "change": bool, "text": str}, review_item),
             Tool("get_settings", "A setting (dotted key) and the layer it comes from", {"key": str}, get_settings),

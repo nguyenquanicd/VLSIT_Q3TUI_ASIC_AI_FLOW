@@ -392,7 +392,8 @@ and only to steps of the flow that is running.
 
 - **Ops is the only door.** The CLI, TUI and assistant call Ops and nothing else; the
   engine's own functions are internal.
-- Ops holds only generic actions: run, stop, approve, request a change, answer, reset,
+- Ops holds only generic actions: run, stop, approve, request a change, answer (one question,
+  or every open one with its default: `answer_all`), reset,
   gate mode, settings, cost, review of an item (through views), install or update a
   package, fetch a site, allow or deny a command or code of the project, and apply a
   preset of tools. An action that belongs

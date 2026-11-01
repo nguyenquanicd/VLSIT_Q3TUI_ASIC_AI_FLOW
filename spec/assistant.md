@@ -31,7 +31,7 @@ and the TUI use too, so the three can do the same things.
 | -------- | --------------------------------------------------------------------------------------- |
 | look     | `status` (the display state of each step), `questions`, `cost`                          |
 | run      | `run` (with a scope, and the choice of waiting until it ends), `stop`, `rerun`, `reset` |
-| review   | `approve`, `request_change`, `answer`, `review_item` (confirm an item, or ask for a change to it) |
+| review   | `approve`, `request_change`, `answer`, `answer_all` (every open question with its default, of a step or of the flow), `review_item` (confirm an item, or ask for a change to it) |
 | settings | `get_settings`, `set_settings`, `set_gate_mode`                                         |
 | ask you  | `ask_user`: a question to you with choices, shown by the TUI                            |
 | of steps | every action of the addons of the flow's steps (Extensibility)                         |
