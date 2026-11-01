@@ -257,7 +257,7 @@ def _one_cycle(edges: dict, comp: list) -> list:
     return comp
 
 
-def _graph(comp, sm) -> "_Graph":
+def _graph(comp, sm) -> _Graph:
     g = _Graph(sm)
     for top in comp.getRoot().topInstances:
         _instance(g, top)

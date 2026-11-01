@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 
 import pyslang as ps
 from pyslang import ast, parsing, syntax
@@ -19,7 +18,7 @@ from q3tui.hdl.filelist import Filelist
 _EDGE_RE = re.compile(r"@\s*\(([^)]*)\)")
 _EDGE_SIG_RE = re.compile(r"\b(posedge|negedge)\s+([A-Za-z_]\w*)")
 # rst_n, srst_n, arstn, i_rst_ni, hresetn, PRESETn, por_b, clr — but not burst/first.
-_RESET_NAME_RE = re.compile(r"(^|_)[a-z]?(rst|reset|clr|clear|por)(_?n|_ni|_b|b)?($|_)", re.I)
+_RESET_NAME_RE = re.compile(r"(^|_)[a-z]?(rst|reset|clr|clear|por)(_?n|_ni|_b|b)?($|_)", re.IGNORECASE)
 
 
 @dataclass

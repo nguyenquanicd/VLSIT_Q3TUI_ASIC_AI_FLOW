@@ -55,7 +55,7 @@ def _expand_env(token: str) -> str:
 
 
 def _strip_comments(text: str) -> str:
-    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
     lines = []
     for line in text.splitlines():
         line = re.sub(r"(^|\s)//.*$", "", line)

@@ -98,14 +98,16 @@ def check_value(p: Param, value) -> str | None:
     return f"`{value!r}` is not a {p.type}"
 
 
-def _hash_tree(paths: list[Path]) -> str:
-    h = hashlib.sha256()
-    for base in paths:
-        files = [base] if base.is_file() else sorted(p for p in base.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
-        for f in files:
-            h.update(str(f.name if base.is_file() else f.relative_to(base)).encode() + b"\0")
-            h.update(f.read_bytes() + b"\0")
-    return h.hexdigest()
+def _definition_files(parts: list[tuple[str, Path]]) -> dict[str, str]:
+    """The hash of each file of a definition, keyed `<label>/<file>` (`step/STEP.md`, `skill:x/SKILL.md`)."""
+    out: dict[str, str] = {}
+    for label, base in parts:
+        if base.is_file():
+            out[label] = hashlib.sha256(base.read_bytes()).hexdigest()
+            continue
+        for f in sorted(p for p in base.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+            out[f"{label}/{f.relative_to(base)}"] = hashlib.sha256(f.read_bytes()).hexdigest()
+    return out
 
 
 class _Loader:
@@ -415,9 +417,9 @@ class _Loader:
         for g in (gate, stage_gate, override.get("gate")):
             if g is not None and g not in GATES:
                 self.err(ppath, f"gate `{g}` is not one of {list(GATES)}")
-        gate = override.get("gate") or stage_gate or gate
+        flow_gate = override.get("gate") or stage_gate or gate
         configured = self.config.gate_mode(sid) if self.config is not None else None
-        gate = configured or gate
+        gate = configured or flow_gate
         tasks: list[Task] = []
         declared_tasks = []
         for t in _list(meta.get("tasks")):
@@ -471,7 +473,7 @@ class _Loader:
             if not str(a).startswith(("templates/", "rules/", "knowledge/")):
                 self.err(ppath, f"asset `{a}` is not under templates/, rules/ or knowledge/")
         return Instance(
-            id=sid, step=name, stage=stage, folder=folder, version=str(meta.get("version", "")),
+            id=sid, step=name, stage=stage, folder=folder, version=str(meta.get("version", "")), flow_gate=flow_gate,
             description=str(meta.get("description", "")), params=params, param_decls=decls, gate=gate,
             inputs=inputs, outputs=outputs, assets=assets, tools=tools, packages=packages, passes=passes,
             tasks=tasks, questions=_list(meta.get("questions")), answers=_list(meta.get("answers")),
@@ -561,11 +563,13 @@ class _Loader:
 
     def definitions(self, flow: Flow, flow_file: Path) -> None:
         for inst in flow.instances.values():
-            parts = [inst.folder]
-            parts += [p for s in inst.skills if (p := self.lookup.folder("skills", s)) is not None]
+            parts = [(f"steps/{inst.step}", inst.folder)]
+            parts += [(f"skills/{s}", p) for s in inst.skills if (p := self.lookup.folder("skills", s)) is not None]
             stage = flow.stage_of(inst.id)
-            parts += [stage.folder / "STAGE.md", flow_file]
-            inst.definition_hash = _hash_tree(parts)
+            parts += [(f"stages/{stage.name}/STAGE.md", stage.folder / "STAGE.md"), (f"flows/{flow.name}/FLOW.md", flow_file)]
+            inst.definition_files = _definition_files(parts)
+            inst.definition_hash = hashlib.sha256(
+                "".join(f"{k}\0{v}\0" for k, v in sorted(inst.definition_files.items())).encode()).hexdigest()
 
 
 def load_flow(name: str, lookup: Lookup, config=None) -> Flow:

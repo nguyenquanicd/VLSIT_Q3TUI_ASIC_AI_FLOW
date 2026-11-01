@@ -86,9 +86,11 @@ class Instance:
     units: dict | None
     has_code: bool
     has_addon: bool
+    flow_gate: str = "auto"  # the gate the flow files give, before the config
     deps: set[str] = field(default_factory=set)  # instance ids it depends on (inputs and its chain)
     chain_prev: str | None = None
     definition_hash: str = ""
+    definition_files: dict[str, str] = field(default_factory=dict)  # `<label>/<file>` -> sha256
 
     def output(self, artifact: str) -> Output | None:
         return next((o for o in self.outputs if o.artifact == artifact), None)
