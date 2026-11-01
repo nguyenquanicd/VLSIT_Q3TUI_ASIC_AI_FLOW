@@ -5,13 +5,12 @@ from __future__ import annotations
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Static
 
 from q3tui.tui.alerts import AlertSpec, alerts, first_user_file
 from q3tui.tui.ui.alert import Alert, AlertDescription, AlertTitle
-from q3tui.tui.ui.button import Button
 from q3tui.tui.ui.prompt_box import PromptBox
 from q3tui.tui.widgets.brand import WelcomeBrand
 
@@ -19,24 +18,74 @@ VARIANT = {"error": "destructive", "warning": "warning", "info": "default"}
 
 
 class HomeAlert(Alert):
-    """An Alert of Home: title, detail, and its action inside it, with a key (Alt+<n>)."""
+    """An Alert of Home. Clicking it (or Enter on it in the list) does its action: opens the settings or a dialog."""
 
     DEFAULT_CSS = """
-    HomeAlert { margin-top: 1; }
-    HomeAlert .alert-actions { height: 1; margin-top: 1; }
+    HomeAlert { margin-top: 0; }
+    HomeAlert.-actionable:hover { background: $panel; }
+    HomeAlert.-selected { background: $panel; }
     """
 
-    def __init__(self, spec: AlertSpec, key: str | None) -> None:
-        parts = [AlertTitle(spec.title), AlertDescription(spec.detail)]
-        if spec.action:
-            parts.append(Horizontal(Button(spec.action, key=key, classes="alert-action"), classes="alert-actions"))
-        super().__init__(*parts, variant=VARIANT[spec.severity])
+    def __init__(self, spec: AlertSpec) -> None:
+        super().__init__(AlertTitle(spec.title), AlertDescription(spec.detail), variant=VARIANT[spec.severity])
         self.spec = spec
+        self.set_class(bool(spec.action), "-actionable")
+        if spec.action:
+            self.tooltip = f"Click or Enter: {spec.action.lower()}"
 
-    @on(Button.Pressed, ".alert-action")
-    def _pressed(self, event: Button.Pressed) -> None:
+    def on_click(self, event: events.Click) -> None:
         event.stop()
-        self.app.alert_action(self.spec.payload or "")
+        alerts = self.parent
+        if isinstance(alerts, AlertList):
+            alerts.select(list(alerts.query(HomeAlert)).index(self))
+        self.act()
+
+    def act(self) -> None:
+        if self.spec.action:
+            self.app.alert_action(self.spec.payload or "")
+
+
+class AlertList(Vertical, can_focus=True):
+    """The alerts of Home: Up / Down choose one, Enter does its action (Tab comes here from the input box)."""
+
+    DEFAULT_CSS = """
+    AlertList { height: auto; margin-top: 1; }
+    AlertList:focus { background: transparent; }
+    """
+    BINDINGS = [Binding("up", "move(-1)", show=False), Binding("down", "move(1)", show=False),
+                Binding("enter", "act", show=False)]
+
+    def __init__(self, *alerts: HomeAlert) -> None:
+        super().__init__(*alerts)
+        self.index = 0
+
+    @property
+    def items(self) -> list[HomeAlert]:
+        return list(self.query(HomeAlert))
+
+    def select(self, index: int) -> None:
+        items = self.items
+        if not items:
+            return
+        self.index = index % len(items)
+        for n, item in enumerate(items):
+            item.set_class(n == self.index and self.has_focus, "-selected")
+        items[self.index].scroll_visible(animate=False)
+
+    def on_focus(self) -> None:
+        self.select(self.index)
+
+    def on_blur(self) -> None:
+        for item in self.items:
+            item.remove_class("-selected")
+
+    def action_move(self, step: int) -> None:
+        self.select(self.index + step)
+
+    def action_act(self) -> None:
+        items = self.items
+        if items:
+            items[self.index].act()
 
 
 class HomeScreen(Screen):
@@ -63,20 +112,18 @@ class HomeScreen(Screen):
             if target:
                 yield Static(f"Write {target}: what the design must do", id="home-file", markup=False)
                 yield PromptBox()
-            n = 0
-            for spec in alerts(opened):
-                key = None
-                if spec.action and n < 9:
-                    n += 1
-                    key = f"alt+{n}"
-                yield HomeAlert(spec, key)
+            specs = alerts(opened)
+            if specs:
+                yield AlertList(*(HomeAlert(spec) for spec in specs))
         yield status
 
     def on_mount(self) -> None:
         self._fit(self.size.width)
-        keys = [("enter", "write the file")] if self.query(PromptBox) else []
-        self.app.set_keys([*keys, ("ctrl+r", "run"), ("ctrl+k", "commands"), ("alt+comma", "settings")])
         self.action_focus_prompt()
+        self.app.refresh_keys()
+
+    def on_descendant_focus(self) -> None:
+        self.app.refresh_keys()
 
     def on_resize(self, event: events.Resize) -> None:
         self._fit(event.size.width)

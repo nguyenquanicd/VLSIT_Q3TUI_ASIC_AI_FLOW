@@ -19,9 +19,6 @@ from q3tui.tui.widgets.dialogs import AnswerDialog, ChangeDialog, confirm
 from q3tui.tui.widgets.flow_tree import FlowTree
 from q3tui.tui.widgets.main import StepMain
 
-STEP_KEYS = [("t", "run to"), ("o", "only"), ("f", "from"), ("s", "stage"), (".", "again"), ("a", "approve"),
-             ("r", "change"), ("q", "answer"), ("c", "confirm item"), ("w", "change item"), ("m", "ask")]
-
 
 class WorkspaceScreen(Screen):
     DEFAULT_CSS = """
@@ -81,7 +78,10 @@ class WorkspaceScreen(Screen):
 
     def on_mount(self) -> None:
         self.refresh_statuses()
-        self.app.set_keys([("alt+2", "flow"), ("ctrl+r", "run"), ("ctrl+k", "commands"), ("f1", "keys")])
+        self.app.refresh_keys()
+
+    def on_descendant_focus(self) -> None:
+        self.app.refresh_keys()
 
     def on_unmount(self) -> None:
         self.save_sizes()
@@ -149,7 +149,7 @@ class WorkspaceScreen(Screen):
     async def _selected(self, event: FlowTree.Selected) -> None:
         self.tree.select(event.step)
         await self.main.show(event.step)
-        self.app.set_keys(STEP_KEYS)
+        self.app.refresh_keys()
 
     @on(FlowTree.Act)
     def _row_button(self, event: FlowTree.Act) -> None:

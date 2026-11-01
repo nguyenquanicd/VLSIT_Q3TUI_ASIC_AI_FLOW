@@ -245,9 +245,12 @@ class SettingsScreen(Screen):
         await self.recompose()
 
     def on_mount(self) -> None:
-        self.app.set_keys([("ctrl+f", "search"), ("escape", "back"), ("enter", "save")])
+        self.app.refresh_keys()
         if self.group:
             self.call_after_refresh(self._scroll_to_group)
+
+    def on_descendant_focus(self) -> None:
+        self.app.refresh_keys()
 
     def _scroll_to_group(self) -> None:
         hits = self.query(f"#group-{self.group}-{self.layer_tab}")

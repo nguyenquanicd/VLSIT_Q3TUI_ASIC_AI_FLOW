@@ -110,9 +110,12 @@ class Q3App(App):
 
     # -- the bars -----------------------------------------------------------------------------------
 
-    def set_keys(self, keys: list[tuple[str, str]]) -> None:
-        for bar in self.screen.query(StatusBar):
-            bar.set_keys(keys)
+    def refresh_keys(self) -> None:
+        from q3tui.tui.keyhints import hints
+
+        screen = self.screen
+        for bar in screen.query(StatusBar):
+            bar.set_keys(hints(screen, screen.focused))
 
     def set_status(self, text: str) -> None:
         self.status_text = text
