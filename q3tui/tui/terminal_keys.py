@@ -1,23 +1,38 @@
-"""Compatibility for legacy terminal Alt sequences in Textual 8.x."""
+"""Compatibility for legacy terminal Alt sequences in Textual 8.x.
+
+A terminal sends Alt+<key> as ESC followed by the key. Textual 8 decodes some of these wrongly:
+
+- ESC+f / ESC+b: the word-movement aliases ctrl+right / ctrl+left, not alt+f / alt+b;
+- ESC+<digit>, ESC+- and ESC+=: the characters a macOS Option key types (¡ ™ £ … – ≠), not alt+1 … alt+=;
+- ESC+<punctuation> (ESC+,): the key alone (`comma`), the Alt lost.
+
+Q3TUI's keys (Alt+F/R/V/H for the menus, Alt+1 … Alt+4 for the areas, Alt+, for the settings) need them as Alt.
+"""
 
 from collections.abc import Callable
 
 from textual._ansi_sequences import ANSI_SEQUENCES_KEYS
+from textual._xterm_parser import XTermParser
+
+ALIASES = ("\x1bf", "\x1bb", *(f"\x1b{c}" for c in "1234567890-="))
 
 
 def enable_alt_menu_keys() -> Callable[[], None]:
-    """Let ESC+f decode as Alt+F instead of the legacy word-forward alias.
+    """Decode ESC+<key> as Alt+<key> for the cases above, for the app's lifetime; returns what restores Textual."""
+    removed = {seq: ANSI_SEQUENCES_KEYS.pop(seq) for seq in ALIASES if seq in ANSI_SEQUENCES_KEYS}
+    original = XTermParser._sequence_to_key_events
 
-    Textual's parser table is shared by its Windows and POSIX drivers. Remove
-    only this alias for the app lifetime; the actual Ctrl+Right escape sequence
-    remains unchanged. Without the alias, the parser's normal Alt handling is
-    used, just as for Alt+E/V/H. Restore the table on shutdown.
-    """
-    sequence = "\x1bf"
-    original = ANSI_SEQUENCES_KEYS.pop(sequence, None)
+    def sequence_to_key_events(self, sequence: str, alt: bool = False):
+        for event in original(self, sequence, alt):
+            if alt and len(sequence) == 1 and not sequence.isalnum() and not event.key.startswith("alt+"):
+                event.key = f"alt+{event.key}"  # ESC+, is alt+comma
+            yield event
+
+    XTermParser._sequence_to_key_events = sequence_to_key_events
 
     def restore() -> None:
-        if original is not None:
-            ANSI_SEQUENCES_KEYS.setdefault(sequence, original)
+        XTermParser._sequence_to_key_events = original
+        for seq, keys in removed.items():
+            ANSI_SEQUENCES_KEYS.setdefault(seq, keys)
 
     return restore
