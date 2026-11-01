@@ -1,6 +1,6 @@
 """Background runs: a run the TUI starts is a `q3tui run` process of its own, so it goes on while you look at another flow (the
 TUI restarts on a flow switch) and ends when you stop the TUI. One per flow: `r` in dv, then in fpga, then in sanity runs the three at
-the same time (docs/spec/pipeline.md "Runs of several flows"); `q3tui lanes …` has its own (`LANES`). The TUI follows each the way it
+the same time (docs/spec/pipeline.md "Runs of several flows"). The TUI follows each the way it
 follows any run of another process (run.<flow>.lock, runs/*/events.jsonl: `Q3TUIApp._tick`); the one `Runner` outlives the app
 instances of a `q3tui tui` session."""
 
@@ -14,12 +14,9 @@ import time
 from pathlib import Path
 
 
-LANES = "lanes"  # (the key of a `q3tui lanes …` / `q3tui tag` process)
-
-
 class Runner:
     def __init__(self) -> None:
-        self.children: dict[str, subprocess.Popen] = {}  # flow (or LANES) -> its background process
+        self.children: dict[str, subprocess.Popen] = {}  # flow -> its background process
 
     def alive(self, flow: str | None = None) -> bool:
         """`flow`'s run is going on (None: any of them)."""
@@ -63,12 +60,6 @@ class Runner:
             self.children[key] = subprocess.Popen(cmd, cwd=project.root, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True,
                                                   env={**os.environ, "NO_COLOR": "1", "COLUMNS": "200"})
         return self.children[key].pid
-
-    def start_cli(self, project, args: list[str], label: str = LANES) -> int:
-        """Any `q3tui` command in the background (the lanes: `lanes run`, `lanes merge --yes`, …), the way `start` runs one flow."""
-        cfg = project.cfg
-        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", *args]
-        return self._spawn(project, label, cmd)
 
     def stop(self, flow: str | None = None) -> bool:
         """Ctrl-C to `flow`'s run (None: every run): it cancels the step (its tools are killed by the step) and records the run as cancelled."""

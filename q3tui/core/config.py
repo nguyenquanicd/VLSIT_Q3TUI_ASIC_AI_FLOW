@@ -164,6 +164,9 @@ class PipelineConfig(_Strict):
     # A flow name (built-in `vlsit`, or a file in <project>/flows/ or ~/.q3tui/flows/) or a path to a flow file
     # (docs/spec/flows.md).
     flow: str = "spec"
+    # the flows whose steps make the design (spec … RTL): a run changes the design only while no run of another flow is in a step
+    # (docs/spec/pipeline.md "Runs of several flows")
+    design_flows: list[str] = Field(default_factory=lambda: ["rtl"])
     # LLM sessions: null = the flow's (`session:` in the flow file); "flow" = one persistent session for the whole flow
     # (like one Claude Code conversation), "fresh" = a session per stage
     session: Literal["flow", "fresh"] | None = None
@@ -178,6 +181,9 @@ class PipelineConfig(_Strict):
     # StepDef.pending_reviews). Narrower than auto_approve/auto_answer (TUI Settings → General); a per-step
     # `options: {parse: {auto_confirm: true}}` still overrides this one step.
     auto_confirm_reviews: bool = False
+    # Q3TUI's own record of the project: a version when a step finishes and when a flow passes, in .q3tui/history/ (never pushed; your own
+    # git is not touched) — docs/spec/history.md
+    history: bool = True
 
 
 class SpecConfig(_Strict):
@@ -229,21 +235,6 @@ class TuiConfig(_Strict):
     language: Literal["en", "vi", "ko"] = "en"
 
 
-class LanesConfig(_Strict):
-    """Lanes (docs/spec/lanes.md): the checking flows run at the same time, each in its own folder over a frozen RTL tag."""
-
-    flows: list[str] = Field(default_factory=lambda: ["dv", "fpga", "sanity"])  # the lanes (checking flows)
-    design_flows: list[str] = Field(default_factory=lambda: ["rtl"])  # the flows whose steps make the design a tag freezes (spec → … → RTL)
-    dir: str | None = None  # where the lane folders go (default: <project>.lanes beside the project folder)
-    max_rounds: int | None = Field(None, ge=1, le=20)  # `q3tui lanes converge` (default pipeline.max_fix_iterations)
-    max_cost_usd: float | None = Field(None, gt=0)
-    # `r` on a checking flow runs it in the project folder beside the others; when its run would change the design (a fix for spec … RTL) it
-    # goes on in a copy (a lane over a tag of the design as it is), so the design never changes under the other runs
-    fork: bool = True
-    # a fork that fixed something merges back by itself (unattended runs) once no other run is going on in the project folder; else `m`
-    auto_merge: bool = True
-
-
 class McpServerEntry(_Strict):
     name: str
     type: Literal["http", "sse", "stdio"]
@@ -264,7 +255,6 @@ class Config(_Strict):
     team: TeamConfig = TeamConfig()
     tools: ToolsConfig = ToolsConfig()
     tui: TuiConfig = TuiConfig()
-    lanes: LanesConfig = LanesConfig()
     mcp_servers: list[McpServerEntry] = Field(default_factory=list)
 
     # Where this config came from; not part of the file schema.
@@ -319,7 +309,7 @@ def _merge(base: dict, over: dict) -> dict:
 
 
 # settings of the removed `units` / `steps` flows and of the tb step: still in older config files, ignored
-_REMOVED = {None: ("requirements", "req", "arch", "model", "sim", "triage", "units"),
+_REMOVED = {None: ("requirements", "req", "arch", "model", "sim", "triage", "units", "lanes"),
             "pipeline": ("parallel_rtl_tb", "parallel_multi_agent"),
             "project": ("requirements_dir", "signoff_dir"),
             "rtl": ("rules", "review", "use_vcs", "language", "lint"),
@@ -329,6 +319,9 @@ _REMOVED_STEP_MODELS = ("req", "arch", "model", "vplan", "tb_checker", "tb_stimu
 
 def _legacy(layer: dict) -> dict:
     """Older config files: the settings of the removed flows are dropped (the schema rejects unknown keys)."""
+    old_lanes = layer.get("lanes")  # (the lanes were removed: their design flows are pipeline.design_flows now)
+    if isinstance(old_lanes, dict) and old_lanes.get("design_flows") and isinstance(layer.get("pipeline") or {}, dict):
+        layer = {**layer, "pipeline": {"design_flows": old_lanes["design_flows"], **(layer.get("pipeline") or {})}}
     layer = {k: v for k, v in layer.items() if k not in _REMOVED[None]}
     for section, keys in _REMOVED.items():
         if section and isinstance(layer.get(section), dict):

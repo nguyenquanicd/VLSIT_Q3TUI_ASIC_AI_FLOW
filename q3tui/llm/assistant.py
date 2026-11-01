@@ -44,9 +44,10 @@ content now, write_section.
 - Intent: set_intent / append_intent. Questions: list_questions, answer_question. \
 Review: mark_reviewed (spec sections), approve, and the per-item reviews of the steps \
 (review_parse_requirement, review_config_parameter). \
-Pipeline: run_steps, stop_run, reset_step. Lanes (the checking flows at the same time on a frozen tag): tag_design, lanes_status, run_lanes. Settings: get_settings / set_settings \
+Pipeline: run_steps, stop_run, reset_step; a step whose tool failed: set_tool_role, rerun_failed_step (you are told when). Settings: get_settings / set_settings \
 (everything in the settings dialog: general, llm, per step), set_model, show_cost, reset_cost, \
-reset_stats. Bring your own spec / RTL / tests / whole project folder: import_file (kind all for a folder).
+reset_stats. Bring your own spec / RTL / tests / whole project folder: import_file (kind all for a folder). \
+The project's versions (one per finished step, and per flow that passed): show_history, history_diff, show_file_version, restore_version.
 - You can also Edit/Write files under spec/, schemas/ and src/ directly (as the user could \
 in an editor); prefer the dedicated tools when one fits. You cannot modify Q3TUI's internal state.
 - Changes to a step's result: request_change(step=..., ...) then run_steps.
@@ -72,7 +73,7 @@ edit the spec or other steps from here. Tools that touch another step ask the us
 - You cannot act after your reply: nothing wakes you up later. Never say "once X \
 finishes I'll do Y". If Y depends on a run, call run_steps with wait=true and then do \
 Y in the same turn, or tell the user what to do next.
-- Destructive actions (reset_step, approve with force, reset_cost, reset_stats) show the user a \
+- Destructive actions (reset_step, approve with force, reset_cost, reset_stats, restore_version) show the user a \
 confirmation dialog; just call the tool — if they decline, say so and stop.
 - Only approve when the user asks for it.
 - Starting a run returns immediately; progress appears in the activity panel.
@@ -92,13 +93,13 @@ class AssistantHost(Protocol):
 
     def stop_run(self) -> str: ...
 
-    def start_lanes(self, args: list[str]) -> str: ...  # a `q3tui lanes …` command in the background
-
     async def confirm(self, question: str, detail: str = "") -> bool: ...
 
     def focus_step(self) -> str | None: ...  # step the user is working on (None: no restriction)
 
     async def ask_user(self, questions: list[dict]) -> list[str]: ...  # the TUI picker; answers as text
+
+    def rerun_failed(self, step: str) -> str: ...  # the one rerun of a step whose tool failed (tui/failures.py), in its own flow
 
 
 def _text(s: str) -> dict:
@@ -239,34 +240,6 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
         if a.get("wait"):
             return await host.run_and_wait(*args)
         return host.start_run(*args)
-
-    @add("tag_design", "Lanes (docs/spec/lanes.md): freeze the design (the design flows' steps, done and approved) as a tag the lanes check: "
-         "a read-only copy. name: optional (default v<N>); force=true tags an unfinished design (the user is asked to confirm).",
-         _schema({"name": ("string", ""), "force": ("boolean", "")}, []))
-    async def _tag(a):
-        if a.get("force") and not await host.confirm("Tag the design although a design step is not done and approved?"):
-            return "the user declined"
-        return ops.tag(a.get("name") or None, bool(a.get("force")))
-
-    @add("lanes_status", "Lanes: the tags and each lane's (checking flow's) result on them: passed / fixed (in its own folder) / failed / "
-         "needs_you, with the cost and why.", none)
-    async def _lanes_status(a):
-        return ops.lanes_status()
-
-    @add("run_lanes", "Lanes in the background: what='run' (the lanes on the latest tag, at the same time, each fixing in its own folder), "
-         "'merge' (take their fixes into the project folder and tag the result; the user confirms), 'converge' (run → merge → … until every "
-         "lane passes on one tag; the user confirms). lanes: optional comma-separated subset.",
-         _schema({"what": ("string", "run | merge | converge"), "lanes": ("string", "")}, ["what"]))
-    async def _run_lanes(a):
-        what = a["what"]
-        if what not in ("run", "merge", "converge"):
-            raise ValueError("what is run, merge or converge")
-        args = ["lanes", what, *(["--lanes", a["lanes"]] if a.get("lanes") else []), *(["--yes"] if what != "run" else [])]
-        if what == "merge" and not await host.confirm("Merge the lanes' fixes into the project folder?", ops.lanes_merge_preview()):
-            return "the user declined"
-        if what == "converge" and not await host.confirm("Converge the lanes?", "Lanes → merge → next tag → lanes, until all pass on one tag."):
-            return "the user declined"
-        return host.start_lanes(args)
 
     @add("stop_run", "Stop the running pipeline.", none)
     async def _stop(a):
@@ -447,6 +420,26 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
             return "the user declined"
         return ops.set_auto_confirm_reviews(bool(a["on"]), bool(a.get("save")))
 
+    @add("set_tool_role", "Change one field of a tool role in the project's config/tools.json (the file is backed up): timeout_s (seconds, "
+         "empty: the default), env ({\"VAR\": \"value\"}, merged; null removes VAR), modules (list of environment modules) or cmd (the command; "
+         "the user is asked). value: JSON (a number, an object, a list) or plain text.",
+         _schema({"role": ("string", "the role, e.g. rdc, sim, fpga_synth"), "key": ("string", "timeout_s | env | modules | cmd"),
+                  "value": ("string", "the new value")}, ["role", "key", "value"]))
+    async def _set_tool_role(a):
+        raw = a.get("value")
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            value = raw
+        if a["key"] == "cmd" and not await host.confirm(f"Change the command of the tool role '{a['role']}'?", str(value)):
+            return "the user declined"
+        return ops.set_tool_role(a["role"], a["key"], value)
+
+    @add("rerun_failed_step", "Rerun, once, a step whose tool failed, after you fixed what made it fail (you are told when a tool failed): it "
+         "runs in its own flow, from that step on, in the background.", _schema({"step": ("string", "")}, ["step"]))
+    async def _rerun_failed(a):
+        return host.rerun_failed(a["step"])
+
     @add("get_settings", "Every user-facing setting (the TUI settings dialog: general, llm, per step) with its current value and help.", none)
     async def _get_settings(a):
         from q3tui.core import settings
@@ -493,6 +486,33 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
         if not await host.confirm("Reset the LLM cost counter to $0?"):
             return "the user declined"
         return ops.reset_cost()
+
+    @add("show_history", "Q3TUI's own record of the project: the versions (one each time a step finishes, and when a flow passes: "
+         "marked passed/<flow>), newest first, with the files each one changed; `path`: only the versions that changed it.",
+         _schema({"limit": ("integer", "default 30"), "path": ("string", "a file or folder, e.g. src/rtl")}, []))
+    async def _history(a):
+        return ops.history_text(int(a.get("limit") or 30), a.get("path") or None)
+
+    @add("history_diff", "The changes between two versions of the project: from `version` (an id from show_history, passed/<flow>, HEAD~n) to "
+         "`to` (default: the last version; \"own\": what `version` itself changed); `path`: only that file or folder.",
+         _schema({"version": ("string", ""), "to": ("string", ""), "path": ("string", "")}, ["version"]))
+    async def _history_diff(a):
+        return ops.history_diff(a["version"], a.get("to") or None, a.get("path") or None)
+
+    @add("show_file_version", "A file as it was in a version of the project (show_history gives the versions).",
+         _schema({"version": ("string", ""), "path": ("string", "")}, ["version", "path"]))
+    async def _history_show(a):
+        return ops.history_show(a["version"], a["path"])
+
+    @add("restore_version", "Put files or folders (space-separated `paths`; empty: the whole project) back as they were in a version; what "
+         "changes is backed up. Only when the user asks; they are asked to confirm.",
+         _schema({"version": ("string", ""), "paths": ("string", "space-separated, e.g. src/rtl/m_lane_mul.sv")}, ["version"]))
+    async def _restore(a):
+        paths = (a.get("paths") or "").split()
+        if not await host.confirm(f"Restore {', '.join(paths) or 'the whole project'} from version {a['version']}?",
+                                  "The files are written back as they were then; what changes is backed up to .q3tui/bkp/."):
+            return "the user declined"
+        return ops.restore_version(a["version"], paths)
 
     return tools
 

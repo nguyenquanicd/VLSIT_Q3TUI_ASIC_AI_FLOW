@@ -262,6 +262,62 @@ class Ops:
         report = self.engine.import_path(p, None if kind == "all" else {kind})
         return self._log(None, import_summary(report))
 
+    # -- history (Q3TUI's own record of the project: core/history.py) --------------------------------------------
+
+    def history(self, limit: int = 30, path: str | None = None) -> list:
+        """The versions of the project, newest first (the ones that changed `path` when given), with what each one changed."""
+        from q3tui.core import history
+
+        return history.versions(self.project, limit=limit, paths=[path] if path else None, files=True)
+
+    def history_text(self, limit: int = 30, path: str | None = None) -> str:
+        from q3tui.core import history
+
+        if not history.enabled(self.project):
+            return "the history is off (pipeline.history: false in q3tui.yaml), or git is not installed"
+        found = self.history(limit, path)
+        if not found:
+            return "no versions yet: one is recorded each time a step finishes, and when a flow passes"
+        return "\n".join(f"{v.short} {v.when} {v.title}" + (f" [{', '.join(v.marks)}]" if v.marks else "")
+                         + (f" — {', '.join(v.files[:6])}{' …' if len(v.files) > 6 else ''}" if v.files else "") for v in found)
+
+    def history_diff(self, ref: str, to: str | None = None, path: str | None = None, max_lines: int | None = 400) -> str:
+        """The changes from version `ref` to `to` (default: the last version); `to` = "own": what `ref` itself changed."""
+        from q3tui.core import history
+
+        try:
+            a = history.resolve(self.project, ref)
+            b = None if to == "own" else history.resolve(self.project, to) if to else history.MAIN
+            return history.diff(self.project, a, b, [path] if path else None, max_lines) or "(no change)"
+        except history.HistoryError as exc:
+            raise EngineError(str(exc)) from exc
+
+    def history_show(self, ref: str, path: str) -> str:
+        """A file as it was in a version."""
+        from q3tui.core import history
+
+        try:
+            return history.show(self.project, ref, path)
+        except history.HistoryError as exc:
+            raise EngineError(str(exc)) from exc
+
+    def restore_version(self, ref: str, paths: list[str]) -> str:
+        """Put files / folders (none: the whole project) back as they were in a version; what changes is backed up and recorded first."""
+        from q3tui.core import history
+
+        self._not_running("restore files")
+        others = self.engine.other_runs()
+        if others:
+            raise EngineError(f"a run of {', '.join(sorted({str(o.get('flow')) for o in others}))} is going on: restore when it has ended")
+        try:
+            rev, written, gone = history.restore(self.project, ref, paths)
+        except history.HistoryError as exc:
+            raise EngineError(str(exc)) from exc
+        what = ", ".join(paths) or "the whole project"
+        return self._log(None, f"restored {what} from version {rev[:8]}: {len(written)} file(s) written, {len(gone)} deleted"
+                               + (f" ({', '.join(gone[:6])}{' …' if len(gone) > 6 else ''})" if gone else "")
+                               + " — backup in .q3tui/bkp/; the steps that read them are out of date now")
+
     # -- settings -------------------------------------------------------------------------------
 
     def stats_text(self) -> str:
@@ -494,6 +550,52 @@ class Ops:
             msg += f" (saved to {self.project.rel(self.project.save_config_values({'pipeline': {'step_flow': {step: {key: value}}}}))})"
         return self._log(None, msg)
 
+    TOOL_KEYS = ("timeout_s", "env", "modules", "cmd")
+
+    def set_tool_role(self, role: str, key: str, value) -> str:
+        """Change one field of a tool role in the project's tools file (config/tools.json): `timeout_s` (seconds; empty: the default),
+        `env` ({VAR: value}, merged; a null value removes VAR), `modules` (the list, replaced) or `cmd`. The file is backed up first."""
+        import json
+
+        from q3tui.core.config import ToolRole
+        from q3tui.eda import tools as toolmod
+
+        if key not in self.TOOL_KEYS:
+            raise EngineError(f"unknown tool field '{key}' (one of {', '.join(self.TOOL_KEYS)})")
+        path = toolmod.tools_file(self.project.cfg, self.project.root)
+        if path is None or path.suffix != ".json" or path.parent != self.project.config_dir:
+            raise EngineError(f"the tools file is {path or 'missing'}: only the project's {self.project.rel(self.project.config_dir / 'tools.json')} is changed here")
+        data = toolmod.load_file(path)
+        roles = data.get("roles") or {}
+        if role not in roles:
+            raise EngineError(f"no tool role '{role}' in {self.project.rel(path)} (roles: {', '.join(sorted(roles)) or 'none'})")
+        new = dict(roles[role])
+        if key == "env":
+            if not isinstance(value, dict):
+                raise EngineError("env takes {VAR: value} (null removes VAR)")
+            env = dict(new.get("env") or {})
+            for k, v in value.items():
+                if v is None:
+                    env.pop(str(k), None)
+                else:
+                    env[str(k)] = str(v)
+            new["env"] = env
+        elif key == "modules":
+            new["modules"] = [str(m) for m in (value.split() if isinstance(value, str) else value or [])]
+        elif key == "timeout_s":
+            new["timeout_s"] = int(value) if value not in (None, "") else None
+        else:
+            new["cmd"] = str(value)
+        try:
+            ToolRole.model_validate(new)
+        except Exception as exc:  # noqa: BLE001 - said, nothing written
+            raise EngineError(f"{role}.{key}: {exc}") from exc
+        self.project.backup([path])
+        roles[role] = new
+        data["roles"] = roles
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        return self._log(None, f"tools: {role}.{key} = {json.dumps(new.get(key))} ({self.project.rel(path)}; the old one is backed up)")
+
     def save_flow_steps(self, steps: list[dict]) -> str:
         """Add / remove / reorder / rewire the flow's steps: `steps` = the new list (id, kind, deps, gate, title, label, options,
         view, pass, notes). Saved into the project's flows/ (a built-in flow is forked there); takes effect when Q3TUI restarts."""
@@ -598,37 +700,6 @@ class Ops:
         s = self.engine.cost_summary()
         per_step = ", ".join(f"{n} ${u:.2f}" for n, u in s["steps"].items()) or "no step costs"
         return f"pipeline ${s['total_usd']:.2f} ({per_step}); this session ${self.engine.bus.cost_usd:.2f}"
-
-    # -- lanes (docs/spec/lanes.md) -----------------------------------------------------------------------------------
-
-    def tag(self, name: str | None = None, force: bool = False) -> str:
-        """Freeze the design (the design flows' steps) as a tag the lanes check."""
-        from q3tui.core import lanes
-
-        self._not_running("tag the design")
-        info = lanes.make_tag(self.project, name or None, force)
-        return self._log(None, f"tag {info['name']}: {info['files']} file(s), {info['bytes'] / 1e6:.1f} MB"
-                               + (f" (from {info['previous']})" if info["previous"] else "")
-                               + (" — forced: " + "; ".join(info["forced"][:4]) if info["forced"] else ""))
-
-    def lanes_status(self) -> str:
-        """The tags and each lane's result on them."""
-        from q3tui.core import lanes
-
-        return lanes.status_text(self.project)
-
-    def lanes_merge_preview(self, tag: str | None = None) -> str:
-        """What `q3tui lanes merge` would take from the latest tag's lanes."""
-        from q3tui.core import lanes
-
-        tag = tag or lanes.latest_tag(self.project)
-        if not tag:
-            raise EngineError("no tag yet")
-        plan = lanes.merge_plan(self.project, tag)
-        lines = [f"{tag}: requests of {', '.join(plan.lanes) or '(no lane)'} ({len(plan.requests)}); own steps: "
-                 + (", ".join(f"{s} ({l})" for s, l in plan.own.items()) or "(none)")]
-        lines += [f"both changed {o}" for o in plan.overlaps] + [f"CONFLICT {o}" for o in plan.conflicts]
-        return "\n".join(lines)
 
     def reset_stats(self) -> str:
         """Usage statistics start over (tokens, cost, LLM and wall time per model / step / stage)."""
