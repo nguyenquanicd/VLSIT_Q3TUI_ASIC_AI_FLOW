@@ -47,7 +47,7 @@ async def test_item_lays_out_media_content_and_actions_across_the_row():
         )
         assert media.render().plain == icon("file")
         assert media.region.x < content.region.x < actions.region.x
-        assert actions.region.right <= app.query_one("#r").region.right - 1  # Text padding.
+        assert actions.region.right == app.query_one("#r").region.right  # No inset: the panel gives it.
         assert app.query_one(ItemTitle).region.y < app.query_one(ItemDescription).region.y
 
 

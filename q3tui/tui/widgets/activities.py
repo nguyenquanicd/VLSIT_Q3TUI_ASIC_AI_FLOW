@@ -77,7 +77,6 @@ class EventLog(MessageScroller):
 
     DEFAULT_CSS = """
     EventLog CollapsibleContent { padding: 0 0 0 2; }
-    EventLog TraceLine, EventLog Marker { padding: 0; }
     """
 
     def __init__(self, events: Iterable[dict] = (), *, id: str | None = None) -> None:

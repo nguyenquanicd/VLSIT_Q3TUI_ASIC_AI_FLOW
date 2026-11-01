@@ -74,7 +74,7 @@ class Item(Horizontal):
     """
 
     DEFAULT_CSS = """
-    Item { width: 1fr; height: auto; padding: 0 1; }
+    Item { width: 1fr; height: auto; }
     Item.-muted { background: $surface;
         border-top: outer transparent; border-bottom: outer transparent; }
     Item.-outline ItemTitle { text-style: bold underline; }

@@ -191,9 +191,9 @@ class SettingRow(Field):
 class SettingsScreen(PartScreen):
     DEFAULT_CSS = """
     SettingsScreen #settings-body { margin: 1 0; }
-    SettingsScreen #settings-head { height: 1; margin: 0 0 1 0; }
+    SettingsScreen #settings-head { height: 1; margin-bottom: 1; }
     SettingsScreen #search { width: 1fr; }
-    SettingsScreen .skeleton-row { margin: 0 0 1 0; }
+    SettingsScreen .skeleton-row { margin-bottom: 1; }
     SettingsScreen .skeleton-row.-title { width: 24; }
     SettingsScreen #chat-side { display: none; }
     SettingsScreen.-assistant #chat-side { display: block; }

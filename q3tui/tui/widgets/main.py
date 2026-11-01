@@ -50,7 +50,6 @@ class ItemList(ItemGroup):
 
     DEFAULT_CSS = """
     ItemList { height: auto; }
-    ItemList Item { padding: 0; }
     ItemList Item.-chosen { background: $surface; }
     ItemList Item:focus { background: $panel; }
     ItemList Item.-tone-ok ItemMedia { color: $text-success; }
@@ -85,8 +84,7 @@ class StepMain(Vertical):
     StepMain #main-header Button { margin-left: 1; }
     StepMain Tabs { height: 1fr; }
     StepMain TabsContent { height: 1fr; margin-top: 0; }
-    StepMain .view-detail { padding: 0; }
-    StepMain .missing { color: $text-muted; padding: 1 0; }
+    StepMain .missing { color: $text-muted; margin-top: 1; }
     StepMain #main-errors { height: 1fr; }
     StepMain #main-errors Alert { margin-bottom: 1; }
     """

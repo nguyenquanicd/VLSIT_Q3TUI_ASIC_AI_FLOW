@@ -166,7 +166,7 @@ class ChatPanel(Vertical):
     ChatPanel #chat-head TextButton { width: auto; margin-left: 1; }
     ChatPanel MessageScroller { height: 1fr; }
     ChatPanel .chat-you { margin: 1 0 0 0; }
-    ChatPanel .chat-text { width: 1fr; height: auto; margin-top: 1; padding: 0; }
+    ChatPanel .chat-text { width: 1fr; height: auto; margin-top: 1; }
     ChatPanel .chat-tool { height: auto; color: $text-muted; }
     ChatPanel .chat-note { height: auto; color: $text-muted; }
     ChatPanel #chat-commands { height: auto; max-height: 10; }

@@ -23,7 +23,7 @@ class Marker(Horizontal):
     """
 
     DEFAULT_CSS = """
-    Marker { width: 1fr; height: auto; padding: 0 1; color: $text-muted; }
+    Marker { width: 1fr; height: auto; color: $text-muted; }
     Marker.-border { border-bottom: solid $foreground 30%; }
     Marker > .marker-icon { width: auto; margin-right: 1; }
     Marker > .marker-text { width: auto; }

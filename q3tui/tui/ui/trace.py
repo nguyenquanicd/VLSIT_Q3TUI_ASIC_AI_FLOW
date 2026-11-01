@@ -36,7 +36,7 @@ class TraceLine(Action):
     """
 
     DEFAULT_CSS = """
-    TraceLine { width: 1fr; height: 1; padding: 0 1; color: $text-muted; }
+    TraceLine { width: 1fr; height: 1; color: $text-muted; }
     TraceLine.-running { color: $foreground; text-style: bold; }
     TraceLine.-error { color: $text-error; }
     TraceLine.-pending { color: $text-muted; text-style: dim; }

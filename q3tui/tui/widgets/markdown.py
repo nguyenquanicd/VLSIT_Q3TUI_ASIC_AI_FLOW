@@ -89,6 +89,7 @@ class DiagramFence(MarkdownFence):
 
 
 class Q3Markdown(Markdown):
+    DEFAULT_CSS = "Q3Markdown { padding: 0; }"  # the panel gives the inset
     BLOCKS = {**Markdown.BLOCKS, "fence": DiagramFence, "code_block": DiagramFence}
 
 
