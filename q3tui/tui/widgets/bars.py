@@ -172,6 +172,8 @@ class StatusBar(Widget):
     DEFAULT_CSS = """
     StatusBar { dock: bottom; height: 1; layout: horizontal; background: $surface; padding: 0 1; }
     StatusBar #status { width: auto; padding-right: 2; }
+    StatusBar #focus { width: auto; max-width: 50%; padding-right: 2; text-style: bold; text-wrap: nowrap;
+        text-overflow: ellipsis; }
     StatusBar #keys { width: 1fr; color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
     StatusBar #cwd { width: auto; color: $text-muted; }
     """
@@ -182,6 +184,7 @@ class StatusBar(Widget):
 
     def compose(self) -> ComposeResult:
         yield Static(status_content(self.status or "idle"), id="status")
+        yield Static("", id="focus", markup=False)
         yield Static("", id="keys")
         yield Static(self.cwd, id="cwd", markup=False)
 
@@ -189,10 +192,15 @@ class StatusBar(Widget):
         self.status = text or "idle"
         self.query_one("#status", Static).update(status_content(self.status))
 
+    def set_focus(self, label: str) -> None:
+        """What has the focus, before its keys."""
+        self.query_one("#focus", Static).update(label)
+
     def set_keys(self, keys: list[tuple[str, str]]) -> None:
         parts: list = []
         for key, what in keys:
             if parts:
                 parts.append(("  ", ""))
-            parts += [(key_label(key), "bold"), (f" {what}", "")]
+            label = key if len(key) == 1 else key_label(key)  # `t` is not `T` (Shift+T)
+            parts += [(label, "bold"), (f" {what}", "")]
         self.query_one("#keys", Static).update(Content.assemble(*parts))

@@ -84,3 +84,47 @@ def hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
             return [("enter", "send"), ("shift+enter", "new line"), ("alt+1", "hide assistant"), *move]
         return [("escape", "back"), ("ctrl+f", "search"), ("alt+1", "assistant"), *move]
     return move
+
+
+def focus_label(screen, focused: Widget | None) -> str:
+    """What has the focus, in a few words, shown before the keys: `Flow ▸ spec`, `Main ▸ spec ▸ Log`, `Activities`."""
+    if focused is None:
+        return ""
+    if _find(focused, "TitleBar"):
+        label = str(getattr(focused, "label", "") or "").strip()
+        return f"Title bar ▸ {label}" if label else "Title bar"
+    kind = type(screen).__name__
+    if kind == "HomeScreen":
+        if _find(focused, "PromptBox"):
+            return "Input"
+        alerts = _find(focused, "AlertList")
+        if alerts is not None:
+            items = alerts.items
+            return f"Alerts ▸ {alerts.index + 1}/{len(items)}" if items else "Alerts"
+    if kind == "WorkspaceScreen":
+        if _find(focused, "ChatInput"):
+            return "Assistant ▸ input"
+        if _find(focused, "ChatPanel"):
+            return "Assistant"
+        row = _find(focused, "FlowRow")
+        if row is not None:
+            return f"Flow ▸ {'stage ' if row.kind == 'stage' else ''}{row.ident}"
+        if _find(focused, "FlowTree") or _find(focused, "TabsTrigger") and _find(focused, "ResizablePanel"):
+            return "Flow"
+        main = _find(focused, "StepMain")
+        if main is not None:
+            tabs = main.query("Tabs")
+            tab = tabs.first().value.removeprefix("view-") if tabs else ""
+            return " ▸ ".join(x for x in ("Main", main.step or "", tab) if x)
+        if _find(focused, "Activities"):
+            return "Activities"
+    if kind == "SettingsScreen":
+        if getattr(focused, "id", "") == "search":
+            return "Settings ▸ search"
+        row = _find(focused, "SettingRow")
+        if row is not None:
+            return f"Settings ▸ {row.config_layer} ▸ {row.key.dotted}"
+        if _find(focused, "ChatPanel"):
+            return "Assistant"
+        return "Settings"
+    return type(focused).__name__

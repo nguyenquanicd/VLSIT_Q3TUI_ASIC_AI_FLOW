@@ -205,6 +205,10 @@ class StepMain(Vertical):
         if item is not None and details:
             details.first(Markdown).update(item.detail)
 
+    @on(Tabs.Changed, "#main-tabs")
+    def _tab_changed(self, event: Tabs.Changed) -> None:
+        self.app.refresh_keys()
+
     @on(OptionList.OptionSelected, "#list-questions")
     def _question_chosen(self, event: OptionList.OptionSelected) -> None:
         self.post_message(self.Do("answer_one", self.step, ("question", event.option.id)))

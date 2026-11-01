@@ -119,10 +119,11 @@ class Q3App(App):
     # -- the bars -----------------------------------------------------------------------------------
 
     def refresh_keys(self) -> None:
-        from q3tui.tui.keyhints import hints
+        from q3tui.tui.keyhints import focus_label, hints
 
         screen = self.screen
         for bar in screen.query(StatusBar):
+            bar.set_focus(focus_label(screen, screen.focused))
             bar.set_keys(hints(screen, screen.focused))
 
     def set_status(self, text: str) -> None:

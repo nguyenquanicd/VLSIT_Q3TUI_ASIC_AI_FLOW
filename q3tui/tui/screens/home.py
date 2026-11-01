@@ -72,6 +72,8 @@ class AlertList(Vertical, can_focus=True):
         for n, item in enumerate(items):
             item.set_class(shown and n == self.index, "-selected")
         items[self.index].scroll_visible(animate=False)
+        if self.has_focus:
+            self.app.refresh_keys()
 
     def on_focus(self) -> None:
         self.select(self.index)
