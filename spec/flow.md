@@ -302,6 +302,8 @@ Every kind takes `title` (its label); `sections` and `table` also take `review`.
 
 - Without `view`, the UI picks `document` for a path that names one file and `files` for a
   glob.
+- `state` maps a row's field to its mark; a field that is a boolean or a number is matched by
+  its JSON text (`true`, `false`, `0.3`), so `{"true": warn}` and `{true: warn}` both match.
 - `review: true` (only with `sections` and `table`): each section or row is a review item
   (Engine, "Gates").
 - These four kinds are the only ones (a kind of your own is an open item of Extensibility).

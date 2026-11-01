@@ -87,6 +87,7 @@ class StepMain(Vertical):
     StepMain Tabs { height: 1fr; }
     StepMain TabsContent { height: 1fr; margin-top: 1; }
     StepMain .missing { color: $text-muted; margin-top: 1; }
+    StepMain .item-blank { width: 1; height: 1; margin-right: 1; }  /* as ItemMedia */
     StepMain .list-header { height: 1; text-style: bold; color: $text-muted; text-wrap: nowrap;
         text-overflow: ellipsis; }
     StepMain #main-errors { height: 1fr; }
@@ -150,9 +151,11 @@ class StepMain(Vertical):
             yield VerticalScroll(Q3Markdown(v.text, classes="view-detail"))
             return
         rows = []
+        marked = any(it.state in ITEM_STATE for it in v.items)
         for it in v.items:
             known = ITEM_STATE.get(it.state)  # a mark only when the row has a state (review, or a table's `state`)
-            parts = [ItemMedia(known[0])] if known else []
+            blank = [Static(" ", classes="item-blank")] if marked else []  # in line with the marked rows
+            parts = [ItemMedia(known[0])] if known else blank
             rows.append(Item(*parts, ItemContent(ItemTitle(it.label)), value=it.id,
                              classes=f"-tone-{known[1] if known else 'plain'}"))
         if rows:
@@ -160,7 +163,7 @@ class StepMain(Vertical):
         first = v.items[0].detail if v.items else ""
         listing = _scroll(ItemList(*rows, id=f"list-{v.artifact}"))
         if v.header:  # a table: its column titles over the rows, which do not scroll away
-            indent = " " * 2 if any(it.state in ITEM_STATE for it in v.items) else ""  # past a row's mark
+            indent = " " * 2 if marked else ""  # past a row's mark
             listing = Vertical(Static(indent + v.header, classes="list-header", markup=False), listing,
                                classes="list-with-header")
         yield ResizablePanelGroup(

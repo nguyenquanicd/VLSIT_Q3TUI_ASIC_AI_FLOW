@@ -38,7 +38,11 @@ def _state_of(row, spec: dict | None) -> str:
     if not spec or not isinstance(row, dict):
         return ""
     value = row.get(spec.get("field", "state"))
-    return (spec.get("map") or {}).get(value, str(value) if value is not None else "")
+    if value is None:
+        return ""
+    text = json.dumps(value) if isinstance(value, (bool, int, float)) else str(value)  # true, 0.3
+    mapping = {str(k).lower() if isinstance(k, bool) else str(k): v for k, v in (spec.get("map") or {}).items()}
+    return mapping.get(text, text)
 
 
 def _title(col) -> str:

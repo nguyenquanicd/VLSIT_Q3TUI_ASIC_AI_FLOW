@@ -483,3 +483,40 @@ async def test_a_table_shows_its_column_titles_over_its_rows(tmp_path, home):
         titles = [str(t.render()) for t in main.query("#list-reqs ItemTitle")]
         assert header == "id      ambiguity  text"  # titles, else the field; three columns
         assert titles == ["REQ-1   0.1        a", "REQ-10  0.15       b"]
+
+
+def test_a_state_map_matches_a_boolean_or_a_number_by_its_text():
+    from q3tui.tui.views import _state_of
+
+    quoted = {"field": "needs_review", "map": {"true": "warn", "false": "ok"}}
+    bare = {"field": "needs_review", "map": {True: "warn", False: "ok"}}  # YAML `{true: warn}`
+    for spec in (quoted, bare):
+        assert _state_of({"needs_review": True}, spec) == "warn"
+        assert _state_of({"needs_review": False}, spec) == "ok"
+    assert _state_of({"n": 1}, {"field": "n", "map": {"1": "error"}}) == "error"
+    assert _state_of({"state": "approved"}, {"map": {"approved": "ok"}}) == "ok"
+    assert _state_of({}, quoted) == ""
+
+
+async def test_a_row_without_a_mark_stays_in_line_with_the_marked_rows(tmp_path, home):
+    import json
+
+    write(home / "steps/rtl/STEP.md",
+          "---\nname: rtl\ndescription: writes the RTL\nversion: 1.0.0\n"
+          "inputs:\n  - {artifact: spec}\noutputs:\n"
+          "  - {artifact: reqs, path: reqs.json, view: {kind: table, rows: \"$.r\", id: id,"
+          " columns: [id], state: {field: review, map: {\"true\": warn}}}}\n---\n")
+    write(tmp_path / "proj/reqs.json", json.dumps({"r": [{"id": "A", "review": True},
+                                                        {"id": "B", "review": False}]}))
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        main = app.screen.query_one(StepMain)
+        await main.show("rtl")
+        await pilot.pause()
+        rows = list(main.query("#list-reqs Item"))
+        assert len(rows[0].query("ItemMedia")) == 1 and not rows[1].query("ItemMedia")  # only warn
+        a, b = (r.query_one("ItemTitle").region.x for r in rows)
+        header = main.query_one(".list-header")
+        assert a == b and str(header.render()) == "  id" and header.region.x + 2 == a
