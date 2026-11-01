@@ -198,6 +198,8 @@ smoke
   when the step has questions; `Log`.
 - **A view tab** with items (`sections`, `table`, `files`) is a list and a detail, split by a
   divider of the resizable component; a `document` takes the whole width.
+- A `table`'s list shows the first three of its `columns`, lined up under a header of their
+  titles (a column's `title`, else its field) that stays in place while the rows scroll.
 - **The Log tab** shows only the events of the step in view, from every run and from
   outside runs, each with its time (read from `events.jsonl`). Activities shows the events
   of the run going on and the events outside runs of this session.

@@ -7,6 +7,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rich.cells import cell_len
+
 from q3tui.engine import Engine
 from q3tui.engine.artifacts import is_glob, json_path
 from q3tui.engine.views import rows, sections
@@ -29,6 +31,7 @@ class View:
     items: list[Item] = field(default_factory=list)
     text: str = ""  # a document
     missing: bool = False
+    header: str = ""  # a table: the titles of its columns, lined up with the rows' labels
 
 
 def _state_of(row, spec: dict | None) -> str:
@@ -36,6 +39,17 @@ def _state_of(row, spec: dict | None) -> str:
         return ""
     value = row.get(spec.get("field", "state"))
     return (spec.get("map") or {}).get(value, str(value) if value is not None else "")
+
+
+def _title(col) -> str:
+    """A column's title: its `title`, else its field."""
+    return col if isinstance(col, str) else str(col.get("title") or col.get("field", ""))
+
+
+def _line_up(lines: list[list[str]]) -> list[str]:
+    """Each line's cells padded to their column's width (the last cell is not padded)."""
+    widths = [max(cell_len(line[n]) for line in lines) for n in range(len(lines[0]))]
+    return ["  ".join(c + " " * (w - cell_len(c)) for c, w in zip(line, widths)).rstrip() for line in lines]
 
 
 def _cell(row, col) -> str:
@@ -73,8 +87,13 @@ def build_views(engine: Engine, sid: str) -> list[View]:
                 data = json.loads(files[0].read_text())
                 cols = view.get("columns") or []
                 detail_fields = view.get("detail") or []
-                for rid, row in rows(data, view).items():
-                    label = "  ".join(_cell(row, c) for c in cols[:3]) or rid
+                found = rows(data, view)
+                shown = cols[:3]  # the list shows the first three columns
+                header, *labels = _line_up([[_title(c) for c in shown],
+                                            *([_cell(row, c) for c in shown] for row in found.values())])
+                v.header = header if shown else ""
+                for (rid, row), label in zip(found.items(), labels):
+                    label = label or rid
                     detail = "\n\n".join(f"**{d}**: {_cell(row, d)}" for d in detail_fields) or \
                         f"```json\n{json.dumps(row, indent=2)}\n```"
                     state = status.get(rid, {}).get("status", "") if v.review else _state_of(row, view.get("state"))

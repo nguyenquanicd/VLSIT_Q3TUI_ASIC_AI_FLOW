@@ -87,6 +87,8 @@ class StepMain(Vertical):
     StepMain Tabs { height: 1fr; }
     StepMain TabsContent { height: 1fr; margin-top: 1; }
     StepMain .missing { color: $text-muted; margin-top: 1; }
+    StepMain .list-header { height: 1; text-style: bold; color: $text-muted; text-wrap: nowrap;
+        text-overflow: ellipsis; }
     StepMain #main-errors { height: 1fr; }
     StepMain #main-errors Alert { margin-bottom: 1; }
     """
@@ -156,8 +158,13 @@ class StepMain(Vertical):
         if rows:
             rows[0].add_class("-chosen")
         first = v.items[0].detail if v.items else ""
+        listing = _scroll(ItemList(*rows, id=f"list-{v.artifact}"))
+        if v.header:  # a table: its column titles over the rows, which do not scroll away
+            indent = " " * 2 if any(it.state in ITEM_STATE for it in v.items) else ""  # past a row's mark
+            listing = Vertical(Static(indent + v.header, classes="list-header", markup=False), listing,
+                               classes="list-with-header")
         yield ResizablePanelGroup(
-            ResizablePanel(_scroll(ItemList(*rows, id=f"list-{v.artifact}")), size=35),
+            ResizablePanel(listing, size=35),
             ResizableHandle(),
             ResizablePanel(VerticalScroll(Q3Markdown(first, classes="view-detail", id=f"detail-{v.artifact}")), size=65),
         )

@@ -459,3 +459,27 @@ async def test_another_section_shows_from_its_top(tmp_path, home):
         await pilot.pause(0.3)
         assert scroller.scroll_y == 0
         assert scroller.vertical_scrollbar.position == 0
+
+
+async def test_a_table_shows_its_column_titles_over_its_rows(tmp_path, home):
+    import json
+
+    write(home / "steps/rtl/STEP.md",
+          "---\nname: rtl\ndescription: writes the RTL\nversion: 1.0.0\n"
+          "inputs:\n  - {artifact: spec}\noutputs:\n"
+          "  - {artifact: reqs, path: reqs.json, view: {kind: table, rows: \"$.r\", id: id,"
+          " columns: [id, {field: score, title: ambiguity}, text, more]}}\n---\n")
+    write(tmp_path / "proj/reqs.json", json.dumps({"r": [
+        {"id": "REQ-1", "score": 0.1, "text": "a", "more": "x"},
+        {"id": "REQ-10", "score": 0.15, "text": "b", "more": "y"}]}))
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(160, 45)) as pilot:
+        await pilot.pause()
+        main = app.screen.query_one(StepMain)
+        await main.show("rtl")
+        await pilot.pause()
+        header = str(main.query_one(".list-header").render())
+        titles = [str(t.render()) for t in main.query("#list-reqs ItemTitle")]
+        assert header == "id      ambiguity  text"  # titles, else the field; three columns
+        assert titles == ["REQ-1   0.1        a", "REQ-10  0.15       b"]
