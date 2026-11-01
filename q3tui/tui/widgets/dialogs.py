@@ -122,5 +122,5 @@ class CostDialog(Dialog):
         resets = cost.get("resets") or []
         note = f"Reset {len(resets)} time(s), last at {resets[-1]['at']}." if resets else "Never reset."
         super().__init__(DialogHeader(DialogTitle("Cost"), DialogDescription(note)), Static(table, markup=False),
-                         DialogFooter(DialogClose("Close", None, key="escape"), DialogClose("Reset cost", "reset")),
+                         DialogFooter(DialogClose("Close", None, key="escape"), DialogClose("Reset cost", "reset", variant="error")),
                          width=64)
