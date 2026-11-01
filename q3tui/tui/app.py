@@ -38,6 +38,7 @@ SHORTCUTS = [
     ("a / A", "approve / approve by force"), ("r", "send a change request"), ("q", "answer the next open question"),
     ("c / C", "confirm the selected item / every item"), ("w", "ask for a change to the selected item"),
     ("m", "ask the assistant about the selected item"), ("[ ]", "previous / next tab of Main"),
+    ("Shift+F10", "the menu of the Flow tree row"),
     ("Enter / Shift+Enter", "chat: send / new line"), ("Esc", "chat: stop the answer"), ("Ctrl+L", "chat: new chat"),
 ]
 

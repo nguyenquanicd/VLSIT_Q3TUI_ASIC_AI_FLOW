@@ -1,5 +1,5 @@
-"""The Flow tab: the stages and their steps, each with its display state; the selected row shows its buttons
-(spec/tui.md "Flow tree")."""
+"""The Flow tab: the stages and their steps, each with its display state; the selected row shows its buttons, and
+[⋯], a right click or Shift+F10 opens its context menu (spec/tui.md "Flow tree")."""
 
 from __future__ import annotations
 
@@ -16,7 +16,9 @@ from q3tui.engine.engine import StepStatus
 from q3tui.flowdef import Flow
 from q3tui.tui.labels import DISPLAY, state_icon
 from q3tui.tui.ui.action import Action
+from q3tui.tui.ui.context_menu import ContextMenu
 from q3tui.tui.ui.icons import icon
+from q3tui.tui.ui.menu import MenuContent
 
 
 class RowButton(Action):
@@ -33,6 +35,10 @@ class RowButton(Action):
 
     def activate(self) -> None:
         row = next(a for a in self.ancestors if isinstance(a, FlowRow))
+        if self.action == "more":  # the menu opens under the button
+            row.focus()
+            row.post_message(FlowTree.Act(row.flow_tree, row.kind, row.ident, "more", (self.region.x, self.region.bottom)))
+            return
         row.post_message(FlowTree.Act(row.flow_tree, row.kind, row.ident, self.action))
 
 
@@ -80,7 +86,9 @@ class FlowRow(Horizontal, can_focus=True):
 
     def on_click(self, event: events.Click) -> None:
         if event.button == 3:
-            self.post_message(FlowTree.Act(self.flow_tree, self.kind, self.ident, "more"))
+            self.focus()
+            self.post_message(FlowTree.Act(self.flow_tree, self.kind, self.ident, "more",
+                                           (event.screen_x, event.screen_y + 1)))
             return
         self.focus()
         if self.kind == "step":
@@ -107,6 +115,7 @@ class FlowTree(VerticalScroll):
         Binding("down", "move(1)", show=False),
         Binding("left", "fold(False)", show=False),
         Binding("right", "fold(True)", show=False),
+        Binding("shift+f10", "more", show=False),
     ]
 
     class Selected(Message):
@@ -115,11 +124,12 @@ class FlowTree(VerticalScroll):
             self.tree, self.step = tree, step
 
     class Act(Message):
-        """A button of a row: `action` is run, rerun or more."""
+        """A button of a row: `action` is run, rerun or more (`at`: where its menu opens, a screen cell)."""
 
-        def __init__(self, tree: FlowTree, kind: str, name: str, action: str) -> None:
+        def __init__(self, tree: FlowTree, kind: str, name: str, action: str,
+                     at: tuple[int, int] | None = None) -> None:
             super().__init__()
-            self.tree, self.kind, self.name, self.action = tree, kind, name, action
+            self.tree, self.kind, self.name, self.action, self.at = tree, kind, name, action, at
 
     def __init__(self, flow: Flow | None, *, id: str | None = None) -> None:
         super().__init__(id=id)
@@ -130,6 +140,7 @@ class FlowTree(VerticalScroll):
         if self.flow is None or not self.flow.stages:
             yield Static("No flow loaded", classes="flow-empty")
             return
+        yield RowMenu()
         for stage in self.flow.stages:
             yield FlowRow(self, "stage", stage.name)
             for n, sid in enumerate(stage.steps):
@@ -174,6 +185,18 @@ class FlowTree(VerticalScroll):
             raise SkipAction()
         rows[(rows.index(focused) + direction) % len(rows)].focus()
 
+    def action_more(self) -> None:
+        focused = self.screen.focused
+        if not isinstance(focused, FlowRow):
+            raise SkipAction()
+        self.post_message(self.Act(self, focused.kind, focused.ident, "more", (focused.region.x, focused.region.bottom)))
+
+    def open_menu(self, content: MenuContent, at: tuple[int, int]) -> None:
+        """Opens on the menu's own queue: opening waits for a refresh, which the caller's handler would hold up."""
+        menu = self.query_one(RowMenu)
+        menu.menus[0].content = content
+        menu.call_later(menu.open_at, *at)
+
     def action_fold(self, expand: bool) -> None:
         focused = self.screen.focused
         if not isinstance(focused, FlowRow):
@@ -183,3 +206,12 @@ class FlowTree(VerticalScroll):
         elif not expand:
             stage = self.flow.stage_of(focused.ident).name
             next(r for r in self.query(FlowRow) if r.kind == "stage" and r.ident == stage).focus()
+
+
+class RowMenu(ContextMenu):
+    """The context menu of a row; its items are set each time it opens (FlowTree.open_menu)."""
+
+    DEFAULT_CSS = "RowMenu { height: 0; }"
+
+    def __init__(self) -> None:
+        super().__init__(MenuContent())

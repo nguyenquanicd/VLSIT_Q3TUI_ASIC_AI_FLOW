@@ -61,9 +61,9 @@ def _hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
         row = _find(focused, "FlowRow")
         if row is not None:
             if row.kind == "stage":
-                return [("↑↓", "move"), ("enter", "fold"), ("←→", "close / open"), *move]
+                return [("↑↓", "move"), ("enter", "fold"), ("←→", "close / open"), ("shift+f10", "menu"), *move]
             display = row.status.display if row.status else None
-            return [("↑↓", "move"), ("enter", "view"), *_step_keys(display), *move]
+            return [("↑↓", "move"), ("enter", "view"), *_step_keys(display), ("shift+f10", "menu"), *move]
         main = _find(focused, "StepMain")
         if main is not None and main.step:
             ops = screen.app.opened.ops

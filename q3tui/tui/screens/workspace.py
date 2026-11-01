@@ -10,7 +10,17 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 
 from q3tui.tui.screens.base import PartScreen
-from q3tui.tui.ui.command import CommandDialog, CommandItem
+from q3tui.tui.ui.context_menu import ContextMenu
+from q3tui.tui.ui.menu import (
+    MenuContent,
+    MenuItem,
+    MenuRadioGroup,
+    MenuRadioItem,
+    MenuSeparator,
+    MenuSub,
+    MenuSubContent,
+    MenuSubTrigger,
+)
 from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePanelGroup
 from q3tui.tui.ui.tabs import Tabs, TabsContent, TabsList, TabsTrigger
 from q3tui.tui.widgets.activities import Activities
@@ -189,31 +199,43 @@ class WorkspaceScreen(PartScreen):
 
     @on(FlowTree.Act)
     def _row_button(self, event: FlowTree.Act) -> None:
-        if event.kind == "stage":
-            if event.action == "run":
-                self.app.start_run(stage=event.name)
-            else:
-                self.app.push_screen(CommandDialog(*[CommandItem(f"Gate ▸ {g}", f"gate-stage:{event.name}:{g}")
-                                                     for g in ("manual", "auto", "unattended")]), self.app.menu_value)
-            return
-        if event.action == "run":
+        if event.action == "more":
+            content = self.stage_menu(event.name) if event.kind == "stage" else self.step_menu(event.name)
+            self.tree.open_menu(content, event.at or (0, 0))
+        elif event.kind == "stage":
+            self.app.start_run(stage=event.name)
+        elif event.action == "run":
             self.app.start_run(to=event.name)
-        elif event.action == "rerun":
-            self.app.start_run(rerun=[event.name])
         else:
-            self.app.push_screen(CommandDialog(*self.step_menu(event.name)), self.app.menu_value)
+            self.app.start_run(rerun=[event.name])
 
-    def step_menu(self, sid: str) -> list[CommandItem]:
-        items = [CommandItem("Run only", f"step:{sid}:run_only"), CommandItem("Run from here", f"step:{sid}:run_from"),
-                 CommandItem("Regenerate", f"step:{sid}:regenerate"),
-                 CommandItem("Reset (with the steps after it)", f"step:{sid}:reset"),
-                 CommandItem("Reset only this step", f"step:{sid}:reset_only")]
-        items += [CommandItem(f"Gate ▸ {g}", f"gate-step:{sid}:{g}") for g in ("manual", "auto", "unattended")]
+    @on(ContextMenu.Selected)
+    def _row_menu(self, event: ContextMenu.Selected) -> None:
+        event.stop()
+        self.app.menu_value(event.value)
+
+    def _gate_sub(self, prefix: str, current: str) -> MenuSub:
+        """Gate ▸ manual / auto / unattended, the one in effect marked (none when the steps differ)."""
+        radios = [MenuRadioItem(g, f"{prefix}:{g}", close_on_select=True) for g in ("manual", "auto", "unattended")]
+        return MenuSub(MenuSubTrigger("Gate"), MenuSubContent(MenuRadioGroup(*radios, value=f"{prefix}:{current}")))
+
+    def stage_menu(self, stage: str) -> MenuContent:
         ops = self.app.opened.ops
-        for a in ops.actions() if ops else []:
-            if a.step == sid:
-                items.append(CommandItem(f"Actions ▸ {a.name}", f"action:{a.name}", description=a.doc))
-        return items
+        steps = next(s for s in ops.engine.flow.stages if s.name == stage).steps if ops else []
+        gates = {ops.engine.gate(sid) for sid in steps} if ops else set()
+        return MenuContent(self._gate_sub(f"gate-stage:{stage}", gates.pop() if len(gates) == 1 else ""))
+
+    def step_menu(self, sid: str) -> MenuContent:
+        ops = self.app.opened.ops
+        items: list = [MenuItem("Run only", f"step:{sid}:run_only"), MenuItem("Run from here", f"step:{sid}:run_from"),
+                       MenuItem("Regenerate", f"step:{sid}:regenerate"), MenuSeparator(),
+                       MenuItem("Reset (with the steps after it)", f"step:{sid}:reset"),
+                       MenuItem("Reset only this step", f"step:{sid}:reset_only"), MenuSeparator(),
+                       self._gate_sub(f"gate-step:{sid}", ops.engine.gate(sid) if ops else "")]
+        actions = [MenuItem(a.name, f"action:{a.name}") for a in (ops.actions() if ops else []) if a.step == sid]
+        if actions:
+            items.append(MenuSub(MenuSubTrigger("Actions"), MenuSubContent(*actions)))
+        return MenuContent(*items)
 
     @on(StepMain.Do)
     def _main_do(self, event: StepMain.Do) -> None:

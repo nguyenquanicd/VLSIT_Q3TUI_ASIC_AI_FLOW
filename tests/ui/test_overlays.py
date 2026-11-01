@@ -236,7 +236,10 @@ async def test_context_menu_opens_at_the_pointer_on_right_click_and_selects():
         menu = app.query_one("#ctx", ContextMenu)
         field = app.query_one("#field")
         await pilot.click(field, offset=(5, 1), button=3)
-        await pilot.pause()
+        for _ in range(20):  # the menu opens after the anchor's layout
+            await pilot.pause(0.05)
+            if menu.active_popup is not None:
+                break
         popup = menu.active_popup
         assert popup is not None
         assert popup.region.y == field.region.y + 1 and popup.region.x == field.region.x + 5

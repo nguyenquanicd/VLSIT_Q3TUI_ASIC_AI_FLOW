@@ -197,3 +197,37 @@ async def test_alt_number_picks_a_tab_of_the_tabs_around_the_focus(tmp_path, hom
         await pilot.press("alt+3")
         await pilot.pause(0.5)
         assert app.screen.query_one("#layer-tabs").value == "user"
+
+
+async def test_row_menu_is_a_context_menu_with_the_gate_in_effect(tmp_path, home):
+    from q3tui.tui.widgets.flow_tree import RowMenu
+
+    write(tmp_path / "proj/spec/intent.md", "x")
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.5)
+        row = next(r for r in app.screen.query(FlowRow) if r.ident == "spec")
+        row.focus()
+        await pilot.press("shift+f10")
+        menu = app.screen.query_one(RowMenu)
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if menu.active_popup is not None:
+                break
+        popup = menu.active_popup
+        assert popup is not None and popup.region.y == row.region.bottom
+        gate = next(c for c in menu.menus[0].content.children if hasattr(c, "trigger") and c.trigger.label == "Gate")
+        assert gate.content.children[0].value == "gate-step:spec:manual"  # the gate in effect is marked
+        await pilot.press("escape")
+        await pilot.pause()
+        assert menu.active_popup is None and app.screen.focused is row
+        await pilot.click(row, button=3)
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if menu.active_popup is not None:
+                break
+        assert menu.active_popup is not None
+        await pilot.press("enter")  # Run only
+        await pilot.pause()
+        assert menu.active_popup is None
