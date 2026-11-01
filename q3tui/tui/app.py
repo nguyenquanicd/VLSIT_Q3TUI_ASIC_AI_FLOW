@@ -61,7 +61,9 @@ class Q3App(App):
         self.session_options = list(session or [])
         self.home_dir = home
         self._unsubscribe = None
-        self.status_text = ""
+        self.status_text = "idle"
+        self._cost_base = self._project_cost()  # what the project had spent when Q3TUI started (or opened it)
+        self._cost_before = 0.0  # spent in this session in the projects opened before this one
 
     # -- start --------------------------------------------------------------------------------------
 
@@ -84,14 +86,26 @@ class Q3App(App):
         if self.opened.ops is not None:
             self._unsubscribe = self.opened.ops.subscribe(self._event)
 
+    def _project_cost(self) -> float:
+        if self.opened.ops is None:
+            return 0.0
+        cost = self.opened.ops.cost()
+        return cost["total_usd"] + cost.get("assistant_usd", 0.0)
+
+    def costs(self) -> dict[str, float]:
+        """session: spent since Q3TUI started (steps and assistant); project: until the cost is reset."""
+        project = self._project_cost()
+        if project < self._cost_base:  # the cost was reset meanwhile
+            self._cost_base = 0.0
+        return {"session": self._cost_before + project - self._cost_base, "project": project}
+
     def bars(self) -> tuple[TitleBar, StatusBar]:
         o = self.opened
         cfg = o.config.config
-        cost = o.ops.cost() if o.ops else {"total_usd": 0, "assistant_usd": 0}
         stats = RuntimeStats(o.flow.name or cfg.pipeline.flow, o.lookup.flows() or [cfg.pipeline.flow], cfg.llm.model,
-                             cfg.llm.effort, cost["total_usd"] + cost.get("assistant_usd", 0))
+                             cfg.llm.effort, self.costs())
         title = TitleBar(menus(gate=cfg.pipeline.gate_mode, icons=cfg.tui.icons), stats)
-        status = StatusBar(str(o.project.root))
+        status = StatusBar(str(o.project.root), self.status_text)
         return title, status
 
     # -- the bars -----------------------------------------------------------------------------------
@@ -108,10 +122,10 @@ class Q3App(App):
     def refresh_cost(self) -> None:
         if self.opened.ops is None:
             return
-        cost = self.opened.ops.cost()
+        costs = self.costs()
         for stats in self.screen.query(RuntimeStats):
-            stats.update(cost=cost["total_usd"] + cost.get("assistant_usd", 0),
-                         model=self.opened.config.config.llm.model, effort=self.opened.config.config.llm.effort)
+            stats.update(costs=costs, model=self.opened.config.config.llm.model,
+                         effort=self.opened.config.config.llm.effort)
 
     def toast(self, title: str, description: str = "", *, variant: str = "default") -> None:
         variant = {"error": "destructive"}.get(variant, variant)
@@ -134,7 +148,8 @@ class Q3App(App):
             self.set_status("running")
         elif kind == "run_finished":
             outs = ", ".join(f"{s} {o}" for s, o in (e.get("outcomes") or {}).items())
-            self.set_status("idle")
+            outcomes = set((e.get("outcomes") or {}).values())
+            self.set_status("failed" if "failed" in outcomes else "waiting for you" if "waiting" in outcomes else "idle")
             self.call_later(toast, self.screen, "Run finished", outs)
             self.refresh_cost()
         elif kind == "step_finished" and e.get("result") == "failed":
@@ -173,6 +188,7 @@ class Q3App(App):
     def action_stop(self) -> None:
         if self.opened.ops is not None and self.opened.ops.is_running:
             self.opened.ops.stop()
+            self.set_status("stopping")
             self.toast("Stopping the run")
 
     # -- screens ------------------------------------------------------------------------------------
@@ -192,11 +208,13 @@ class Q3App(App):
     def reopen(self, folder: Path, *, create: bool = False, flow: str | None = None) -> None:
         if create:
             folder.mkdir(parents=True, exist_ok=True)
+        spent = self.costs()["session"]
         try:
             self.opened = open_project(folder, session=self.session_options, home=self.home_dir, flow=flow)
         except Exception as exc:  # noqa: BLE001
             self.toast(str(exc), variant="error")
             return
+        self._cost_before, self._cost_base = spent, self._project_cost()
         self._attach()
         while len(self.screen_stack) > 2:
             self.pop_screen()

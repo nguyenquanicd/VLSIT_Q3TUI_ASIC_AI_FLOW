@@ -30,6 +30,10 @@ from q3tui.tui.ui.menubar import (
 MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 GATES = ("manual", "auto", "unattended")
+COSTS = {
+    "session": "Session cost: what the LLM spent since Q3TUI started, the steps and the assistant",
+    "project": "Project cost: the steps of every run of this project and its assistant, until the cost is reset",
+}
 
 
 def menus(*, gate: str | None, icons: str) -> tuple[MenubarMenu, ...]:
@@ -74,9 +78,9 @@ class RuntimeStats(Widget):
     RuntimeStats Static { width: auto; padding: 0 1; color: $text-muted; }
     """
 
-    def __init__(self, flow: str, flows: list[str], model: str, effort: str | None, cost: float) -> None:
+    def __init__(self, flow: str, flows: list[str], model: str, effort: str | None, costs: dict[str, float]) -> None:
         super().__init__()
-        self.flow, self.flows, self.model, self.effort, self.cost = flow, flows, model, effort, cost
+        self.flow, self.flows, self.model, self.effort, self.costs = flow, flows, model, effort, dict(costs)
 
     def compose(self) -> ComposeResult:
         flow_group = MenuRadioGroup(*(MenuRadioItem(f, f"flow-{f}", close_on_select=True) for f in self.flows),
@@ -94,9 +98,10 @@ class RuntimeStats(Widget):
         )
         yield DropdownMenu(DropdownMenuTrigger(self.model_label(), key="f7", chevron=True, id="choose-runtime"),
                            runtime, value="runtime", id="runtime-menu")
-        cost = Static(id="cost")
-        self._show_cost(cost)
-        yield cost
+        for kind in COSTS:
+            field = Static(id=f"{kind}-cost")
+            self._show_cost(field, kind)
+            yield field
 
     def flow_label(self) -> str:
         return f"{icon('flow')} {self.flow}"
@@ -104,23 +109,26 @@ class RuntimeStats(Widget):
     def model_label(self) -> str:
         return f"{icon('model')} {self.model} · {(self.effort or '—').title()}"
 
-    def _show_cost(self, field: Static) -> None:
-        field.update(f"{icon('project_cost')} ${self.cost:,.2f}")
-        field.tooltip = f"The cost of this project's runs and its assistant: {self.cost:,.4f} USD (click for details)"
+    def _show_cost(self, field: Static, kind: str) -> None:
+        value = self.costs.get(kind, 0.0)
+        field.update(f"{icon(kind + '_cost')} ${value:,.2f}")
+        field.tooltip = f"{COSTS[kind]}\n{value:,.4f} USD (click for details)"
 
-    def update(self, *, model: str | None = None, effort: str | None = None, cost: float | None = None) -> None:
+    def update(self, *, model: str | None = None, effort: str | None = None,
+               costs: dict[str, float] | None = None) -> None:
         if model is not None:
             self.model = model
         if effort is not None:
             self.effort = effort
-        if cost is not None:
-            self.cost = cost
+        if costs is not None:
+            self.costs = dict(costs)
         if self.is_mounted:
             self.query_one("#choose-runtime", DropdownMenuTrigger).set_label(self.model_label())
-            self._show_cost(self.query_one("#cost", Static))
+            for kind in COSTS:
+                self._show_cost(self.query_one(f"#{kind}-cost", Static), kind)
 
     def on_click(self, event) -> None:
-        if getattr(event.widget, "id", None) == "cost":
+        if getattr(event.widget, "id", "") in ("session-cost", "project-cost"):
             self.app.action_cost_details()
 
 
@@ -145,8 +153,18 @@ class TitleBar(Widget):
         yield self.stats
 
 
+STATUS_STYLE = {"idle": "$text-muted", "running": "$primary", "stopping": "$text-warning", "waiting": "$text-warning",
+                "failed": "$text-error", "error": "$text-error"}
+
+
+def status_content(text: str) -> Content:
+    """`● <status>`: the dot in the status's colour, so it reads as the status."""
+    style = STATUS_STYLE.get(text.split(" ", 1)[0], "$text-muted")
+    return Content.assemble(("●", style), " ", (text, "bold"))
+
+
 class StatusBar(Widget):
-    """status · the keys of the moment · the current folder."""
+    """status · the keys of the moment · the current folder. The status is always there (`● idle` at least)."""
 
     DEFAULT_CSS = """
     StatusBar { dock: bottom; height: 1; layout: horizontal; background: $surface; padding: 0 1; }
@@ -155,17 +173,18 @@ class StatusBar(Widget):
     StatusBar #cwd { width: auto; color: $text-muted; }
     """
 
-    def __init__(self, cwd: str) -> None:
+    def __init__(self, cwd: str, status: str = "idle") -> None:
         super().__init__()
-        self.cwd = cwd
+        self.cwd, self.status = cwd, status
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="status")
+        yield Static(status_content(self.status or "idle"), id="status")
         yield Static("", id="keys")
         yield Static(self.cwd, id="cwd", markup=False)
 
-    def set_status(self, text: str | Content) -> None:
-        self.query_one("#status", Static).update(text)
+    def set_status(self, text: str) -> None:
+        self.status = text or "idle"
+        self.query_one("#status", Static).update(status_content(self.status))
 
     def set_keys(self, keys: list[tuple[str, str]]) -> None:
         parts: list = []
