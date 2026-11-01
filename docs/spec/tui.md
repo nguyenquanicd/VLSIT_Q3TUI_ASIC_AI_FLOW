@@ -128,6 +128,34 @@ and then ends them all (gently, then each one's process group).
 What a background run does not see: settings changed for this session only other than model / effort / the auto switches, and gate modes
 set for this session only. A TUI that is not started by `q3tui tui` (tests, embedding) runs in-process as before.
 
+## When a step fails
+
+**Every failure is said**, whichever run it was in: this TUI's own run, a background run, or a run of another flow. Before this, a run of
+another flow just dropped out of `also running: …` without a word. When the engine records a failed step, it also records what failed
+(`StepRecord.failure`: `kind` `tool` or `step`, the `flow`, the time `at`). The TUI re-reads `.q3tui/pipeline.json` when it changes (at most
+every 2 s). For each new failure it shows a notice (`✖ <step> failed`, the flow and the first line of the error), and a red header badge
+`✖ failed: <step> (<flow>)` stays until the step runs again.
+
+**A tool failure goes to the assistant** (`tui/failures.py`). That is a failure that is not the design's: the tool crashed or its server
+died, it timed out, it is missing, or its command is wrong (`ToolBroken`, `ToolUnavailable`), so no fix loop takes it. Q3TUI sends the
+assistant a message of its own (`Q3TUI` in the chat, with the step as the message's focus). The message carries the error, the last 40 lines
+of the log the error names, the tool's role from `config/tools.json`, the step's options, and this machine's memory. The assistant judges:
+
+- **It can fix it with its tools:** a step setting (`set_settings`), the tool role (`set_tool_role`: `timeout_s`, `env`, `modules`; a new
+  `cmd` asks you first), or nothing needs fixing because the problem passed (a busy machine, a taken license). It says what it changed and why,
+  and calls `rerun_failed_step` once. The step reruns in its own flow, from that step on: in the background, or here when it is this flow
+  and runs are not in the background.
+- **It cannot:** the fix needs the RTL or the spec (only ever through a change request to its step), a tool install, a license, more memory,
+  or a change to Q3TUI. It changes nothing and tells you the cause, the evidence and what to do.
+
+The same failure again (same step, kind and first error line) after that: the assistant only explains and asks; it does not fix or rerun
+again. A third time: only the notice and a line in the activity log. What was handled is kept in `.q3tui/tui/failures.json`, so two TUIs, or a
+restart, do not hand the same failure over twice. A step that runs again without failing is forgotten there. A tool failure of the last 24 h
+that no TUI saw (a CLI run) is handed over when a TUI starts; older ones are only listed. A read-only TUI only says the failures.
+`set_settings` reaches the steps of the flow on screen: for a failure in another flow, the assistant can change the tool role (all flows share
+`config/tools.json`), but for that flow's step options it tells you. `/tool <role> <field> <value>` changes a tool role yourself, as
+`set_tool_role` does.
+
 ## Reset
 
 `R` asks what to reset: **(s)** the selected step and the steps after it, or **(a)** all
@@ -208,6 +236,7 @@ CLI, the assistant can do by prompting.** Both go through the same operations la
 | Spec flow | `review_parse_requirement`, `confirm_all_requirements`, `review_config_parameter`, `confirm_all_parameters` |
 | Pipeline | `run_steps` (start/stop/only/regenerate), `stop_run`, `approve`, `answer_question`, `request_change` (optionally for one section), `reset_step`, `import_file` (a file or a whole folder: spec documents and RTL; testbench, SVA and scripts are left out) |
 | Settings | `set_model`, `set_spec_review`, `set_auto_approve`, `set_auto_answer`, `set_auto_confirm_reviews`, `get_settings`, `set_settings`, `show_stats`, `reset_stats`, `reset_cost` |
+| History | `show_history`, `history_diff`, `show_file_version`, `restore_version` (confirmed) — docs/spec/history.md |
 | Files | `Read`/`Grep`/`Glob` over the project; `Edit`/`Write` only in `spec/`, `schemas/` and `src/` (like a user in an editor); never `.q3tui/` |
 
 Example: *"add a Power Management section after Performance with a field Power states,
@@ -234,7 +263,7 @@ Slash commands complete as you type: the rest of the command or argument shows a
 `/change <step> <text>`, `/answer <id> <text>|all`, `/gate <step> [mode] [--session]`, `/gates`, `/flow [name]` (switch flow; key `F`; a running step is cancelled after you confirm), `/flowedit` (the step editor), `/skill`, `/prompts`,
 `/step <step> view|pass|notes [text]`, `/reset <step>|all [--only]`, `/model [id] [--save]` (no id: the settings' LLM tab),
 `/effort <level>`, `/specreview`, `/autoapprove`, `/autoanswer`, `/autoconfirm` (`on|off [--save]`),
-`/settings [tab]`, `/status`, `/open <file>`, `/cost [reset]`, `/stats [reset]`, `/newchat`, `/help`, `/quit`.
+`/settings [tab]`, `/status`, `/open <file>`, `/cost [reset]`, `/stats [reset]`, `/history` (key `H`: the project's versions, docs/spec/history.md), `/newchat`, `/help`, `/quit`.
 
 Assistant replies render as Markdown; `z` zooms the activity/chat to full height. A new message while the assistant is still answering is held (not sent) instead of cancelling the reply. **Esc** (or `x` / `/stop` when no pipeline step is running) stops the reply; the conversation continues from the last finished reply.
 
