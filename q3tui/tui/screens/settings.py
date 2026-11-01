@@ -94,7 +94,7 @@ class SettingRow(Field):
     value refused (the text typed stays, to be fixed)."""
 
     DEFAULT_CSS = """
-    SettingRow { height: auto; padding: 0 1; margin-bottom: 1; }
+    SettingRow { height: auto; margin-bottom: 1; }
     SettingRow .row-head { height: 1; }
     SettingRow .row-key { width: 1fr; }
     SettingRow .row-source { width: auto; color: $text-muted; }
@@ -191,16 +191,16 @@ class SettingRow(Field):
 class SettingsScreen(PartScreen):
     DEFAULT_CSS = """
     SettingsScreen #settings-body { margin: 1 0; }
-    SettingsScreen #settings-head { height: 1; margin: 0 1 1 1; }
+    SettingsScreen #settings-head { height: 1; margin: 0 0 1 0; }
     SettingsScreen #search { width: 1fr; }
-    SettingsScreen .skeleton-row { margin: 0 1 1 1; }
+    SettingsScreen .skeleton-row { margin: 0 0 1 0; }
     SettingsScreen .skeleton-row.-title { width: 24; }
     SettingsScreen #chat-side { display: none; }
     SettingsScreen.-assistant #chat-side { display: block; }
-    SettingsScreen .group-title { text-style: bold; color: $primary; padding: 0 1; margin-top: 1; }
+    SettingsScreen .group-title { text-style: bold; color: $primary; margin-top: 1; }
     SettingsScreen #layer-tabs { height: 1fr; }
     SettingsScreen #layer-tabs TabsContent { height: 1fr; margin-top: 0; }
-    SettingsScreen .sites { padding: 0 1; height: auto; }
+    SettingsScreen .sites { height: auto; }
     SettingsScreen .site-row { height: 1; }
     SettingsScreen .site-row Static { width: 1fr; }
     """

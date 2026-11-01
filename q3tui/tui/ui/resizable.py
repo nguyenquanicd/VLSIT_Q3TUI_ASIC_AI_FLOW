@@ -16,9 +16,13 @@ __all__ = ["ResizableHandle", "ResizablePanel", "ResizablePanelGroup"]
 
 class ResizablePanel(Vertical):
     """One pane. `size` is its share of the group (relative to the others), and `min_size` the
-    smallest share, as a percentage of the group, it can shrink to."""
+    smallest share, as a percentage of the group, it can shrink to. Its content stands one cell in from its
+    left and right edges; a pane that only holds a group of panes has no padding of its own."""
 
-    DEFAULT_CSS = "ResizablePanel { height: 1fr; width: 1fr; }"
+    DEFAULT_CSS = """
+    ResizablePanel { height: 1fr; width: 1fr; padding: 0 1; }
+    ResizablePanel.-group { padding: 0; }
+    """
 
     def __init__(
         self,
@@ -31,6 +35,7 @@ class ResizablePanel(Vertical):
         super().__init__(*children, id=id, classes=classes)
         self.size_share = size
         self.min_share = min_size
+        self.set_class(any(isinstance(c, ResizablePanelGroup) for c in children), "-group")
 
 
 class ResizableHandle(Static, can_focus=True):

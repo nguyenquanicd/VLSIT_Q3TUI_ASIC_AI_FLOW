@@ -50,7 +50,7 @@ class ItemList(ItemGroup):
 
     DEFAULT_CSS = """
     ItemList { height: auto; }
-    ItemList Item { padding: 0 1; }
+    ItemList Item { padding: 0; }
     ItemList Item.-chosen { background: $surface; }
     ItemList Item:focus { background: $panel; }
     ItemList Item.-tone-ok ItemMedia { color: $text-success; }
@@ -80,13 +80,13 @@ class StepMain(Vertical):
 
     DEFAULT_CSS = """
     StepMain { height: 1fr; }
-    StepMain #main-header { height: 1; padding: 0 1; }
+    StepMain #main-header { height: 1; }
     StepMain #main-title { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
     StepMain #main-header Button { margin-left: 1; }
     StepMain Tabs { height: 1fr; }
     StepMain TabsContent { height: 1fr; margin-top: 0; }
-    StepMain .view-detail { padding: 0 1; }
-    StepMain .missing { color: $text-muted; padding: 1; }
+    StepMain .view-detail { padding: 0; }
+    StepMain .missing { color: $text-muted; padding: 1 0; }
     StepMain #main-errors { height: 1fr; }
     StepMain #main-errors Alert { margin-bottom: 1; }
     """

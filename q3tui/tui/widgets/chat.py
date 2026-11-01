@@ -161,16 +161,16 @@ class ChatPanel(Vertical):
 
     DEFAULT_CSS = """
     ChatPanel { height: 1fr; }
-    ChatPanel #chat-head { height: 1; padding: 0 1; }
+    ChatPanel #chat-head { height: 1; }
     ChatPanel #chat-status { width: 1fr; color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
     ChatPanel #chat-head TextButton { width: auto; margin-left: 1; }
-    ChatPanel MessageScroller { height: 1fr; padding: 0 1; }
+    ChatPanel MessageScroller { height: 1fr; }
     ChatPanel .chat-you { margin: 1 0 0 0; }
     ChatPanel .chat-text { width: 1fr; height: auto; margin-top: 1; padding: 0; }
     ChatPanel .chat-tool { height: auto; color: $text-muted; }
     ChatPanel .chat-note { height: auto; color: $text-muted; }
-    ChatPanel #chat-commands { margin: 0 1; height: auto; max-height: 10; }
-    ChatPanel ChatInput { height: 4; margin: 0 1; }
+    ChatPanel #chat-commands { height: auto; max-height: 10; }
+    ChatPanel ChatInput { height: 4; }
     """
 
     class Context(TextualMessage):

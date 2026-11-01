@@ -37,7 +37,7 @@ class WorkspaceScreen(PartScreen):
     WorkspaceScreen #columns { height: 1fr; margin: 1 0; }
     WorkspaceScreen #sidebar-tabs { height: 1fr; }
     WorkspaceScreen #sidebar-tabs TabsContent { height: 1fr; margin-top: 0; }
-    WorkspaceScreen #panel-title { height: 1; padding: 0 1; text-style: bold; color: $foreground; }  /* as CardTitle */
+    WorkspaceScreen #panel-title { height: 1; text-style: bold; color: $foreground; }  /* as CardTitle */
     WorkspaceScreen #activities { height: 1fr; }
     """
     BINDINGS = [
