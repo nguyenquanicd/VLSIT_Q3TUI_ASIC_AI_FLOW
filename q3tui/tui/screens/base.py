@@ -1,8 +1,10 @@
-"""What every screen of Q3TUI shares: the focus starts on its main part, Tab / Shift+Tab move the focus between
-its parts and skip the title bar (its menus have their own keys), and the keys of the status bar follow the focus."""
+"""What every screen of Q3TUI shares: the focus starts on its main part; Tab / Shift+Tab move the focus between
+its parts, the title bar first; Escape on the title bar (no menu open) goes back to the main part; the keys of the
+status bar follow the focus."""
 
 from __future__ import annotations
 
+from textual import events
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widget import Widget
@@ -38,13 +40,29 @@ class PartScreen(Screen):
         self.app.refresh_keys()
 
     def parts(self) -> list[Widget]:
-        """The parts Tab moves between (each takes the focus on its first focusable widget, or the one it had);
-        none: every focusable widget outside the title bar, in order."""
+        """The parts Tab moves between after the title bar (each takes the focus on its first focusable widget, or
+        the one it had); none: every focusable widget, in order."""
         return []
+
+    def _all_parts(self) -> list[Widget]:
+        parts = self.parts()
+        if not parts:
+            return []
+        return [*self.query("TitleBar Menubar"), *parts]
+
+    def on_key(self, event: events.Key) -> None:
+        """Escape on the title bar, with no menu open: back to the main part."""
+        if event.key != "escape" or self.focused is None or not in_title_bar(self.focused):
+            return
+        if any(getattr(root, "popups", None) for root in self.query("TitleBar MenuRoot")):
+            return
+        event.stop()
+        event.prevent_default()
+        self.focus_main()
 
     def action_move_focus(self, step: int) -> None:
         here = self.focused
-        parts = [p for p in self.parts() if p.display and any(w.focusable for w in p.query("*")) or p.focusable]
+        parts = [p for p in self._all_parts() if p.display and any(w.focusable for w in p.query("*")) or p.focusable]
         if parts:
             at = next((n for n, p in enumerate(parts) if here is not None and (here is p or p in here.ancestors)), -1)
             target = parts[(at + step) % len(parts)] if at >= 0 else parts[0 if step > 0 else -1]
@@ -56,7 +74,7 @@ class PartScreen(Screen):
             else:
                 next(w for w in target.query("*") if w.focusable).focus()
             return
-        chain = [w for w in self.focus_chain if not in_title_bar(w)]
+        chain = list(self.focus_chain)
         if not chain:
             return
         if here not in chain:
@@ -69,6 +87,6 @@ class PartScreen(Screen):
         here = self.focused
         if here is None:
             return
-        for part in self.parts():
+        for part in self._all_parts():
             if here is part or part in here.ancestors:
                 part._q3_last_focus = here
