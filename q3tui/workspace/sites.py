@@ -7,6 +7,7 @@ The same form at both levels: `$Q3TUI_HOME/{sites.yaml,sites/}` (flow repositori
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -125,6 +126,19 @@ class Sites:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.symlink_to((self.dir / name).resolve())
         return [str(dst.relative_to(self.base))]
+
+
+def latest_tag(git: str) -> str | None:
+    """The newest tag of a repository, by version order (`v1.10.0` after `v1.9.2`); None when it has no tag."""
+    res = subprocess.run(["git", "ls-remote", "--tags", "--refs", git], check=False, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise SiteError(f"git ls-remote {git}: {res.stderr.strip() or res.stdout.strip()}")
+    tags = [line.split("refs/tags/", 1)[1] for line in res.stdout.splitlines() if "refs/tags/" in line]
+
+    def order(tag: str) -> tuple:
+        return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"[.\-_]", tag.lstrip("vV")))
+
+    return max(tags, key=order) if tags else None
 
 
 def _git(args: list[str]) -> None:

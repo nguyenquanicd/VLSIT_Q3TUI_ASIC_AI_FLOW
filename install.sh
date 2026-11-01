@@ -101,6 +101,35 @@ print(" \033[32m✔\033[0m", "created" if install_user_config(path) else "keepin
 '
 fi
 
+# --- the default flow (spec/config.md "Defaults and installation") ----------------------------------------------------
+# The site `vlsit`, at the newest tag of its repository when it is installed; one already installed is kept (update it
+# from Settings ▸ Sites & packages).
+FLOW_SITE=vlsit
+FLOW_GIT=https://github.com/nguyenquanicd/VLSIT_Q3CORE_ASIC_AI_FLOW
+if [ "$DRY" = 1 ]; then
+  printf '   [dry-run] install the flow site %s from %s at its newest tag, if it is not installed\n' "$FLOW_SITE" "$FLOW_GIT"
+else
+  FLOW_SITE="$FLOW_SITE" FLOW_GIT="$FLOW_GIT" "$TOOL_PY" -c '
+import os
+from q3tui.paths import q3tui_home
+from q3tui.workspace.sites import SiteError, Sites, latest_tag
+name, git = os.environ["FLOW_SITE"], os.environ["FLOW_GIT"]
+sites = Sites(q3tui_home())
+if name in sites.read():
+    print(f" \033[32m✔\033[0m keeping the flow site {name} at {sites.installed_ref(name)}")
+    raise SystemExit
+try:
+    tag = latest_tag(git)
+    if tag is None:
+        raise SiteError(f"{git} has no tag yet")
+    sites.install(name, git, tag)
+    print(f" \033[32m✔\033[0m installed the flow site {name} from {git} at {tag}")
+except SiteError as exc:
+    print(f" \033[33m!\033[0m the flow site {name} is not installed: {exc}")
+    print(f"   install it later: rerun ./install.sh, or clone {git} and link it into {q3tui_home()}")
+'
+fi
+
 # --- what the script cannot do for you --------------------------------------------------------------------------------
 if command -v claude >/dev/null 2>&1; then
   ok "Claude Code found: $(command -v claude) (Q3TUI uses the Claude Agent SDK: log in with 'claude' once, or set ANTHROPIC_API_KEY)"

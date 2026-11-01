@@ -81,6 +81,13 @@ The TUI never opens with a config that has an error.
 - Installing Q3TUI creates `$Q3TUI_HOME/config.yaml` when it does not exist, with three
   keys: `llm.model`, `llm.effort` and `pipeline.flow`, set to their defaults. An existing
   file is never overwritten.
+- Installing Q3TUI also installs the site of the default flow (Workspace & state, "Sites"),
+  when it is not installed: `vlsit`, from
+  `https://github.com/nguyenquanicd/VLSIT_Q3CORE_ASIC_AI_FLOW`, at the newest tag of that
+  repository (by version order) at the time of installing; `sites.yaml` records that tag.
+  A site already installed is kept as it is: updating it is asked for (Settings, [Update]).
+  When the site cannot be downloaded (no network, no tag yet), installing goes on and says
+  so, with how to install it later.
 - Everything else (tools, PDKs, FPGA parts, …) is set up by the user.
 - The keys written at installation are the user's from then on: a later version of Q3TUI
   with another default does not change them.

@@ -89,3 +89,18 @@ def test_approvals_per_project_and_per_content(tmp_path):
     assert approvals.allowed(p1, "command", "make lint")
     assert not approvals.allowed(p1, "command", "make lint2")  # a changed command is asked again
     assert not approvals.allowed(p2, "command", "make lint")  # another project is asked again
+
+
+def test_the_latest_tag_is_the_newest_version(tmp_path):
+    from q3tui.workspace.sites import latest_tag
+
+    git = _repo(tmp_path / "flow", {"flows/vlsit/FLOW.md": "x"})
+    assert latest_tag(git) == "v1"
+    for tag in ("v1.9.2", "v1.10.0", "v1.2.0"):
+        subprocess.run(["git", "-C", git, "tag", tag], check=True)
+    assert latest_tag(git) == "v1.10.0"
+    bare = tmp_path / "empty"
+    subprocess.run(["git", "init", "-q", str(bare)], check=True)
+    assert latest_tag(str(bare)) is None
+    with pytest.raises(SiteError):
+        latest_tag(str(tmp_path / "nowhere"))
