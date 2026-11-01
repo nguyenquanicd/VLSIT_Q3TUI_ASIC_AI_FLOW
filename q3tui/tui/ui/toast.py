@@ -15,7 +15,7 @@ __all__ = ["Toast", "Toaster", "toast"]
 class Toast(Alert):
     """An `Alert` that removes itself after `duration` seconds (never, if `duration` is 0)."""
 
-    DEFAULT_CSS = "Toast { width: 1fr; margin-top: 1; }"
+    DEFAULT_CSS = "Toast { width: 1fr; margin-top: 0; }"
 
     def __init__(
         self,
