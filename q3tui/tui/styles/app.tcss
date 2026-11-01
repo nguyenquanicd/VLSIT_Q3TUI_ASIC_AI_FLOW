@@ -1,0 +1,32 @@
+Screen {
+    background: $background;
+    color: $foreground;
+}
+
+/* The backdrop of a dialog, a sheet, or the command palette lets the screen beneath show through,
+   dimmed. It has to come after `Screen`: the app's styles win over the widget's own, and an
+   opaque `Screen` background would hide everything under the dialog. */
+ModalScreen {
+    background: $background 65%;
+}
+
+/* One-column scrollbars, flush with the right edge of whatever they scroll. */
+* {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-background: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-background-active: transparent;
+    scrollbar-corner-color: transparent;
+    scrollbar-color: $text-muted;
+    scrollbar-color-hover: $foreground;
+    scrollbar-color-active: $primary;
+}
+
+/* Tooltip: one cell of padding for the text, half a cell above and below. The half-cell
+   edges are always $background; see docs/tooltip.md. */
+Tooltip {
+    padding: 0 1;
+    border-top: outer $background;
+    border-bottom: outer $background;
+}

@@ -166,6 +166,7 @@ class Engine:
 
     def _recover(self) -> None:
         """A step left `running` by a process that died: put its outputs and its state back."""
+        recovered = False
         for sid, st in list(self.state.steps.items()):
             if st.result != "running" or sid not in self.flow.instances:
                 continue
@@ -174,7 +175,9 @@ class Engine:
                 restore(Path(started["backup"]), self.root, self._output_files(self.flow.instances[sid]))
             self.state.steps[sid] = step_from_dict(started["before"]) if started.get("before") else StepState()
             self.bus.emit("warning", step=sid, message=f"{sid} was interrupted; its outputs were put back")
-        self.state.save(self.project.pipeline_file)
+            recovered = True
+        if recovered:
+            self.state.save(self.project.pipeline_file)
 
     # -- what each step reads and writes ---------------------------------------------------------
 
@@ -1165,7 +1168,9 @@ class Engine:
     def reset_cost(self) -> None:
         self.state.cost_resets.append({"at": now(), "total_usd": round(self.state.cost_usd, 4),
                                        "steps": {s: round(st.cost_usd, 4) for s, st in self.state.steps.items()}})
+        self.state.cost_resets[-1]["assistant_usd"] = round(self.state.assistant_cost_usd, 4)
         self.state.cost_usd = 0.0
+        self.state.assistant_cost_usd = 0.0
         for st in self.state.steps.values():
             st.cost_usd = 0.0
         self.save()

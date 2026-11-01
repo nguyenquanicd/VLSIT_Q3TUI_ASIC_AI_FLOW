@@ -83,6 +83,7 @@ class PipelineState:
     cost_usd: float = 0.0
     cost_resets: list[dict] = field(default_factory=list)
     next_request: int = 1
+    assistant_cost_usd: float = 0.0  # the assistant's cost: not part of a run (pipeline.max_cost)
 
     def step(self, sid: str) -> StepState:
         return self.steps.setdefault(sid, StepState())
@@ -96,7 +97,8 @@ class PipelineState:
         data = json.loads(file.read_text())
         steps = {sid: step_from_dict(d) for sid, d in (data.get("steps") or {}).items()}
         return cls(steps, data.get("artifacts") or {}, float(data.get("cost_usd") or 0.0),
-                   list(data.get("cost_resets") or []), int(data.get("next_request") or 1))
+                   list(data.get("cost_resets") or []), int(data.get("next_request") or 1),
+                   float(data.get("assistant_cost_usd") or 0.0))
 
     def save(self, file: Path) -> None:
         file.parent.mkdir(parents=True, exist_ok=True)

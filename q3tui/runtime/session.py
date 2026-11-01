@@ -27,6 +27,7 @@ class Opened:
     lookup: Lookup
     flow: Flow
     addons: Addons
+    has_run: bool = False  # the project had `.q3tui/state/` when it was opened: it opens in the Workspace
     engine: Engine | None = None  # None while the flow has errors
     ops: Ops | None = None
     problems: list[Problem] = field(default_factory=list)  # the flow's and its addons'
@@ -42,6 +43,7 @@ def open_project(start: Path, *, session: list[str] | None = None, home: Path | 
     the TUI appears); a flow with errors still opens, without an engine, and lists them."""
     home = home or q3tui_home()
     project = Project.open(start)
+    has_run = project.has_run
     config = ConfigLayers(home / "config.yaml", project.config_file, parse_session_options(session or []))
     lookup = Lookup(project.q3, home)
     approvals = Approvals(home / "approvals.yaml")
@@ -56,7 +58,7 @@ def open_project(start: Path, *, session: list[str] | None = None, home: Path | 
     addons = load_addons(loaded, set(OPS_ACTIONS), project_q3=project.q3, approved=code_approved) if loaded.ok \
         else Addons()
     problems = [*loaded.problems, *addons.problems]
-    opened = Opened(project, config, lookup, loaded, addons, problems=problems)
+    opened = Opened(project, config, lookup, loaded, addons, has_run=has_run, problems=problems)
     if problems:
         return opened
     tool_env = ToolEnv(config.config)

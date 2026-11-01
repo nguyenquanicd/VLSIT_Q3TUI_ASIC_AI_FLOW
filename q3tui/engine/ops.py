@@ -130,6 +130,7 @@ class Ops:
         state = self.engine.state
         return {"total_usd": round(state.cost_usd, 4),
                 "steps": {s: round(st.cost_usd, 4) for s, st in state.steps.items()},
+                "assistant_usd": round(state.assistant_cost_usd, 4),
                 "resets": list(state.cost_resets)}
 
     def reset_cost(self) -> None:
