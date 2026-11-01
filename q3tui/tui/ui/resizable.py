@@ -17,7 +17,8 @@ __all__ = ["ResizableHandle", "ResizablePanel", "ResizablePanelGroup"]
 class ResizablePanel(Vertical):
     """One pane. `size` is its share of the group (relative to the others), and `min_size` the
     smallest share, as a percentage of the group, it can shrink to. Its content stands one cell in from its
-    left and right edges; a pane that only holds a group of panes has no padding of its own."""
+    left and right edges; a pane that only holds a group of panes has no padding of its own, and a pane inside
+    another panel keeps its cell only toward a divider (the outer panel gives the one at its edges)."""
 
     DEFAULT_CSS = """
     ResizablePanel { height: 1fr; width: 1fr; padding: 0 1; }
@@ -36,6 +37,16 @@ class ResizablePanel(Vertical):
         self.size_share = size
         self.min_share = min_size
         self.set_class(any(isinstance(c, ResizablePanelGroup) for c in children), "-group")
+
+    def on_mount(self) -> None:
+        if not any(isinstance(a, ResizablePanel) and not a.has_class("-group") for a in self.ancestors):
+            return
+        group = self.parent
+        if not isinstance(group, ResizablePanelGroup) or group.direction == "vertical":
+            self.styles.padding = 0
+            return
+        panes = [c for c in group.children if isinstance(c, ResizablePanel)]
+        self.styles.padding = (0, 0 if self is panes[-1] else 1, 0, 0 if self is panes[0] else 1)
 
 
 class ResizableHandle(Static, can_focus=True):
