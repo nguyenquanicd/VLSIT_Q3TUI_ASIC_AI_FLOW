@@ -80,7 +80,7 @@ class StepMain(Vertical):
 
     DEFAULT_CSS = """
     StepMain { height: 1fr; }
-    StepMain #main-header { height: 1; }
+    StepMain #main-header { height: 1; padding: 0 1; }
     StepMain #main-title { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
     StepMain #main-header Button { margin-left: 1; }
     StepMain Tabs { height: 1fr; }

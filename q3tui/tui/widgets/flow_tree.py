@@ -46,7 +46,7 @@ class FlowRow(Horizontal, can_focus=True):
     """A stage or a step."""
 
     DEFAULT_CSS = """
-    FlowRow { width: 1fr; height: 1; }
+    FlowRow { width: 1fr; height: 1; padding: 0 1; }
     FlowRow > .row-label { width: 1fr; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     FlowRow.-stage > .row-label { text-style: bold; }
     FlowRow:hover, FlowRow:focus { background: $panel; }
