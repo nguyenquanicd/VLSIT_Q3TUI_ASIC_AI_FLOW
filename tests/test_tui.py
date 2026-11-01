@@ -192,11 +192,27 @@ async def test_alt_number_picks_a_tab_of_the_tabs_around_the_focus(tmp_path, hom
         await pilot.press("alt+2")
         await pilot.pause(0.3)
         assert tabs.value == values[1]
+        assert tabs in app.screen.focused.ancestors_with_self  # the focus stays in the tabs: Alt+<n> again works
+        await pilot.press("alt+1")
+        await pilot.pause(0.3)
+        assert tabs.value == values[0]
+        await pilot.press("alt+2")
+        await pilot.pause(0.3)
+        assert tabs.value == values[1]
+        side = app.screen.query_one("#sidebar-tabs")
+        row.focus()
+        await pilot.pause(0.3)
+        for n, want in ((1, "assistant"), (2, "flow"), (1, "assistant")):  # back and forth, from the input too
+            await pilot.press(f"alt+{n}")
+            await pilot.pause(0.5)
+            assert side.value == want and side in app.screen.focused.ancestors_with_self
         app.action_settings()
         await pilot.pause(1.0)
-        await pilot.press("alt+3")
-        await pilot.pause(0.5)
-        assert app.screen.query_one("#layer-tabs").value == "user"
+        layers = app.screen.query_one("#layer-tabs")
+        for n, want in ((3, "user"), (1, "session"), (2, "project")):
+            await pilot.press(f"alt+{n}")
+            await pilot.pause(0.5)
+            assert layers.value == want and layers in app.screen.focused.ancestors_with_self
 
 
 async def test_row_menu_is_a_context_menu_with_the_gate_in_effect(tmp_path, home):

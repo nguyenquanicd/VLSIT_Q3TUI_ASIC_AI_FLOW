@@ -200,15 +200,24 @@ class StepMain(Vertical):
         await self.recompose()
 
     def focus_target(self):
-        """Where Tab puts the focus in Main: the chosen row of the list in view, else its first focusable widget."""
+        """Where the focus goes in Main: inside the tab in view (the chosen row of its list, else its first focusable
+        widget, else the tab itself), so that Alt+<n> keeps finding the tabs; without tabs, the first focusable."""
         tabs = self.query(Tabs)
-        if tabs:
-            content = next((c for c in self.query(TabsContent) if c.value == tabs.first().value), None)
-            lists = content.query(ItemList) if content is not None else []
+        if not tabs:
+            return next((w for w in self.query("*") if w.focusable), None)
+        t = tabs.first()
+        content = next((c for c in self.query(TabsContent) if c.value == t.value), None)
+        if content is not None:
+            lists = content.query(ItemList)
             if lists:
                 group = lists.first()
-                return group.chosen or next(iter(group.query(Item)), None)
-        return next((w for w in self.query("*") if w.focusable), None)
+                row = group.chosen or next(iter(group.query(Item)), None)
+                if row is not None:
+                    return row
+            inside = next((w for w in content.query("*") if w.focusable), None)
+            if inside is not None:
+                return inside
+        return next((x for x in t.triggers if x.value == t.value), None)
 
     def selected_item(self) -> tuple[str, str] | None:
         """(artifact, item) of the selected row of the view tab in view."""
