@@ -362,3 +362,24 @@ async def test_a_paste_while_the_terminal_lost_focus_reaches_the_box(tmp_path, h
         app.post_message(events.Paste("a\rb\rc\r"))
         await pilot.pause()
         assert box.value == "a\nb\nc\n"
+
+
+async def test_a_click_on_a_widget_just_removed_does_not_crash(tmp_path, home):
+    """Main rebuilds while a step runs: a click can land on a tab that was just removed."""
+    from textual import events
+
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        trigger = app.screen.query("TabsTrigger").last()
+        x, y = trigger.region.offset
+        parent = trigger.parent
+        parent._nodes._remove(trigger)  # gone from the tree, still in the screen's map
+        trigger._detach()
+        app.post_message(events.MouseDown(None, x, y, 0, 0, 1, False, False, False,
+                                          screen_x=x, screen_y=y))
+        await pilot.pause()
+        assert app.return_code is None
+        parent._nodes._append(trigger)  # back, so that the app can shut down
+        trigger._attach(parent)

@@ -84,6 +84,12 @@ class Q3App(App):
         (spec/tui.md "Input boxes")."""
         if isinstance(event, events.Paste) and not event.is_forwarded and not self.app_focus:
             self.app_focus = True
+        if isinstance(event, events.MouseDown) and not event.is_forwarded:
+            # Main rebuilds while a step runs: a press on a widget removed since the last frame is
+            # dropped (Textual's text selection would read its missing parent)
+            widget, _ = self.screen.get_widget_and_offset_at(event.x, event.y)
+            if widget is not None and widget.parent is None and widget is not self.screen:
+                return
         await super().on_event(event)
 
     def on_mount(self) -> None:
