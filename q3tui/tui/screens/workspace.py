@@ -80,6 +80,10 @@ class WorkspaceScreen(PartScreen):
         self.refresh_statuses()
         super().on_mount()
 
+    def on_screen_resume(self) -> None:
+        """Back from Settings or a dialog: the states may have changed."""
+        self.refresh_statuses()
+
     def main_part(self):
         rows = [r for r in self.tree.rows if r.kind == "step"]
         chosen = next((r for r in rows if r.ident == self.tree.selected), rows[0] if rows else None)

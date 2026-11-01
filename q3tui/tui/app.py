@@ -411,22 +411,49 @@ class Q3App(App):
             self.action_settings(arg or None)
         elif kind in ("install", "update") and ops is not None:
             src = ops._package_source(arg)
-
-            def go(ok: bool) -> None:
-                if not ok:
-                    return
-                try:
-                    (ops.install_package if kind == "install" else ops.update_package)(arg)
-                    self.toast(f"{arg} {'installed' if kind == 'install' else 'updated'}", variant="success")
-                except Exception as exc:  # noqa: BLE001
-                    self.toast(str(exc), variant="error")
-
-            self.push_screen(download(arg, src), go)
+            work = ops.install_package if kind == "install" else ops.update_package
+            done = "installed" if kind == "install" else "updated"
+            self.push_screen(download(arg, src), lambda ok: ok and self._in_background(
+                f"{arg}: downloading…", lambda: work(arg), f"{arg} {done}"))
         elif kind == "fetch" and ops is not None:
-            self.push_screen(download(arg, {}), lambda ok: ok and ops.fetch_site(arg))
+            self.push_screen(download(arg, {}), lambda ok: ok and self._in_background(
+                f"{arg}: fetching…", lambda: ops.fetch_site(arg), f"{arg} fetched"))
         elif kind == "allow-setup" and ops is not None:
             cmd = self.opened.config.config.tools.setup_script or ""
-            self.push_screen(allow("a setup script", cmd), lambda ok: ok and ops.allow("command", cmd))
+
+            def allowed(ok: bool) -> None:
+                if ok:
+                    ops.allow("command", cmd)
+                    self.call_later(self.refresh_view)
+
+            self.push_screen(allow("a setup script", cmd), allowed)
+
+    def _in_background(self, starting: str, work, finished: str) -> None:
+        """Download or fetch off the UI thread, then show what changed (the alerts, the states)."""
+        self.toast(starting)
+
+        async def run() -> None:
+            import asyncio
+
+            try:
+                await asyncio.to_thread(work)
+                self.toast(finished, variant="success")
+            except Exception as exc:  # noqa: BLE001 -- a failed download is told, the screen stays
+                self.toast(str(exc), variant="error")
+            await self.refresh_view()
+
+        self.run_worker(run(), exclusive=False)
+
+    async def refresh_view(self) -> None:
+        """After something changed outside a run (a package, a site, a setting): redraw what depends on it."""
+        if self.opened.engine is not None:
+            self.opened.engine.tool_env.ensure(self.opened.config.config)
+        screen = self.screen
+        if isinstance(screen, HomeScreen):
+            await screen.refresh_alerts()
+        elif isinstance(screen, WorkspaceScreen):
+            screen.refresh_statuses()
+            await screen.main.refresh_step()
 
     def _definition_answer(self, changed: list[dict], choice: str | None) -> None:
         ops = self.opened.ops

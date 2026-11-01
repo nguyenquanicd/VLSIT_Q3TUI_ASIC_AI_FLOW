@@ -138,6 +138,27 @@ class HomeScreen(PartScreen):
     def parts(self) -> list:
         return [*self.query(PromptBox), *self.query(AlertList)]
 
+    async def refresh_alerts(self) -> None:
+        """Make the alerts again (a package installed, a setting changed); the input box keeps what you typed."""
+        old = self.query(AlertList)
+        had_focus = bool(old) and old.first().has_focus
+        index = old.first().index if old else 0
+        if old:
+            await old.first().remove()
+        specs = alerts(self.app.opened)
+        if specs:
+            new = AlertList(*(HomeAlert(spec) for spec in specs))
+            await self.query_one("#welcome").mount(new)
+            new.index = min(index, len(specs) - 1)
+            if had_focus:
+                new.focus()
+        elif had_focus:
+            self.focus_main()
+
+    def on_screen_resume(self) -> None:
+        """Back from Settings or a dialog: the alerts may have changed."""
+        self.run_worker(self.refresh_alerts(), exclusive=True, group="alerts")
+
     def on_resize(self, event: events.Resize) -> None:
         self._fit(event.size.width)
 
