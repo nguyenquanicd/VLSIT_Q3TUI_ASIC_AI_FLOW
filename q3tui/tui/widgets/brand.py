@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Static
 
-WORDMARK = "\n".join(
+WORDMARK = "\n".join(  # noqa: FLY002 -- one row per line reads better than one long string
     (
         "  ▄▄▄▄▄   ▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄ ▄▄▄  ▄▄▄ ▄▄▄▄▄ ",
         "▄███████▄ ▀▀▀▀████ ▀▀▀███▀▀▀ ███  ███  ███  ",
