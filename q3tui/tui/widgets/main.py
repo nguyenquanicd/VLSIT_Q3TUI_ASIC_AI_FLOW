@@ -20,6 +20,7 @@ from q3tui.tui.ui.empty import Empty, EmptyDescription, EmptyHeader, EmptyMedia,
 from q3tui.tui.ui.item import Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle
 from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePanelGroup
 from q3tui.tui.ui.tabs import Tabs, TabsContent, TabsList, TabsTrigger
+from q3tui.tui.ui.trace import TraceCollapsible
 from q3tui.tui.views import View, build_views
 from q3tui.tui.widgets.activities import EventLog
 from q3tui.tui.widgets.markdown import Q3Markdown
@@ -103,6 +104,7 @@ class StepMain(Vertical):
         self.problems = problems or []
         self.step: str | None = None
         self.tab: str | None = None
+        self.log_open: list[bool] = []  # the Log's boxes you opened, kept while it rebuilds
         self.views: list[View] = []
 
     # -- composing ----------------------------------------------------------------------------------
@@ -178,13 +180,13 @@ class StepMain(Vertical):
         events = []
         if self.engine is not None and self.step is not None:
             events = [e for e in read_events(self.engine.project.events_file) if e.get("step") == self.step]
-        return EventLog(events, id="step-log")
+        return EventLog(events, open=self.log_open, id="step-log")
 
     # -- updating -----------------------------------------------------------------------------------
 
     async def show(self, step: str | None) -> None:
         if step != self.step:
-            self.tab = None
+            self.tab, self.log_open = None, []
         self.step = step
         await self.recompose()
 
@@ -192,7 +194,20 @@ class StepMain(Vertical):
         tabs = self.query(Tabs)
         if tabs:
             self.tab = tabs.first().value
+        logs = self.query(EventLog)
+        scroll = None
+        if logs:
+            log = logs.first()
+            self.log_open = [box.open for box in log.viewport.query_children(TraceCollapsible)]
+            scroll = None if log.following else log.viewport.scroll_y
         await self.recompose()
+        if scroll is not None:
+            self.call_after_refresh(self._keep_log_scroll, scroll)
+
+    def _keep_log_scroll(self, y: float) -> None:
+        logs = self.query(EventLog)
+        if logs:
+            logs.first().viewport.scroll_to(y=y, animate=False)
 
     def focus_target(self):
         """Where the focus goes in Main: inside the tab in view (the chosen row of its list, else its first focusable

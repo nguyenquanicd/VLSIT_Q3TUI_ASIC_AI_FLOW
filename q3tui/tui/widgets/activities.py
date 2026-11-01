@@ -73,21 +73,24 @@ class _Step:
 
 
 class EventLog(MessageScroller):
-    """`EventLog(events)` shows past events, every step closed; `write(e)` adds a live one."""
+    """`EventLog(events)` shows past events, every step closed (the n-th box open when `open[n]`);
+    `write(e)` adds a live one."""
 
     DEFAULT_CSS = """
     EventLog CollapsibleContent { padding: 0 0 0 2; }
     """
 
-    def __init__(self, events: Iterable[dict] = (), *, id: str | None = None) -> None:
+    def __init__(self, events: Iterable[dict] = (), *, open: list[bool] | None = None,
+                 id: str | None = None) -> None:
         self._steps: dict[str, _Step] = {}
         tops: list = []
         for e in events:
             tops += self._take(e, live=False)[0]
         items = []
+        opened = iter(open or [])
         for t in tops[-MAX_LINES:]:
             if isinstance(t, _Step):
-                t.box = TraceCollapsible(t.line, *t.children, open=False)
+                t.box = TraceCollapsible(t.line, *t.children, open=next(opened, False))
                 t.children = []
                 items.append(t.box)
             else:

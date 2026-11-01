@@ -383,3 +383,30 @@ async def test_a_click_on_a_widget_just_removed_does_not_crash(tmp_path, home):
         assert app.return_code is None
         parent._nodes._append(trigger)  # back, so that the app can shut down
         trigger._attach(parent)
+
+
+async def test_the_log_keeps_what_you_opened_while_it_rebuilds(tmp_path, home):
+    """Main rebuilds on each event of the step in view (a running step): an opened box stays open."""
+    import json
+
+    from q3tui.tui.ui.trace import TraceCollapsible
+
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    write(tmp_path / "proj/.q3tui/state/events.jsonl", "".join(json.dumps(e) + "\n" for e in RUN))
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        main = app.screen.query_one(StepMain)
+        await main.show("spec")
+        main.query_one("#main-tabs").value = "log"
+        await pilot.pause()
+        box = main.query_one("#step-log").query_one(TraceCollapsible)
+        assert not box.open
+        box.set_open(True)
+        await main.refresh_step()
+        await pilot.pause()
+        assert main.query_one("#main-tabs").value == "log"
+        assert main.query_one("#step-log").query_one(TraceCollapsible).open
+        await main.show("rtl")  # another step: its log starts closed
+        await main.show("spec")
+        assert not main.query_one("#step-log").query_one(TraceCollapsible).open

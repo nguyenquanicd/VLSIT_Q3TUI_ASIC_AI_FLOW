@@ -205,7 +205,8 @@ smoke
   component): a spinner while it runs, then its result, cost and turns on the same line. Its
   LLM work (each task, its text, its tool calls, the tool's progress lines) folds under that
   line: open while the step runs, closed when it is over; Enter or a click opens or closes it.
-  In the Log tab every run starts closed. A stage starts and ends with a separator (the
+  In the Log tab every run starts closed; while the step in view runs, the Log updates and
+  keeps the runs you opened open and the place you scrolled to. A stage starts and ends with a separator (the
   Marker component) that names it (and its outcome). The other events are one line each.
 - In a Markdown view (a `document`, the detail of an item), a ```mermaid block (flowchart,
   block diagram, state machine) and a ```wavedrom block are drawn as diagrams; one that
