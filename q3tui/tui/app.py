@@ -245,6 +245,9 @@ class Q3App(App):
 
     def action_focus_area(self, n: int) -> None:
         screen = self.screen
+        if isinstance(screen, SettingsScreen) and n == 1:
+            screen.action_toggle_assistant()
+            return
         if not isinstance(screen, WorkspaceScreen):
             return
         tabs = screen.query_one("#sidebar-tabs")

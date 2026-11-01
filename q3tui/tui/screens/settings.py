@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import typing
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from q3tui.tui.ui.command import CommandDialog, CommandItem
 from q3tui.tui.ui.input import Input
 from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePanelGroup
 from q3tui.tui.ui.select import Select, SelectItem
+from q3tui.tui.ui.skeleton import Skeleton
 from q3tui.tui.ui.tabs import Tabs, TabsContent, TabsList, TabsTrigger
 from q3tui.tui.widgets.chat import ChatPanel
 
@@ -173,7 +175,8 @@ class SettingsScreen(PartScreen):
     SettingsScreen #settings-body { margin: 1 0; }
     SettingsScreen #settings-head { height: 1; margin: 0 1 1 1; }
     SettingsScreen #search { width: 1fr; }
-    SettingsScreen #toggle-assistant { margin-left: 1; }
+    SettingsScreen .skeleton-row { margin: 0 1 1 1; }
+    SettingsScreen .skeleton-row.-title { width: 24; }
     SettingsScreen #chat-side { display: none; }
     SettingsScreen.-assistant #chat-side { display: block; }
     SettingsScreen .group-title { text-style: bold; color: $primary; padding: 0 1; margin-top: 1; }
@@ -196,20 +199,39 @@ class SettingsScreen(PartScreen):
     def compose(self) -> ComposeResult:
         title, status = self.bars()
         yield title
-        opened = self.app.opened
-        merged = opened.config.config.model_dump(mode="json")
         yield ResizablePanelGroup(
             ResizablePanel(id="chat-side", size=30),
             ResizableHandle(id="chat-handle"),
             ResizablePanel(Vertical(Horizontal(Input(placeholder="Search keys (Ctrl+F)", id="search"),
-                                               Button("Assistant", id="toggle-assistant"), id="settings-head"),
+                                               id="settings-head"),
                                     Tabs(TabsList(*(TabsTrigger(x.title(), x) for x in LAYERS)),
                                          *(TabsContent(x, VerticalScroll(
-                                             *(self.rows(x, merged) if x == self.layer_tab else ()), id=f"rows-{x}"))
+                                             *(self.skeleton() if x == self.layer_tab else ()), id=f"rows-{x}"))
                                            for x in LAYERS),
                                          value=self.layer_tab, id="layer-tabs")), size=70),
             id="settings-body")
         yield status
+
+    @staticmethod
+    def skeleton():
+        """What the tab shows while its rows are built (the screen is drawn first)."""
+        for n in range(8):
+            yield Skeleton("1fr", 1, classes="skeleton-row" + (" -title" if n % 4 == 0 else ""))
+
+    async def _fill(self, layer: str) -> None:
+        """Build the rows of a tab, after the screen is drawn; they replace its skeleton."""
+        rows = self.query_one(f"#rows-{layer}", VerticalScroll)
+        merged = self.app.opened.config.config.model_dump(mode="json")
+        built = list(self.rows(layer, merged))
+        first = True
+        for at in range(0, len(built), 6):  # a few rows at a time: the first ones show at once
+            if first:
+                await rows.remove_children()
+            await rows.mount_all(built[at:at + 6])
+            if first and layer == self.layer_tab:
+                self.focus_main()
+            first = False
+            await asyncio.sleep(0)
 
     def rows(self, layer: str, merged: dict):
         for title, section in GROUPS:
@@ -251,11 +273,21 @@ class SettingsScreen(PartScreen):
         tabs = self.query(Tabs)
         if tabs:
             self.layer_tab = tabs.first().value
+        showing = self.has_class("-assistant")
+        self.remove_class("-assistant")
         await self.recompose()
+        self.query_one("#chat-handle").display = False
+        await self._fill(self.layer_tab)
+        if showing:
+            self.action_toggle_assistant()
 
     def on_mount(self) -> None:
         super().on_mount()
         self.query_one("#chat-handle").display = False
+        self.set_timer(0.02, lambda: self.run_worker(self._load_first(), exclusive=True))
+
+    async def _load_first(self) -> None:
+        await self._fill(self.layer_tab)
         if self.group:
             self.call_after_refresh(self._scroll_to_group)
 
@@ -269,10 +301,11 @@ class SettingsScreen(PartScreen):
         self.layer_tab = event.value
         rows = self.query_one(f"#rows-{event.value}", VerticalScroll)
         if not rows.children:
-            await rows.mount_all(list(self.rows(event.value, self.app.opened.config.config.model_dump(mode="json"))))
+            await rows.mount_all(list(self.skeleton()))
+            self.set_timer(0.02, lambda: self.run_worker(self._fill(event.value)))
 
     def action_toggle_assistant(self) -> None:
-        """The Assistant is hidden at first; its button (or the key) shows or hides it."""
+        """The Assistant is hidden at first; View ▸ Focus ▸ Assistant (or its key) shows it, again hides it."""
         side = self.query_one("#chat-side")
         showing = not self.has_class("-assistant")
         self.set_class(showing, "-assistant")
@@ -283,11 +316,6 @@ class SettingsScreen(PartScreen):
             self.call_after_refresh(lambda: self.query("#chat-input") and self.query_one("#chat-input").focus())
         else:
             self.focus_main()
-
-    @on(Button.Pressed, "#toggle-assistant")
-    def _toggle_pressed(self, event) -> None:
-        event.stop()
-        self.action_toggle_assistant()
 
     def _scroll_to_group(self) -> None:
         hits = self.query(f"#group-{self.group}-{self.layer_tab}")
