@@ -72,6 +72,9 @@ class Questionnaire(Vertical):
     Questionnaire > .q-actions { height: auto; align-horizontal: right; }
     Questionnaire > .q-actions > Button { margin-left: 2; }
     Questionnaire .q-list { height: auto; }
+    Questionnaire .q-choices { width: 1fr; }
+    Questionnaire .q-choices RadioGroupItem, Questionnaire .q-choices Checkbox { width: 1fr;
+        height: auto; }  /* a long choice wraps instead of being cut */
     Questionnaire .q-other { height: 1; }
     Questionnaire .q-other-mark { width: 2; height: 1; padding: 0 0 0 1; color: $foreground; }
     Questionnaire .q-other > Input, Questionnaire .q-other > Input:focus { width: 1fr; height: 1;
