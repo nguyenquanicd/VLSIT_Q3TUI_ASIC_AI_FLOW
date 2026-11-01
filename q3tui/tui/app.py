@@ -33,7 +33,7 @@ SHORTCUTS = [
     ("Ctrl+Q", "quit"), ("Ctrl+K", "command palette"), ("Ctrl+R", "run the flow"), ("Ctrl+X", "stop the run"),
     ("Ctrl+N / Ctrl+O", "new project / open project"), ("Alt+,", "settings"), ("F1", "keyboard shortcuts"),
     ("F6 / F7 / F8", "the flow / the model and effort / the cost"), ("Alt+F/R/V/H", "the File / Run / View / Help menu"),
-    ("Alt+1..4", "focus Assistant / Flow / Main / Activities"),
+    ("Tab / Shift+Tab", "the next / previous part"), ("Alt+1..9", "the n-th tab of the tabs around the focus"),
     ("t / o / f", "run to / only / from this step"), ("s", "run the stage of this step"), (".", "run this step again"),
     ("a / A", "approve / approve by force"), ("r", "send a change request"), ("q", "answer the next open question"),
     ("c / C", "confirm the selected item / every item"), ("w", "ask for a change to the selected item"),

@@ -6,7 +6,7 @@ A terminal sends Alt+<key> as ESC followed by the key. Textual 8 decodes some of
 - ESC+<digit>, ESC+- and ESC+=: the characters a macOS Option key types (¡ ™ £ … – ≠), not alt+1 … alt+=;
 - ESC+<punctuation> (ESC+,): the key alone (`comma`), the Alt lost.
 
-Q3TUI's keys (Alt+F/R/V/H for the menus, Alt+1 … Alt+4 for the areas, Alt+, for the settings) need them as Alt.
+Q3TUI's keys (Alt+F/R/V/H for the menus, Alt+1 … Alt+9 for the tabs, Alt+, for the settings) need them as Alt.
 """
 
 from collections.abc import Callable

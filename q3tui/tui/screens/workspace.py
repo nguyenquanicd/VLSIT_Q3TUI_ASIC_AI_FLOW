@@ -91,7 +91,7 @@ class WorkspaceScreen(PartScreen):
 
     @on(Tabs.Changed, "#sidebar-tabs")
     def _sidebar_changed(self, event: Tabs.Changed) -> None:
-        """Showing the other tab (a click, Alt+1, Alt+2) takes the focus into it."""
+        """Showing the other tab (a click, Alt+1, Alt+2 in the sidebar) takes the focus into it."""
         focused = self.focused
         if focused is None or not any(isinstance(a, TabsContent) and a.value == event.value
                                       for a in focused.ancestors_with_self):
@@ -225,7 +225,7 @@ class WorkspaceScreen(PartScreen):
     def action_step(self, action: str) -> None:
         sid = self.current_step()
         if sid is None:
-            self.app.toast("Pick a step first (Alt+2)", variant="warning")
+            self.app.toast("Pick a step first, in the Flow tab", variant="warning")
             return
         self.do(action, sid)
 

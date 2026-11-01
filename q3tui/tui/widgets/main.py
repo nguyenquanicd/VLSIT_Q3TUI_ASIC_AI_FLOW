@@ -116,7 +116,7 @@ class StepMain(Vertical):
             return
         if self.engine is None or self.step is None:
             yield Empty(EmptyHeader(EmptyMedia("flow"), EmptyTitle("No step in view"),
-                                    EmptyDescription("Pick a step in the Flow tab (Alt+2).")))
+                                    EmptyDescription("Pick a step in the Flow tab.")))
             return
         st = self.engine.status(self.step)
         with Horizontal(id="main-header"):
