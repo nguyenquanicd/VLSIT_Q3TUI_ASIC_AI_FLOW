@@ -102,6 +102,9 @@ class RuntimeStats(Widget):
             field = Static(id=f"{kind}-cost")
             self._show_cost(field, kind)
             yield field
+        key = Static(Content.styled(key_label("f8"), "dim"), id="cost-key")
+        key.tooltip = "F8: the details of the cost"
+        yield key
 
     def flow_label(self) -> str:
         return f"{icon('flow')} {self.flow}"
@@ -112,7 +115,7 @@ class RuntimeStats(Widget):
     def _show_cost(self, field: Static, kind: str) -> None:
         value = self.costs.get(kind, 0.0)
         field.update(f"{icon(kind + '_cost')} ${value:,.2f}")
-        field.tooltip = f"{COSTS[kind]}\n{value:,.4f} USD (click for details)"
+        field.tooltip = f"{COSTS[kind]}\n{value:,.4f} USD (click or F8 for details)"
 
     def update(self, *, model: str | None = None, effort: str | None = None,
                costs: dict[str, float] | None = None) -> None:
@@ -128,7 +131,7 @@ class RuntimeStats(Widget):
                 self._show_cost(self.query_one(f"#{kind}-cost", Static), kind)
 
     def on_click(self, event) -> None:
-        if getattr(event.widget, "id", "") in ("session-cost", "project-cost"):
+        if getattr(event.widget, "id", "") in ("session-cost", "project-cost", "cost-key"):
             self.app.action_cost_details()
 
 

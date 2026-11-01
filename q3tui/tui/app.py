@@ -32,7 +32,7 @@ from q3tui.tui.widgets.dialogs import (
 SHORTCUTS = [
     ("Ctrl+Q", "quit"), ("Ctrl+K", "command palette"), ("Ctrl+R", "run the flow"), ("Ctrl+X", "stop the run"),
     ("Ctrl+N / Ctrl+O", "new project / open project"), ("Alt+,", "settings"), ("F1", "keyboard shortcuts"),
-    ("F6 / F7", "the flow / the model and effort"), ("Alt+F/R/V/H", "the File / Run / View / Help menu"),
+    ("F6 / F7 / F8", "the flow / the model and effort / the cost"), ("Alt+F/R/V/H", "the File / Run / View / Help menu"),
     ("Alt+1..4", "focus Assistant / Flow / Main / Activities"),
     ("t / o / f", "run to / only / from this step"), ("s", "run the stage of this step"), (".", "run this step again"),
     ("a / A", "approve / approve by force"), ("r", "send a change request"), ("q", "answer the next open question"),
@@ -56,6 +56,7 @@ class Q3App(App):
         Binding("f1", "shortcuts", show=False),
         Binding("f6", "dropdown('flow-menu')", show=False),
         Binding("f7", "dropdown('runtime-menu')", show=False),
+        Binding("f8", "cost_details", show=False),
         Binding("alt+f", "menu('file')", show=False), Binding("alt+r", "menu('run')", show=False),
         Binding("alt+v", "menu('view')", show=False), Binding("alt+h", "menu('help')", show=False),
         Binding("alt+1", "focus_area(1)", show=False), Binding("alt+2", "focus_area(2)", show=False),

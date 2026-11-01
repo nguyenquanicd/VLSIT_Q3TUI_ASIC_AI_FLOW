@@ -129,3 +129,15 @@ async def test_palette_and_shortcuts(tmp_path, home):
         await pilot.press("ctrl+k")
         await pilot.pause()
         assert type(app.screen).__name__ == "CommandDialog"
+
+
+async def test_f8_opens_the_cost(tmp_path, home):
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        await pilot.press("f8")
+        await pilot.pause()
+        assert type(app.screen).__name__ == "CostDialog"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert type(app.screen).__name__ == "HomeScreen"
