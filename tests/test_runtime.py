@@ -63,6 +63,17 @@ async def test_broken_tool_and_timeouts(tmp_path):
     assert res.timed_out and not res.ok and res.log.name == "run_t1.log"
 
 
+async def test_progress_of_a_long_tool(tmp_path, monkeypatch):
+    from q3tui.tools import run as run_mod
+
+    monkeypatch.setattr(run_mod, "PROGRESS_S", 0.2)
+    slow = write(tmp_path / "slow.sh", "#!/bin/sh\necho 'pass 1 of 3'\nsleep 0.7\n", 0o755)
+    r = runner(tmp_path, f"    synth: {{cmd: '{slow}'}}\n")
+    lines = []
+    await r.run("s", "synth", progress=lines.append)
+    assert lines and lines[0] == "synth: running 0 s — pass 1 of 3"
+
+
 async def test_missing_tool(tmp_path):
     r = runner(tmp_path, "    sim: {cmd: 'no-such-simulator {top}'}\n")
     res = await r.run("s", "sim", required=False)

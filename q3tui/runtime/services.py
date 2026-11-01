@@ -19,7 +19,7 @@ class StepServices:
     async def tool(self, ctx: Ctx, role: str, log: str | None, timeout: str, vars: dict) -> Any:
         decl = next(t for t in ctx._instance.tools if t["role"] == role)
         return await self.tools.run(ctx._instance.id, role, required=decl["required"], log=log, timeout=timeout,
-                                    vars=vars)
+                                    vars=vars, progress=ctx.log)
 
     def step_started(self, ctx: Ctx) -> None:
         self.llm.step_started(ctx)

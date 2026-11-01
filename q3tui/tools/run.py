@@ -17,6 +17,7 @@ from q3tui.tools.readers import Diagnostic, Reader, read_log
 from q3tui.tools.roles import ToolEnv
 
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
+PROGRESS_S = 60  # a `log` line of the step every so often while a role runs
 
 
 class ToolError(Exception):
@@ -77,7 +78,8 @@ class ToolRunner:
         self.approved = approved
 
     async def run(self, step: str, role: str, *, required: bool = True, log: str | None = None,
-                  timeout: str = "broken", vars: dict | None = None) -> ToolResult:
+                  timeout: str = "broken", vars: dict | None = None,
+                  progress: Callable[[str], None] | None = None) -> ToolResult:
         cfg = self.config.config
         self.env.ensure(cfg)
         why = self.env.available(role)
@@ -110,6 +112,7 @@ class ToolRunner:
                 out.write(f"command not found: {exc.filename}\n".encode())
                 rc = 127
             else:
+                ticker = asyncio.ensure_future(_progress(role, log_path, started, progress)) if progress else None
                 try:
                     rc = await asyncio.wait_for(proc.wait(), seconds_allowed)
                 except TimeoutError:
@@ -121,6 +124,9 @@ class ToolRunner:
                     _kill(proc)
                     await proc.wait()
                     raise
+                finally:
+                    if ticker is not None:
+                        ticker.cancel()
         text = log_path.read_text(errors="replace").split("\n", 1)[-1]
         diags = read_log(spec.parse, text, self.readers)
         result = ToolResult(role, False, rc, diags, log_path, timed_out, command=argv,
@@ -132,6 +138,20 @@ class ToolRunner:
             raise ToolBroken(f"the tool `{role}` {what}: a problem of its command or environment, not of the design.\n"
                              f"Command: {shlex.join(argv)[:300]}\nLog: {log_path}\n{tail}")
         return result
+
+
+async def _progress(role: str, log: Path, started: float, report: Callable[[str], None]) -> None:
+    """Every PROGRESS_S: "<role>: running <time> — <the last line of its log>"."""
+    while True:
+        await asyncio.sleep(PROGRESS_S)
+        secs = int(time.monotonic() - started)
+        elapsed = f"{secs // 60} min" if secs >= 60 else f"{secs} s"
+        try:
+            lines = [x for x in log.read_text(errors="replace").splitlines()[-20:] if x.strip()]
+        except OSError:
+            lines = []
+        last = lines[-1].strip()[:160] if lines else ""
+        report(f"{role}: running {elapsed}" + (f" — {last}" if last else ""))
 
 
 def _kill(proc) -> None:
