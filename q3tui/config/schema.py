@@ -15,24 +15,24 @@ class _Strict(BaseModel):
 
 
 class LLM(_Strict):
-    model: str = "claude-sonnet-5-5"
-    fallback_model: str | None = None
-    effort: Effort | None = "medium"
-    thinking_budget: int | None = Field(6000, ge=0)
-    timeout_s: int | None = Field(None, ge=1)
-    task_max_cost: float | None = Field(None, gt=0)
-    tool_output_limit: int = Field(6000, ge=500)
-    task_token_budget: int | None = Field(1_000_000, ge=10_000)
-    env: dict[str, str] = Field(default_factory=dict)
+    model: str = Field("claude-sonnet-5-5", description="The model of every LLM task.")
+    fallback_model: str | None = Field(None, description="The model used when the main one fails.")
+    effort: Effort | None = Field("medium", description="The effort of every LLM task; empty for a model without effort.")
+    thinking_budget: int | None = Field(6000, ge=0, description="The thinking tokens of a model without effort; 0 = no thinking.")
+    timeout_s: int | None = Field(None, ge=1, description="The longest one LLM task may take, in seconds; empty = no limit.")
+    task_max_cost: float | None = Field(None, gt=0, description="The most one LLM task may spend, in USD; empty = no limit.")
+    tool_output_limit: int = Field(6000, ge=500, description="The most characters one tool call returns to the LLM.")
+    task_token_budget: int | None = Field(1_000_000, ge=10_000, description="Warn when one task reads more input tokens than this.")
+    env: dict[str, str] = Field(default_factory=dict, description="Environment variables given to the LLM.")
 
 
 class Pipeline(_Strict):
-    flow: str = "vlsit"
-    gate_mode: GateMode | None = None
-    auto_confirm_reviews: bool = False
-    max_fix_rounds: int = Field(5, ge=1, le=20)
-    max_parallel_stage: int = Field(1, ge=1)
-    max_cost: float | None = Field(None, gt=0)
+    flow: str = Field("vlsit", description="The flow a run uses.")
+    gate_mode: GateMode | None = Field(None, description="The gate mode of every step; empty = the flow files decide.")
+    auto_confirm_reviews: bool = Field(False, description="Confirm every review item.")
+    max_fix_rounds: int = Field(5, ge=1, le=20, description="The most rounds of a fix loop (1-20).")
+    max_parallel_stage: int = Field(1, ge=1, description="The most stages that run at the same time.")
+    max_cost: float | None = Field(None, gt=0, description="The most one run may spend, in USD; empty = no limit.")
 
 
 class StepSettings(_Strict):
@@ -59,11 +59,11 @@ class ToolRole(_Strict):
 
 
 class Tools(_Strict):
-    timeout_s: int = Field(600, ge=1)
-    modules: list[str] = Field(default_factory=list)
-    modules_init: str | None = None
-    setup_script: str | None = None
-    roles: dict[str, ToolRole] = Field(default_factory=dict)
+    timeout_s: int = Field(600, ge=1, description="The longest one tool run may take, in seconds.")
+    modules: list[str] = Field(default_factory=list, description="Modules loaded once when Q3TUI loads, for every tool.")
+    modules_init: str | None = Field(None, description="The module init script; empty = $MODULESHOME/init/bash.")
+    setup_script: str | None = Field(None, description="A script sourced once when Q3TUI loads, for every tool.")
+    roles: dict[str, ToolRole] = Field(default_factory=dict, description="How each tool role runs: its command, log reader, and more.")
 
 
 class Pdk(_Strict):
@@ -90,8 +90,8 @@ class McpServer(_Strict):
 
 
 class Tui(_Strict):
-    theme: Literal["vlsit-dark"] = "vlsit-dark"
-    icons: Literal["nerd", "unicode"] = "nerd"
+    theme: Literal["vlsit-dark"] = Field("vlsit-dark", description="The theme of the TUI.")
+    icons: Literal["nerd", "unicode"] = Field("nerd", description="Nerd Font glyphs, or plain Unicode for any font.")
 
 
 class Config(_Strict):
@@ -100,9 +100,9 @@ class Config(_Strict):
     steps: dict[str, StepSettings] = Field(default_factory=dict)
     stages: dict[str, StageSettings] = Field(default_factory=dict)
     tools: Tools = Field(default_factory=Tools)
-    pdks: dict[str, Pdk] = Field(default_factory=dict)
-    fpgas: dict[str, Fpga] = Field(default_factory=dict)
-    mcp_servers: dict[str, McpServer] = Field(default_factory=dict)
+    pdks: dict[str, Pdk] = Field(default_factory=dict, description="The standard-cell libraries of the ASIC flow.")
+    fpgas: dict[str, Fpga] = Field(default_factory=dict, description="The FPGA parts you add.")
+    mcp_servers: dict[str, McpServer] = Field(default_factory=dict, description="Outside MCP servers given to the LLM of every step.")
     tui: Tui = Field(default_factory=Tui)
 
 

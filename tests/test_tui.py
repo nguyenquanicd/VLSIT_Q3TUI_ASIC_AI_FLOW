@@ -100,6 +100,32 @@ async def test_settings_writes_the_project_file(tmp_path, home):
         assert app.opened.config.config.pipeline.max_fix_rounds == 3
 
 
+async def test_a_refused_value_shows_under_the_field_and_keeps_the_file(tmp_path, home):
+    from q3tui.tui.ui.field import FieldDescription, FieldError
+
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        app.action_settings()
+        await pilot.pause(1.0)
+        row = next(r for r in app.screen.query("SettingRow") if r.key.dotted == "pipeline.max_fix_rounds"
+                   and r.config_layer == "project")
+        assert "fix loop" in str(row.query_one(FieldDescription).render())
+        row.save("3")
+        await pilot.pause(0.5)
+        row = next(r for r in app.screen.query("SettingRow") if r.key.dotted == "pipeline.max_fix_rounds"
+                   and r.config_layer == "project")
+        value = row.query_one(".value")
+        value.value = "99"
+        value.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert str(row.query_one(FieldError).render()) and row.has_class("-invalid") and value.value == "99"
+        assert "max_fix_rounds: 3" in (tmp_path / "proj/.q3tui/config.yaml").read_text()  # the file as it was
+        await pilot.click(row.query_one(".row-key"))  # the name focuses the value
+        assert app.screen.focused is value
+
+
 async def test_chat_command(tmp_path, home):
     write(tmp_path / "proj/spec/intent.md", "x")
     write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")

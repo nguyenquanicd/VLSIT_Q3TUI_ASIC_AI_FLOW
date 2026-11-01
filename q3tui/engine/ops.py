@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from q3tui.config import ConfigLayers, set_value, unset_value
+from q3tui.config import ConfigError, ConfigLayers, set_value, unset_value
 from q3tui.engine.engine import Engine, EngineError, Scope, StageOutcome, StepStatus
 from q3tui.engine.events import Event
 from q3tui.engine.state import Request
@@ -118,11 +118,20 @@ class Ops:
         path = cfg.user_file if layer == "user" else cfg.project_file
         if path is None:
             raise EngineError(f"there is no {layer} config file")
+        before = path.read_text() if path.is_file() else None
         if value is None:
             unset_value(path, key)
         else:
             set_value(path, key, value)
-        cfg.reload()
+        try:
+            cfg.reload()
+        except ConfigError:  # a value refused leaves the file as it was
+            if before is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(before)
+            cfg.reload()
+            raise
 
     # -- cost -----------------------------------------------------------------------------------
 

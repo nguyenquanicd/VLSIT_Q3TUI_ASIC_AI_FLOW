@@ -21,6 +21,7 @@ from q3tui.config.schema import Config
 from q3tui.tui.screens.base import PartScreen
 from q3tui.tui.ui.button import Button
 from q3tui.tui.ui.command import CommandDialog, CommandItem
+from q3tui.tui.ui.field import Field, FieldDescription, FieldError, FieldLabel
 from q3tui.tui.ui.input import Input
 from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePanelGroup
 from q3tui.tui.ui.select import Select, SelectItem
@@ -66,7 +67,7 @@ def group_keys(section: str) -> list[Key]:
     f = Config.model_fields[section]
     base = f.annotation
     if typing.get_origin(base) is dict:
-        return [Key(section, "map")]
+        return [Key(section, "map", doc=f.description or "")]
     return keys_of(base, section)
 
 
@@ -87,11 +88,15 @@ def show(value) -> str:
     return str(value)
 
 
-class SettingRow(Vertical):
+class SettingRow(Field):
+    """One key of one layer (the Field component): its name (a click on it focuses the value), the value in effect
+    and where it comes from, the value of this layer with its buttons, the key's description, and the error of a
+    value refused (the text typed stays, to be fixed)."""
+
     DEFAULT_CSS = """
     SettingRow { height: auto; padding: 0 1; margin-bottom: 1; }
     SettingRow .row-head { height: 1; }
-    SettingRow .row-key { width: 1fr; text-style: bold; }
+    SettingRow .row-key { width: 1fr; }
     SettingRow .row-source { width: auto; color: $text-muted; }
     SettingRow .row-edit { height: auto; }
     SettingRow .row-edit Input, SettingRow .row-edit Select { width: 1fr; }
@@ -101,6 +106,7 @@ class SettingRow(Vertical):
     def __init__(self, key: Key, layer: str, merged: dict) -> None:
         super().__init__()
         self.key, self.config_layer, self.merged = key, layer, merged
+        self.control_id = f"value-{layer}-{key.dotted.replace('.', '-').replace('_', '-')}"
 
     def compose(self) -> ComposeResult:
         cfg = self.app.opened.config
@@ -108,7 +114,7 @@ class SettingRow(Vertical):
         source = cfg.source(self.key.dotted)
         here = cfg.layer_value(self.config_layer, self.key.dotted)
         with Horizontal(classes="row-head"):
-            yield Static(self.key.dotted, classes="row-key", markup=False)
+            yield FieldLabel(self.key.dotted, for_=f"#{self.control_id}", classes="row-key")
             yield Static(Content.assemble((show(effective), ""), ("  from ", "dim"), (source, "$accent")),
                          classes="row-source")
         with Horizontal(classes="row-edit"):
@@ -116,14 +122,18 @@ class SettingRow(Vertical):
                 choices = ("true", "false") if self.key.kind == "bool" else tuple(str(c) for c in self.key.choices)
                 yield Select(*(SelectItem(c, c) for c in choices),
                              value=None if here is None else str(here).lower() if self.key.kind == "bool" else str(here),
-                             placeholder=f"(not set in {self.config_layer})", id="value")
+                             placeholder=f"(not set in {self.config_layer})", id=self.control_id, classes="value")
             else:
                 yield Input(value="" if here is None else (json.dumps(here) if isinstance(here, (dict, list)) else str(here)),
-                            placeholder=f"(not set in {self.config_layer}; Enter saves)", id="value")
+                            placeholder=f"(not set in {self.config_layer}; Enter saves)", id=self.control_id,
+                            classes="value")
             yield Button("Reset", id="reset")
             if self.config_layer == "session" and here is not None:
                 yield Button("Save to Project", id="save-project")
                 yield Button("Save to User", id="save-user")
+        if self.key.doc:
+            yield FieldDescription(self.key.doc)
+        yield FieldError()
 
     def value(self, raw: str):
         if self.key.kind == "bool":
@@ -135,22 +145,30 @@ class SettingRow(Vertical):
         except ValueError:
             return raw
 
+    def set_error(self, message: str | None) -> None:
+        super().set_error(message)
+        for value in self.query(".value"):
+            value.set_class(bool(message), "-invalid")
+
     def save(self, raw: str, layer: str | None = None) -> None:
         screen = self.screen
         try:
             self.app.opened.ops.settings(self.key.dotted, self.value(raw), layer=layer or self.config_layer)
-            self.app.toast(f"{self.key.dotted} saved to {layer or self.config_layer}")
         except (ConfigError, Exception) as exc:  # noqa: BLE001 -- a bad value is refused, with the reason
-            self.app.toast(str(exc), variant="error")
+            text = str(exc)  # under the value, which keeps what was typed; the file and key are already shown
+            self.set_error(text.split(f"{self.key.dotted}: ", 1)[-1])
+            return
+        self.set_error(None)
+        self.app.toast(f"{self.key.dotted} saved to {layer or self.config_layer}")
         self.app.after_settings()
         screen.call_later(screen.redraw)
 
-    @on(Input.Submitted, "#value")
+    @on(Input.Submitted, ".value")
     def _submitted(self, event) -> None:
         event.stop()
         self.save(event.value)
 
-    @on(Select.Changed, "#value")
+    @on(Select.Changed, ".value")
     def _changed(self, event) -> None:
         event.stop()
         if event.value is not None:
@@ -291,7 +309,7 @@ class SettingsScreen(PartScreen):
             self.call_after_refresh(self._scroll_to_group)
 
     def main_part(self):
-        rows = self.query(f"#rows-{self.layer_tab} SettingRow #value")
+        rows = self.query(f"#rows-{self.layer_tab} SettingRow .value")
         return rows.first() if rows else self.query_one("#search")
 
     @on(Tabs.Changed, "#layer-tabs")
