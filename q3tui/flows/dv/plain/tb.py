@@ -9,7 +9,9 @@ Code: the TC ↔ REQ bookkeeping, REQ coverage (an uncovered REQ is always repor
 fixed), conditional test cases by parameter, the result macros / test includes / runner (`TC_RESULT <tc_id> PASS|FAIL`),
 filelists, the compile check (tool role `sim`) and the test plan file. The LLM writes `tb_top.sv` and, in groups, the test case files (only its own
 files); the test cases themselves are planned by the `testplan` step. Changes propagate as updates: a test case is rewritten only
-when what it was built from changed, or a scoped change request `[tb:<TC-id>]` names it.
+when what it was built from changed, or a scoped change request `[tb:<TC-id>]` names it. A change request for tb_top only (`[tb:top]`: a monitor
+the simulation triage found wrong) is a small session on tb_top.sv; the test cases stay unless they use a task, signal or macro of tb_top whose
+declaration changed (`gen.interface_changes`).
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ class _Run:
     meta: dict
     asked: dict[str, list[Question]] = field(default_factory=dict)  # unit -> questions its stage raised this run
     wrote: set[str] = field(default_factory=set)
+    top_changed: set[str] | None = None  # (tb_top changed for its own change requests only: the names of its interface that changed; None: anything may have)
     llm_calls: int = 0
 
     def tb_path(self, name: str) -> Path:
@@ -207,10 +210,19 @@ class PlainTb(VlsitStep):
             problems = "\n".join(f"- {p}" for p in tb_gen.top_problems(path.read_text()))
             if not problems:
                 return
-        ctx.emit("log", message="writing tb_top.sv …")
-        res = await ctx.llm(self._write_stage(run, "tb_top", tb_prompts.top_prompt(
-            path=project.rel(path), top=run.top, params=run.params, spec_files=run.spec_files, answers=run.answers, settled=run.settled,
-            feedback=[*run.general, *run.by_unit.get("top", [])], problems=problems, existing=path.is_file(), cases=selected), [path]))
+        before = path.read_text() if path.is_file() else ""
+        # only change requests for tb_top (a monitor the simulation triage found wrong): a small session on that file, and the test cases stay unless
+        # they use a task / signal / macro whose declaration changed (anything else rewrites tb_top from its inputs, and every test case after it)
+        small = bool(before and "top" in run.by_unit and not problems and not (ctx.regenerate or run.general or saved != h))
+        if small:
+            ctx.emit("log", message="changing tb_top.sv for its change request(s) …")
+            res = await ctx.llm(self._write_stage(run, "tb_top_change", tb_prompts.top_change_prompt(
+                path=project.rel(path), requests=run.by_unit["top"], text=before), [path]))
+        else:
+            ctx.emit("log", message="writing tb_top.sv …")
+            res = await ctx.llm(self._write_stage(run, "tb_top", tb_prompts.top_prompt(
+                path=project.rel(path), top=run.top, params=run.params, spec_files=run.spec_files, answers=run.answers, settled=run.settled,
+                feedback=[*run.general, *run.by_unit.get("top", [])], problems=problems, existing=path.is_file(), cases=selected), [path]))
         run.llm_calls += 1
         run.asked["top"] = res.output.questions if res.output else []
         for attempt in range(ctx.cfg.tb.max_fix_attempts):
@@ -226,6 +238,21 @@ class PlainTb(VlsitStep):
             raise StepFailed("tb_top.sv does not meet the framework contract: " + "; ".join(tb_gen.top_problems(path.read_text() if path.is_file() else "")))
         run.meta["top_hash"] = h
         run.wrote.add("top")
+        if small:
+            run.top_changed = tb_gen.interface_changes(before, path.read_text())
+            ctx.emit("log", message="tb_top.sv changed: " + ("the test cases are checked against it" if run.top_changed is None else
+                                                             f"{', '.join(sorted(run.top_changed))} changed, the test cases using them are rewritten"
+                                                             if run.top_changed else "no task, signal or macro the test cases use changed: they stay"))
+
+    def _top_touches(self, run: _Run, c: dict) -> bool:
+        """tb_top was written in this run: is this test case affected? After a full rewrite every one is; after a change request for tb_top only,
+        the ones that use a task, signal or macro whose declaration changed or went."""
+        if "top" not in run.wrote:
+            return False
+        if run.top_changed is None:
+            return True
+        p = run.tc_path(c)
+        return not p.is_file() or bool(run.top_changed & tb_gen.identifiers(p.read_text()))
 
     # -- test case files --------------------------------------------------------------------------------------
 
@@ -255,7 +282,7 @@ class PlainTb(VlsitStep):
         for c in selected:
             h = self._tc_hash(run, c)
             scoped = c["tc_id"] in run.by_unit or tb_plan.file_name(c) in run.by_unit
-            if ctx.regenerate or run.general or scoped or not run.tc_path(c).is_file() or hashes.get(c["tc_id"]) != h or "top" in run.wrote:
+            if ctx.regenerate or run.general or scoped or not run.tc_path(c).is_file() or hashes.get(c["tc_id"]) != h or self._top_touches(run, c):
                 todo.append((c, h))
         # (a test case file that changed outside this step or fails the code checks is repaired too)
         for c in selected:

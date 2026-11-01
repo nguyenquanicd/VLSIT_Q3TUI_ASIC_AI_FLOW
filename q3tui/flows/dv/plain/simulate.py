@@ -113,7 +113,8 @@ class _Live:
     """schemas/dv_test_results.json: every selected test of a run, PENDING → RUNNING → its result, rewritten at each change (the TUI's Tests tab reads it
     while the tests run). `last`: the test's result in the run before; `est_s`: its time then (the last run that finished it; without this file yet, the
     evidence's); `jobs` / `order`: the slots and the order the tests start in (the TUI's time left); `pid`: the process that writes it (a run that is
-    killed leaves PENDING / RUNNING tests and no `ended`: the TUI shows them as not run once that process is gone)."""
+    killed leaves PENDING / RUNNING tests and no `ended`: the TUI shows them as not run once that process is gone). `passed`: the version of the
+    project (Q3TUI's history, core/history.py) the test last passed with, {rev, at}: kept while it does not pass (the triage's "what changed since")."""
 
     def __init__(self, path: Path, cases: list[dict], jobs: int = 1, order: list[str] | None = None):
         import os
@@ -140,7 +141,8 @@ class _Live:
         self.data = {"schema_version": 1, "pid": os.getpid(), "started": artifacts.now(), "ended": None, "jobs": jobs,
                      "order": order or [c["tc_id"] for c in cases],
                      "tests": [{"tc_id": c["tc_id"], "name": c.get("name", ""), "req_ids": c.get("req_ids") or [], "status": "PENDING", "note": "", "log": "",
-                                "t0": None, "duration_s": None, "last": last(before.get(c["tc_id"], {})), "est_s": est(before.get(c["tc_id"], {}))}
+                                "t0": None, "duration_s": None, "last": last(before.get(c["tc_id"], {})), "est_s": est(before.get(c["tc_id"], {})),
+                                "passed": before.get(c["tc_id"], {}).get("passed")}
                                for c in cases]}
         self.by_id = {t["tc_id"]: t for t in self.data["tests"]}
         self.write()
@@ -234,6 +236,9 @@ async def run(step, ctx) -> None:
     meta.pop("failed_before", None)  # (kept here once: the status file says it, also after a run that was killed)
     before = bad_before(lay.schemas / LIVE, {c["tc_id"] for c in cases})
     order = [c for c in cases if c["tc_id"] in before] + [c for c in cases if c["tc_id"] not in before]
+    # the version of the project the tests run on (Q3TUI's history; a new one only for changes made outside a step): a test that passes keeps it,
+    # the triage of a later failure is told what changed since
+    rev = engine.record_version(f"{engine.flow.name} · {step.name}: starts (changes made outside a step)", step.name)
     live = _Live(lay.schemas / LIVE, cases, ctx.cfg.tb.sim_jobs(), [c["tc_id"] for c in order])
     halt, abort, again = threading.Event(), threading.Event(), []  # (halt: the tests that did not fail before stop; abort: all of them)
 
@@ -274,7 +279,8 @@ async def run(step, ctx) -> None:
             if missing:
                 status, note = "BLOCKED", f"missing input(s): {', '.join(missing[:6])}{' …' if len(missing) > 6 else ''}" + (f" (also: {note})" if note else "")
         done[tc] = (res, status, note, missing, None)
-        live.set(tc, status=status, note=note, log=log, duration_s=round(res.duration_s, 1))
+        live.set(tc, status=status, note=note, log=log, duration_s=round(res.duration_s, 1),
+                 **({"passed": {"rev": rev, "at": artifacts.now()}} if status == "PASS" and rev else {}))
         ctx.emit("log", message=f"simulation {tc} {c.get('name', '')}: {status}" + (f" ({note})" if note else "") + f" [{len(done)}/{len(cases)}]")
         if status == "FAIL" and before.get(tc) == "FAIL" and not halt.is_set():
             again.append(tc)
@@ -341,7 +347,8 @@ async def run(step, ctx) -> None:
         original = ("test cases that did not pass (details: reports/dv_test_results.md): " + ", ".join(f"{t} ({n})" for t, n in failed)
                     + ". The expected behavior comes from the approved specification; a failure is a finding about the DUT or the testbench, never a reason to change it")
         by_id = {c["tc_id"]: c for c in cases}
-        failures = [{"id": t, "name": by_id[t].get("name", ""), "note": n, "log": project.rel(work / f"run_{t}.log"), "reqs": by_id[t].get("req_ids") or []} for t, n in failed]
+        failures = [{"id": t, "name": by_id[t].get("name", ""), "note": n, "log": project.rel(work / f"run_{t}.log"), "reqs": by_id[t].get("req_ids") or [],
+                     "passed": live.by_id[t].get("passed")} for t, n in failed]
         await triage.handle_failures(step, ctx, failures, lay.rtl, "plain", original)  # whose fault: the testbench goes back to tb, the RTL to the rtl flow, the spec to you
         if to_prepare:
             engine.state.step_meta[step.name]["loop"] = True
