@@ -410,3 +410,30 @@ async def test_the_log_keeps_what_you_opened_while_it_rebuilds(tmp_path, home):
         await main.show("rtl")  # another step: its log starts closed
         await main.show("spec")
         assert not main.query_one("#step-log").query_one(TraceCollapsible).open
+
+
+async def test_a_click_on_a_line_inside_a_run_does_not_close_the_run():
+    from textual.app import App
+
+    from q3tui.tui.ui.trace import TraceCollapsible
+    from q3tui.tui.widgets.activities import EventLog
+
+    class Live(App):
+        def compose(self):
+            yield EventLog(id="live")
+
+    app = Live()
+    async with app.run_test(size=(120, 30)) as pilot:
+        log = app.query_one("#live", EventLog)
+        for e in RUN[:4]:
+            await log.write(e)
+        await pilot.pause()
+        box = log.query_one(TraceCollapsible)
+        header, task = box.query("EventLine")[:2]
+        assert box.open and task.parent is not box
+        await pilot.click(task)
+        await pilot.pause()
+        assert box.open  # the task line heads nothing
+        await pilot.click(header)
+        await pilot.pause()
+        assert not box.open

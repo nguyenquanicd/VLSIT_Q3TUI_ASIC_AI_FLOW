@@ -68,7 +68,8 @@ class TraceLine(Action):
 
     @property
     def section(self) -> Collapsible | None:
-        return next((a for a in self.ancestors if isinstance(a, TraceCollapsible)), None)
+        """The collapsible this line heads; a line inside its content heads none."""
+        return self.parent if isinstance(self.parent, TraceCollapsible) else None
 
     def on_mount(self) -> None:
         section = self.section
