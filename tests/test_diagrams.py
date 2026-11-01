@@ -33,3 +33,6 @@ async def test_markdown_draws_and_enlarges():
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, DiagramDialog)
+        await pilot.click(DiagramFence)  # one click is enough
+        await pilot.pause()
+        assert isinstance(app.screen, DiagramDialog)

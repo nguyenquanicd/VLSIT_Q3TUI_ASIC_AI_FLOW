@@ -1,5 +1,5 @@
 """Textual's Markdown, with ```mermaid and ```wavedrom blocks drawn as diagrams (spec/tui.md "Main"): the source
-when it cannot be drawn; Enter or a double-click shows a diagram larger, in a Dialog."""
+when it cannot be drawn; a click (or Enter) shows a diagram larger, in a Dialog."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class DiagramFence(MarkdownFence):
             self._highlighted_code = Content(self.art)
             self.add_class("-diagram")
             self.can_focus = True
-            self.tooltip = "Enter or double-click: larger, in a dialog"
+            self.tooltip = "Click or Enter: larger, in a dialog"
 
     def notify_style_update(self) -> None:
         if self.art is None:
@@ -48,7 +48,7 @@ class DiagramFence(MarkdownFence):
             self.app.push_screen(DiagramDialog(self.art, f"Diagram ({self.lexer})"))
 
     def on_click(self, event: events.Click) -> None:
-        if event.chain >= 2 and self.art is not None:
+        if self.art is not None:
             event.stop()
             self.action_enlarge()
 
