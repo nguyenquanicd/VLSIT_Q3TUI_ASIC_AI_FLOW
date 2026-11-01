@@ -411,9 +411,6 @@ class Engine:
                     if mode is None and self._take_user_file(sid):
                         progressed = True
                         continue
-                    if mode is None and self._try_rebase(sid):
-                        progressed = True
-                        continue
                     lacks = self.missing(sid)
                     if lacks:
                         continue
@@ -459,30 +456,6 @@ class Engine:
         st.inputs = self._current_inputs(inst)
         st.hash = hash_value(st.inputs)
         self.emit("step_skipped", step=sid, reason="user")
-        self.save()
-        return True
-
-    def _try_rebase(self, sid: str) -> bool:
-        """The output already holds the decisions and every pass check still holds: record the new inputs."""
-        st = self.state.step(sid)
-        if not st.rebase or not self.is_stale(sid) or st.pending_requests():
-            return False
-        inst = self.flow.instances[sid]
-        current = self._current_inputs(inst)
-        if any(k.startswith(("param:", "asset:")) and st.inputs.get(k) != v for k, v in current.items()):
-            st.rebase = []
-            return False
-        ctx = self._ctx(inst, Changes(first_run=False))
-        code = self._safe_code(inst)
-        ctx._code = code
-        results = Checker(inst, self.artifacts, self.root, tools=st.tools,
-                          code_check=lambda name: code.check(name, ctx),
-                          allow_run=self._allow_run(inst)).run_all()
-        st.rebase = []
-        if any(r.status == "fail" and r.on_fail == "fail" for r in results):
-            return False
-        st.inputs, st.hash = current, hash_value(current)
-        self.emit("step_skipped", step=sid, reason="up_to_date")
         self.save()
         return True
 
@@ -1016,13 +989,10 @@ class Engine:
         owner = self._owner(q)
         q.owner = owner
         text = f"{q.text} → {answer}"
-        if owner != q.step:
+        if owner != q.step:  # the owner updates, then the step that asked runs again on its new output
             self._add_request(owner, "decision", text, key=q.key, kind=q.kind, question=q.id)
-            if is_default:
-                self.state.step(q.step).rebase.append(q.id)
-            else:
-                self._add_request(q.step, "decision", text, key=q.key, kind=q.kind, question=q.id)
-        elif not is_default:
+            self._add_request(q.step, "decision", text, key=q.key, kind=q.kind, question=q.id)
+        elif not is_default:  # its own default is already in its output
             self._add_request(q.step, "decision", text, key=q.key, kind=q.kind, question=q.id)
         self._reset_round(owner)
 

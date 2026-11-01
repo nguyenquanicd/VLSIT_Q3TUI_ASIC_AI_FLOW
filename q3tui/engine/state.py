@@ -67,7 +67,6 @@ class StepState:
     loop: Loop = field(default_factory=Loop)
     tools: dict[str, dict] = field(default_factory=dict)  # role -> the last result (for `tool` checks)
     cost_usd: float = 0.0
-    rebase: list[str] = field(default_factory=list)  # questions whose default the output already holds
     started: dict | None = None  # {backup, before}: to put back an interrupted step
     finished_at: str | None = None
     ran: bool = False

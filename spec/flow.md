@@ -359,7 +359,7 @@ role.
 
 The step's definition of done, checked by the engine whatever the step's code does: it
 lets a step without code be checked, a team add its own criteria without changing code,
-and a reader see what "done" means; the engine also runs it for a rebase (Engine).
+and a reader see what "done" means.
 
 ```yaml
 pass:

@@ -289,15 +289,11 @@ after the run.
   `origin: user`, the answer stays with the step that asked, as a `design_choice`.
 - An answer becomes a `[decision]` change request on the owner step, which updates; the
   steps after it follow through staleness.
-- **Rebase.** The step that asked is not run again when its output already contains the
-  decision and every pass check of its STEP.md (`pass`) still holds.
-  - Its output already contains the decision when the answer is the question's default
-    (the step wrote that assumption into its output), a `defaulted` question included.
-    Another answer makes the step run again as an update, after the owner step updated.
-  - The engine runs the pass checks on the current output with the new inputs, without the
-    LLM. If one fails, the step runs again as an update.
-  - When the rebase holds, the engine records the step's hashes against its new inputs, so
-    that it is not stale.
+- The step that asked runs again as an update once the owner step has updated: its
+  output came from the input before the answer (the owner's answer, the default included,
+  changes that input). An answer that stays with the step that asked makes it run again
+  as an update, unless it is the question's default (the step wrote that assumption into
+  its output).
 - `answered` and `defaulted` questions are settled decisions. A later step gets them in
   `ctx.settled`, but only those of the steps it may see (Flow definitions, "What the
   LLM may read"). A question a

@@ -331,7 +331,7 @@ async def test_settled_key_is_not_asked_again(tmp_path):
     assert seen == [None, "x"] and len(eng.decisions.questions) == 1
 
 
-async def test_answer_goes_to_the_owner_and_rebase(tmp_path):
+async def test_an_answer_goes_to_the_owner_then_the_step_that_asked_runs_again(tmp_path):
     w = World(tmp_path, {"s": ["arch", "rtl"]}, {
         "arch": "outputs:\n  - {artifact: arch, path: out/arch.md}\nanswers: [arch_gap]\n",
         "rtl": "inputs:\n  - {artifact: arch}\noutputs:\n  - {artifact: rtl, path: out/rtl.sv}\n"
@@ -348,13 +348,12 @@ async def test_answer_goes_to_the_owner_and_rebase(tmp_path):
     w.code["rtl"] = Fake(rtl)
     eng = w.open()
     await eng.run()
-    eng.answer("rtl-Q1", "yes")  # the default: rtl's output already holds it
+    eng.answer("rtl-Q1", "yes")  # the default too: arch's answer changes rtl's input
     q = eng.decisions.get("rtl-Q1")
     assert q.owner == "arch" and q.status == "answered"
     w.code["arch"] = Fake(writer("arch", "v2"))
     await eng.run()
-    assert w.started() == ["arch", "rtl", "arch"]  # rtl is rebased, not run again
-    assert w.kinds("step_skipped")[-1] == {**w.kinds("step_skipped")[-1], "step": "rtl", "reason": "up_to_date"}
+    assert w.started() == ["arch", "rtl", "arch", "rtl"]  # arch updates, then rtl on the new arch
     assert eng.status("rtl").display == "done"
 
 
