@@ -61,7 +61,7 @@ class Q3App(App):
         Binding("f8", "cost_details", show=False, priority=True),
         *(Binding(f"alt+{k}", f"menu('{m}')", show=False, priority=True)
           for k, m in (("f", "file"), ("r", "run"), ("v", "view"), ("h", "help"))),
-        *(Binding(f"alt+{n}", f"focus_area({n})", show=False, priority=True) for n in range(1, 5)),
+        *(Binding(f"alt+{n}", f"tab({n})", show=False, priority=True) for n in range(1, 10)),
     ]
 
     def __init__(self, opened: Opened, *, session: list[str] | None = None, home: Path | None = None) -> None:
@@ -116,7 +116,8 @@ class Q3App(App):
         cfg = o.config.config
         stats = RuntimeStats(o.flow.name or cfg.pipeline.flow, o.lookup.flows() or [cfg.pipeline.flow], cfg.llm.model,
                              cfg.llm.effort, self.costs())
-        title = TitleBar(menus(gate=cfg.pipeline.gate_mode, icons=cfg.tui.icons), stats)
+        shown = self.screen.has_class("-assistant") if isinstance(self.screen, SettingsScreen) else None
+        title = TitleBar(menus(gate=cfg.pipeline.gate_mode, assistant=shown), stats)
         status = StatusBar(str(o.project.root), self.status_text)
         return title, status
 
@@ -249,27 +250,23 @@ class Q3App(App):
             self.opened.engine.tool_env.ensure(self.opened.config.config)
         self.refresh_cost()
 
-    def action_focus_area(self, n: int) -> None:
+    def action_tab(self, n: int) -> None:
+        """Alt+<n>: the n-th tab of the tab component around the focus (the sidebar, Main, the Settings)."""
+        from q3tui.tui.ui.tabs import Tabs
+
+        focused = self.screen.focused
+        tabs = next((a for a in focused.ancestors_with_self if isinstance(a, Tabs)), None) if focused else None
+        if tabs is None:
+            return
+        enabled = [t for t in tabs.triggers if not t.disabled]
+        if not 1 <= n <= len(enabled):
+            return
+        tabs.select(enabled[n - 1].value)
         screen = self.screen
-        if isinstance(screen, SettingsScreen) and n == 1:
-            screen.action_toggle_assistant()
-            return
-        if not isinstance(screen, WorkspaceScreen):
-            return
-        tabs = screen.query_one("#sidebar-tabs")
-        if n == 1:
-            tabs.select("assistant")
-            screen.query_one("#chat-input").focus()
-        elif n == 2:
-            tabs.select("flow")
-            rows = screen.tree.rows
-            (next((r for r in rows if r.kind == "step" and r.ident == screen.tree.selected), None) or
-             (rows[0] if rows else screen.tree)).focus()
-        elif n == 3:
-            screen.main.focus_next() if not screen.main.children else screen.set_focus(
-                next(iter(screen.main.query("ItemList, TabsTrigger, Button")), None))
-        elif n == 4:
-            screen.query_one("#activities").viewport.focus()
+        if tabs.id == "main-tabs" and isinstance(screen, WorkspaceScreen):
+            self.call_after_refresh(lambda: (t := screen.main.focus_target()) and t.focus())
+        elif tabs.id == "layer-tabs" and isinstance(screen, SettingsScreen):
+            self.set_timer(0.15, screen.focus_main)
 
     async def action_menu(self, name: str) -> None:
         bars = self.screen.query(Menubar)
@@ -366,8 +363,8 @@ class Q3App(App):
             elif value.startswith("icons-"):
                 self._session("tui.icons", value[6:])
                 self.switch_screen(type(self.screen)(self.bars))
-            elif value.startswith("focus-"):
-                self.action_focus_area(int(value[6:]))
+            elif value == "view-assistant" and isinstance(self.screen, SettingsScreen):
+                self.screen.action_toggle_assistant()
             elif value.startswith("model-"):
                 self._session("llm.model", value[6:])
             elif value.startswith("effort-"):

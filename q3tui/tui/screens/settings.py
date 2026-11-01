@@ -315,6 +315,18 @@ class SettingsScreen(PartScreen):
             self.call_after_refresh(lambda: self.query("#chat-input") and self.query_one("#chat-input").focus())
         else:
             self.focus_main()
+        self._sync_view_menu(showing)
+
+    def _sync_view_menu(self, showing: bool) -> None:
+        """View ▸ Assistant shows whether the Assistant is shown."""
+        from q3tui.tui.ui.menu import MenuCheckboxItem
+
+        for bar in self.query("Menubar"):
+            for menu in bar.menus:
+                for item in getattr(menu.content, "children", ()):
+                    if isinstance(item, MenuCheckboxItem) and item.value == "view-assistant":
+                        item.checked = showing
+            bar.refresh_content()
 
     def _scroll_to_group(self) -> None:
         hits = self.query(f"#group-{self.group}-{self.layer_tab}")

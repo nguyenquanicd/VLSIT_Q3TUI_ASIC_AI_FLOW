@@ -14,6 +14,7 @@ from q3tui.tui.ui.icons import icon, key_label
 from q3tui.tui.ui.menu import MenuContent, MenuLabel, MenuRadioGroup, MenuRadioItem, MenuSeparator
 from q3tui.tui.ui.menubar import (
     Menubar,
+    MenubarCheckboxItem,
     MenubarContent,
     MenubarItem,
     MenubarMenu,
@@ -36,8 +37,8 @@ COSTS = {
 }
 
 
-def menus(*, gate: str | None, icons: str) -> tuple[MenubarMenu, ...]:
-    """File · Run · View · Help."""
+def menus(*, gate: str | None, assistant: bool | None = None) -> tuple[MenubarMenu, ...]:
+    """File · Run · View · Help. `assistant`: whether the Assistant is shown, None where it cannot be hidden."""
     return (
         MenubarMenu("file", MenubarTrigger("File"), MenubarContent(
             MenubarItem("New project", "new-project", MenubarShortcut.from_key("ctrl+n")),
@@ -55,13 +56,8 @@ def menus(*, gate: str | None, icons: str) -> tuple[MenubarMenu, ...]:
                 *(MenubarRadioItem(g, f"gate-{g}", close_on_select=True) for g in GATES), value=f"gate-{gate}"))),
             MenubarItem("Run changed steps again", "rerun-changed"),
         )),
-        MenubarMenu("view", MenubarTrigger("View"), MenubarContent(
-            MenubarSub(MenubarSubTrigger("Icons", "icons"), MenubarSubContent(MenubarRadioGroup(
-                *(MenubarRadioItem(s, f"icons-{s}", close_on_select=True) for s in ("nerd", "unicode")),
-                value=f"icons-{icons}"))),
-            MenubarSub(MenubarSubTrigger("Focus", "focus"), MenubarSubContent(
-                *(MenubarItem(name, f"focus-{n}", MenubarShortcut.from_key(f"alt+{n}"))
-                  for n, name in enumerate(("Assistant", "Flow", "Main", "Activities"), 1)))),
+        MenubarMenu("view", MenubarTrigger("View"), MenubarContent(  # only what can be shown or hidden
+            MenubarCheckboxItem("Assistant", "view-assistant", checked=assistant, disabled=assistant is None),
         )),
         MenubarMenu("help", MenubarTrigger("Help"), MenubarContent(
             MenubarItem("Keyboard shortcuts", "shortcuts", MenubarShortcut.from_key("f1")),

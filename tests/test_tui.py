@@ -172,3 +172,28 @@ async def test_global_alt_keys_work_while_typing(tmp_path, home):
         await pilot.pause(0.3)
         assert app.screen.query_one("#sidebar-tabs").value == "flow"
         assert app.screen.query_one("#chat-input").text == ""  # the digit was not typed
+
+
+async def test_alt_number_picks_a_tab_of_the_tabs_around_the_focus(tmp_path, home):
+    write(tmp_path / "proj/spec/intent.md", "x")
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.5)
+        app.start_run(only="spec")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.5)
+        row = next(r for r in app.screen.query(FlowRow) if r.ident == "spec")
+        row.focus()
+        await pilot.press("enter", "tab")  # the step in Main, then the focus in Main
+        await pilot.pause(0.3)
+        tabs = app.screen.query_one("#main-tabs")
+        values = [t.value for t in tabs.triggers]
+        await pilot.press("alt+2")
+        await pilot.pause(0.3)
+        assert tabs.value == values[1]
+        app.action_settings()
+        await pilot.pause(1.0)
+        await pilot.press("alt+3")
+        await pilot.pause(0.5)
+        assert app.screen.query_one("#layer-tabs").value == "user"

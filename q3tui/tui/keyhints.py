@@ -30,6 +30,15 @@ def _step_keys(display: str | None) -> list[tuple[str, str]]:
 
 
 def hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
+    keys = _hints(screen, focused)
+    tabs = _find(focused, "Tabs")
+    if tabs is not None:  # Alt+<n>: a tab of the tab component around the focus
+        n = len([t for t in tabs.triggers if not t.disabled])
+        keys.insert(len(keys) - 1 if keys and keys[-1][0] == "tab" else len(keys), (f"alt+1…{n}", "tab"))
+    return keys
+
+
+def _hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
     kind = type(screen).__name__
     move = [("tab", "next part")]
     if _find(focused, "Menubar"):
@@ -84,8 +93,8 @@ def hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
                 return [("enter", "press"), ("escape", "back"), *move]
             return [("enter", "save"), ("escape", "back"), ("ctrl+f", "search"), *move]
         if _find(focused, "ChatInput"):
-            return [("enter", "send"), ("shift+enter", "new line"), ("alt+1", "hide assistant"), *move]
-        return [("escape", "back"), ("ctrl+f", "search"), ("alt+1", "assistant"), *move]
+            return [("enter", "send"), ("shift+enter", "new line"), *move]
+        return [("escape", "back"), ("ctrl+f", "search"), *move]
     return move
 
 
