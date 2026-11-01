@@ -8,6 +8,8 @@ import time
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
+from textual.widgets import Static
 
 from q3tui.tui.screens.base import PartScreen
 from q3tui.tui.ui.context_menu import ContextMenu
@@ -35,6 +37,8 @@ class WorkspaceScreen(PartScreen):
     WorkspaceScreen #columns { height: 1fr; margin: 1 0; }
     WorkspaceScreen #sidebar-tabs { height: 1fr; }
     WorkspaceScreen #sidebar-tabs TabsContent { height: 1fr; margin-top: 0; }
+    WorkspaceScreen #panel-title { width: auto; height: 1; padding: 0 1; background: $surface; text-style: bold; }
+    WorkspaceScreen #activities { height: 1fr; }
     """
     BINDINGS = [
         Binding("t", "step('run_to')", show=False), Binding("o", "step('run_only')", show=False),
@@ -79,7 +83,8 @@ class WorkspaceScreen(PartScreen):
                 ResizablePanelGroup(
                     ResizablePanel(StepMain(opened.engine, opened.problems, id="main"), size=sizes.get("main", 70)),
                     ResizableHandle(),
-                    ResizablePanel(Activities(id="activities"), size=sizes.get("panel", 30), id="panel"),
+                    ResizablePanel(Vertical(Static("Activities", id="panel-title"), Activities(id="activities")),
+                                   size=sizes.get("panel", 30), id="panel"),
                     direction="vertical", id="rows"),
                 size=sizes.get("body", 70), id="body"),
             id="columns")
