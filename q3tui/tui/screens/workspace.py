@@ -80,6 +80,31 @@ class WorkspaceScreen(PartScreen):
         self.refresh_statuses()
         super().on_mount()
 
+    def on_descendant_focus(self, event) -> None:
+        """The focus and the sidebar tab in view always agree: a focus that lands in the other tab shows it."""
+        tabs = self.query_one("#sidebar-tabs", Tabs)
+        content = next((a for a in self.focused.ancestors_with_self if isinstance(a, TabsContent)
+                        and a.parent is tabs), None) if self.focused is not None else None
+        if content is not None and content.value != tabs.value:
+            tabs.select(content.value)
+        super().on_descendant_focus()
+
+    @on(Tabs.Changed, "#sidebar-tabs")
+    def _sidebar_changed(self, event: Tabs.Changed) -> None:
+        """Showing the other tab (a click, Alt+1, Alt+2) takes the focus into it."""
+        focused = self.focused
+        if focused is None or not any(isinstance(a, TabsContent) and a.value == event.value
+                                      for a in focused.ancestors_with_self):
+            target = self.query_one("#chat-input") if event.value == "assistant" else self.main_part()
+            if target is not None:
+                def go() -> None:  # after the layout: a widget hidden by the switch drops the focus then
+                    if self.focused is not target and target.focusable:
+                        target.focus()
+
+                self.call_after_refresh(go)
+                self.set_timer(0.1, go)
+        self.app.refresh_keys()
+
     def on_screen_resume(self) -> None:
         """Back from Settings or a dialog: the states may have changed."""
         self.refresh_statuses()
