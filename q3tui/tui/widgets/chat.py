@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import shlex
 
-from rich.markdown import Markdown as RichMarkdown
 from textual import on
 from textual.actions import SkipAction
 from textual.binding import Binding
@@ -26,6 +25,7 @@ from q3tui.tui.ui.input import Textarea
 from q3tui.tui.ui.message_scroller import MessageScroller
 from q3tui.tui.ui.questionnaire import Question, Questionnaire
 from q3tui.tui.ui.text_button import TextButton
+from q3tui.tui.widgets.markdown import Q3Markdown
 
 
 def parse_command(text: str) -> tuple[str, dict]:
@@ -166,7 +166,7 @@ class ChatPanel(Vertical):
     ChatPanel #chat-head TextButton { width: auto; margin-left: 1; }
     ChatPanel MessageScroller { height: 1fr; padding: 0 1; }
     ChatPanel .chat-you { margin: 1 0 0 0; }
-    ChatPanel .chat-text { width: 1fr; height: auto; margin-top: 1; }
+    ChatPanel .chat-text { width: 1fr; height: auto; margin-top: 1; padding: 0; }
     ChatPanel .chat-tool { height: auto; color: $text-muted; }
     ChatPanel .chat-note { height: auto; color: $text-muted; }
     ChatPanel #chat-commands { margin: 0 1; height: auto; max-height: 10; }
@@ -219,7 +219,7 @@ class ChatPanel(Vertical):
 
     def emit(self, kind: str, data: dict) -> None:
         if kind == "text":
-            self.call_later(self.log_widget, Static(RichMarkdown(data["text"]), classes="chat-text"))
+            self.call_later(self.log_widget, Q3Markdown(data["text"], classes="chat-text"))
         elif kind == "tool":
             args = data.get("input") or {}
             arg = next((str(args[k]) for k in ("file_path", "pattern", "step", "key", "id") if k in args), "")

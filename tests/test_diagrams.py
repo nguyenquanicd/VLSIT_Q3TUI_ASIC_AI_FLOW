@@ -36,3 +36,18 @@ async def test_markdown_draws_and_enlarges():
         await pilot.click(DiagramFence)  # one click is enough
         await pilot.pause()
         assert isinstance(app.screen, DiagramDialog)
+
+
+async def test_a_code_block_has_its_language_and_copy():
+    from q3tui.tui.widgets.markdown import CopyCode
+
+    app = Viewer()
+    copied = []
+    app.copy_to_clipboard = copied.append
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.3)
+        diagram, code = list(app.query(DiagramFence))
+        assert not diagram.query(CopyCode) and code.query_one(".code-lang").content == "sv"
+        await pilot.click(CopyCode)
+        await pilot.pause()
+        assert copied == ["module m;\n"] or copied == ["module m;"]
