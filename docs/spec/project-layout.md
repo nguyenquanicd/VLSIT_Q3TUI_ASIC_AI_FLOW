@@ -47,16 +47,14 @@ it any time). Internal state lives in `.q3tui/`. A step names no folder: it asks
     ├── team/roles.json         ← persistent LLM sessions (flow / team roles)
     ├── prompts/<step>.md       ← the built-in prompt of each stage as last run
     ├── bkp/<timestamp>/        ← copies of files before any agent edit or reset
+    ├── history/                ← the project's versions: one per finished step, one per flow that passed (passed/<flow>); a git
+    │                             repository of Q3TUI's own, never pushed, apart from your git (docs/spec/history.md)
     ├── fpga/ asic/ sanity/     ← per-step work directories of the tools
     ├── stats.jsonl             ← usage per LLM stage and step
     ├── tui/                    ← layout.json, the assistant's session.json
-    ├── tags/<name>/            ← lanes (docs/spec/lanes.md): files/ (the frozen design, read-only), pipeline.json, tag.json,
-    │                             results/<lane>.json, changes/<lane>.jsonl (after `q3tui lanes clean`), converged
-    ├── lane.json / lane_changes.jsonl   ← in a lane folder only: which tag and lane; what the lane changed (for the merge)
+    ├── run.<flow>.lock / design.lock   ← the run of each flow (pid, phase); the turn to change the design (pipeline.md "Runs of several flows")
     └── runs/<run_id>/events.jsonl   ← every LLM/tool event
 
-<project>.lanes/<tag>/<lane>/  ← beside the project folder (lanes.dir): one project folder per lane over a tag; spec/ and src/
-                                 hard-linked to the tag, copied when a step writes there; its own .q3tui/ and build/       disposable
 ```
 
 The rtl flow keeps its own working files inside the RTL folder: `src/rtl/csr/` (register map, report, provided modules; `patches/`: the changes made

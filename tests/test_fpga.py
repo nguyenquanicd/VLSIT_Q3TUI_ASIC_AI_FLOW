@@ -254,6 +254,7 @@ async def test_vivados_progress_reaches_the_log_and_stop_kills_it(proj):
     import anyio
     import subprocess
 
+    proj.cfg.pipeline.history = False  # (the history's git calls at each step end would eat into the 7 s this test gives the run, on a busy machine)
     fake = proj.root / "fake_vivado.py"
     fake.write_text(
         "import sys, time\nfrom pathlib import Path\nlog = Path(sys.argv[2]) / 'vivado.log'\n"
@@ -731,7 +732,6 @@ async def test_auto_answer_runs_the_owner_flow_and_goes_round_again(proj, monkey
             f.write_text(f.read_text() + "// pipelined\n")
 
     monkeypatch.setattr(ReadsStep, "run", run)
-    proj.cfg.lanes.fork = False  # (the loop in the project folder itself; with forking it goes on in a copy: tests/test_parallel_runs.py)
     eng = Engine(proj)
     events = []
     eng.bus.subscribe(lambda e: events.append(e))

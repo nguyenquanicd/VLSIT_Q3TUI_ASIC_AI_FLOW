@@ -74,6 +74,9 @@ pipeline:
   auto_approve: false             # gates approve themselves, but stop for blocking questions (/autoapprove, --auto-approve)
   auto_answer: false              # unattended: gates approve, every question takes its default, proposals accepted (/autoanswer, --auto-answer)
   auto_confirm_reviews: false     # confirm a step's own reviewable items (flagged REQs, changed parameters) without asking (/autoconfirm)
+  history: true                   # the project's versions in .q3tui/history/: one per finished step and per flow that passed (docs/spec/history.md)
+  design_flows: [rtl]             # the flows whose steps make the design (rtl includes spec → parse → config): a run changes the design only
+                                  # while no run of another flow is in a step (pipeline.md "Runs of several flows"; an old `lanes:` block is read for it)
   max_fix_iterations: 5           # fix rounds (a step's triage → fixes → check loop) when the step sets no `max_fix_rounds`
   escalate_after_repeats: 2       # same finding, no progress → ask human
   step_options: {}                # per-step options on top of the flow file's: {rtl: {lint_max_warnings: 0}}
@@ -96,15 +99,6 @@ rtl:                              # the rtl flow's rtl step
   max_fix_attempts: 3             # extra rounds when Q3TUI's own checks (rules, lint, synthesis) still fail
   parallel: 4                     # modules written at once
   max_turns: (ignored)            # like Claude Code: no turn limit, Claude decides when a task is done
-
-lanes:                            # lanes (lanes.md): the checking flows at the same time on a frozen tag
-  flows: [dv, fpga, sanity]       # the lanes (`q3tui lanes run`, the TUI's L)
-  design_flows: [rtl]             # the flows whose steps make the design a tag freezes (rtl includes spec → parse → config)
-  dir: null                       # where the lane folders go (default: <project>.lanes beside the project folder)
-  max_rounds: null                # `q3tui lanes converge` (default pipeline.max_fix_iterations)
-  max_cost_usd: null              # converge stops when this much was spent
-  fork: true                      # a checking flow's run that would change the design goes on in a copy (lanes.md "A run that forks")
-  auto_merge: true                # a fork that fixed something merges back by itself (unattended runs) once no other run goes on
 
 team:                             # role sessions (team.md)
   enabled: false                  # every role's tasks go to that role's one persistent session (`q3tui team`)

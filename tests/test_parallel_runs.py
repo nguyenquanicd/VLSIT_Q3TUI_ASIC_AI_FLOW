@@ -1,59 +1,125 @@
 """Runs of several flows in one project folder (docs/spec/pipeline.md "Runs of several flows"): `r` in dv, then fpga, then sanity. One run per
-flow, one state file merged per step, a step two runs share runs once, an input another run changes keeps a step stale, and a checking run
-that would change the design goes on in a copy (core/lanes.py `fork_run`). The step kinds and the project are the lanes tests'."""
+flow, one state file merged per step, a step two runs share runs once, an input another run changes keeps a step stale. Code-only step kinds: a
+design flow (spec → rtl, each applying its change requests to its file) and checking flows that check the RTL and, when it lacks something, hand
+a fix to the design flow within the run (as the dv triage does)."""
 
 from __future__ import annotations
 
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import anyio
 import pytest
 
 from q3tui import flows
-from q3tui.core import lanes
-from q3tui.pipeline.base import StepContext, StepDef
+from q3tui.core.project import Project
+from q3tui.pipeline.base import StepContext, StepDef, StepFailed
 from q3tui.pipeline.engine import Engine
-from tests.test_lanes import _flow as _lane_flow
-from tests.test_lanes import _kinds, _project  # noqa: F401 - (_kinds: the step kinds, an autouse fixture)
 
 
-class TDirect(StepDef):
-    """As the FPGA PPA step: unattended, it hands a fix to the design flow and runs that flow's rtl step itself (a flow run inside the checking
-    run, behind an `except Exception`)."""
+class TSpec(StepDef):
+    """Design: spec/intent.md → spec/spec.md; a change request becomes a line of it."""
 
-    title = "T direct"
+    title = "T spec"
+
+    def inputs(self, engine):
+        return [engine.project.root / "spec" / "intent.md"]
+
+    def outputs(self, engine):
+        p = engine.project.root / "spec" / "spec.md"
+        return [p] if p.is_file() else []
+
+    async def run(self, ctx: StepContext) -> None:
+        p = ctx.project.root / "spec" / "spec.md"
+        lines = p.read_text().splitlines() if p.is_file() else [(ctx.project.root / "spec" / "intent.md").read_text().strip()]
+        p.write_text("\n".join([*lines, *(f"decision: {f}" for f in ctx.feedback)]) + "\n")
+
+
+class TRtl(StepDef):
+    """Design: src/rtl/top.sv from the spec; a change request `[rtl:top] X` becomes a `// fix: X` line (kept across runs)."""
+
+    title = "T rtl"
+
+    def inputs(self, engine):
+        return [engine.project.root / "spec" / "spec.md"]
+
+    def outputs(self, engine):
+        p = engine.project.root / "src" / "rtl" / "top.sv"
+        return [p] if p.is_file() else []
+
+    async def run(self, ctx: StepContext) -> None:
+        p = ctx.project.root / "src" / "rtl" / "top.sv"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fixes = [x for x in p.read_text().splitlines() if x.startswith("// fix:")] if p.is_file() else []
+        fixes += [f"// fix: {f.split('] ', 1)[-1]}" for f in ctx.feedback if f"// fix: {f.split('] ', 1)[-1]}" not in fixes]
+        p.write_text("module top;\n" + "".join(f"{x}\n" for x in fixes) + "endmodule\n")
+
+
+class TCheck(StepDef):
+    """A check of the RTL. options: need (a fix the RTL must have: handed to the design flow within the run), sleep."""
+
+    title = "T check"
 
     def inputs(self, engine):
         return [engine.project.root / "src" / "rtl" / "top.sv"]
 
     def outputs(self, engine):
-        p = engine.project.root / "results" / "direct.txt"
+        p = engine.project.root / "results" / f"{self.name}.txt"
         return [p] if p.is_file() else []
 
     async def run(self, ctx: StepContext) -> None:
-        (ctx.project.root / "results").mkdir(exist_ok=True)
-        (ctx.project.root / "results" / "direct.txt").write_text((ctx.project.root / "src" / "rtl" / "top.sv").read_text())
-
-    async def unattended(self, engine) -> bool:
-        if "// fix: D" in (engine.project.root / "src" / "rtl" / "top.sv").read_text():
-            return False
-        Engine(engine.project, engine.bus, flow=flows.load_flow("design", engine.project.root)).request_change("rtl", "[rtl:top] D")
-        try:
-            await Engine(engine.project, engine.bus, flow=flows.load_flow("design", engine.project.root)).run(only="rtl", yes=True)
-        except Exception:  # noqa: BLE001 - (as the PPA step: a hand-off that failed is said, not raised)
-            return False
-        return True
+        o, root, eng = self.options, ctx.project.root, ctx.engine
+        await anyio.sleep(float(o.get("sleep", 0)))
+        meta = eng.state.step_meta.setdefault(self.name, {})
+        rounds = int(meta.get("rounds", 0))
+        rtl = (root / "src" / "rtl" / "top.sv").read_text()
+        need = o.get("need")
+        if need and f"// fix: {need}" not in rtl:
+            if rounds >= 3:
+                raise StepFailed(f"the RTL still lacks {need}")
+            eng.save()  # (as the dv triage: the design flow's engine queues the fix, this one reads it back, the run runs that flow)
+            Engine(ctx.project, flow=flows.load_flow("design", root)).request_change("rtl", f"[rtl:top] {need}")
+            eng.reload()
+            eng.hand_to_flow(self.name, "design")
+            eng.state.step_meta[self.name]["rounds"] = rounds + 1
+            return
+        (root / "results").mkdir(exist_ok=True)
+        (root / "results" / f"{self.name}.txt").write_text(f"pass on {rtl.count('// fix:')} fix(es)\n")
 
 
 @pytest.fixture(autouse=True)
-def _direct_kind():
+def _kinds():
     from q3tui.steps import KINDS, register_kind
 
-    register_kind("t_direct", "tests.test_parallel_runs:TDirect")
+    names = {"t_spec": "TSpec", "t_rtl": "TRtl", "t_check": "TCheck"}
+    for k, cls in names.items():
+        register_kind(k, f"tests.test_parallel_runs:{cls}")
     yield
-    KINDS.pop("t_direct", None)
+    for k in names:
+        KINDS.pop(k, None)
+
+
+SPEC = "- {id: spec, kind: t_spec}\n"
+
+
+def _write_flow(root: Path, name: str, steps: str) -> None:
+    (root / "flows").mkdir(exist_ok=True)
+    (root / "flows" / f"{name}.yaml").write_text(f"name: {name}\nsteps:\n" + "".join(f"  {s}\n" for s in steps.splitlines() if s.strip()))
+
+
+def _project(tmp_path: Path) -> Project:
+    root = tmp_path / "proj"
+    (root / "spec").mkdir(parents=True)
+    (root / "spec" / "intent.md").write_text("a block\n")
+    _write_flow(root, "design", SPEC + "- {id: rtl, kind: t_rtl, deps: [spec]}")
+    _write_flow(root, "lb", SPEC + "- {id: check_b, kind: t_check, deps: [spec], options: {need: B, sleep: 0.3}}")
+    _write_flow(root, "lc", SPEC + "- {id: check_c, kind: t_check, deps: [spec], options: {sleep: 0.3}}")
+    (root / "q3tui.yaml").write_text("pipeline: {flow: design, design_flows: [design]}\n")
+    project = Project.open(root)
+    assert anyio.run(lambda: Engine(project, flow=flows.load_flow("design", root)).run(yes=True)) == "complete"
+    return project
 
 
 @pytest.fixture
@@ -77,7 +143,7 @@ def _flow(project, name):
 
 
 def test_the_runs_of_two_flows_share_the_state_file(tmp_path, other_run):
-    project = _project(tmp_path, lane_flows=("lb", "lc"))
+    project = _project(tmp_path)
     cost0 = Engine(project).state.total_cost_usd
     a, b = Engine(project, flow=_flow(project, "lb")), Engine(project, flow=_flow(project, "lc"))
     a.state.step_meta["check_b"] = {"x": 1}
@@ -109,7 +175,7 @@ def test_the_runs_of_two_flows_share_the_state_file(tmp_path, other_run):
 
 def test_a_step_another_run_executes_is_waited_for(tmp_path, other_run, monkeypatch):
     monkeypatch.setattr(Engine, "WAIT_S", 0.05)
-    project = _project(tmp_path, lane_flows=("lc",))
+    project = _project(tmp_path)
     (project.root / "spec" / "intent.md").write_text("a block, v2\n")  # (spec is out of date for every flow that has it)
     eng0 = Engine(project, flow=_flow(project, "design"))
     rec = eng0.state.step("spec")
@@ -138,7 +204,7 @@ def test_a_step_another_run_executes_is_waited_for(tmp_path, other_run, monkeypa
 
 
 def test_an_input_another_run_changes_while_a_step_runs_keeps_it_stale(tmp_path, other_run):
-    project = _project(tmp_path, lane_flows=("lc",))
+    project = _project(tmp_path)
     other_run(project, "lb")  # (another flow's run goes on meanwhile)
     eng = Engine(project, flow=_flow(project, "lc"))
     seen = []
@@ -157,66 +223,3 @@ def test_an_input_another_run_changes_while_a_step_runs_keeps_it_stale(tmp_path,
     assert any("src/rtl/top.sv changed in another run while check_c ran" in str(e.data.get("message")) for e in seen)
     views = {v.name: v.status for v in Engine(project, flow=_flow(project, "lc")).status()}
     assert views["check_c"] == "stale"
-
-
-def test_a_checking_run_that_would_change_the_design_goes_on_in_a_copy(tmp_path):
-    project = _project(tmp_path, lane_flows=("lb",))
-    project.cfg.lanes.auto_merge = False
-    eng = Engine(project, flow=_flow(project, "lb"))
-    seen = []
-    eng.bus.subscribe(seen.append)
-    assert anyio.run(lambda: eng.run(yes=True)) == "complete"
-    assert (project.root / "src" / "rtl" / "top.sv").read_text() == "module top;\nendmodule\n"  # your folder: the design as it was
-    assert lanes.latest_tag(project) == "v1" and json.loads((lanes.tags_dir(project) / "v1" / "tag.json").read_text())["fork"] == "lb"
-    lane = lanes.lane_dir(project, "v1", "lb")
-    assert "// fix: B" in (lane / "src" / "rtl" / "top.sv").read_text()                   # the fix, in the copy
-    assert [(c["kind"], c["target"], c["origin"]) for c in lanes.read_changes(lane)] == [("request", "rtl", "lb (forked at rtl)")]
-    assert lanes.tag_results(project, "v1")["lb"]["status"] == "fixed" and not Engine(project).state.feedback.get("rtl")
-    msgs = [str(e.data.get("message")) for e in seen]
-    assert any("lb: the fix changes the design (rtl): going on in its own copy" in m for m in msgs)
-    assert any("its fixes wait in the copy: merge them with m" in m for m in msgs)
-    m = anyio.run(lambda: lanes.merge(project, "v1", ["lb"]))                                # (m on the Lanes screen)
-    assert m["merged"] and "// fix: B" in (project.root / "src" / "rtl" / "top.sv").read_text()
-
-
-def test_a_fork_merges_by_itself_once_the_other_runs_have_ended(tmp_path, other_run, monkeypatch):
-    monkeypatch.setattr(Engine, "WAIT_S", 0.05)
-    project = _project(tmp_path, lane_flows=("lb", "lc"))
-    other_run(project, "lc")
-    eng = Engine(project, flow=_flow(project, "lb"))
-    seen = []
-    eng.bus.subscribe(seen.append)
-    out = {}
-
-    async def main():
-        async def run():
-            out["outcome"] = await eng.run(yes=True)
-
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(run)
-            for _ in range(200):
-                await anyio.sleep(0.05)
-                if any("merging when the run(s) of lc end" in str(e.data.get("message")) for e in seen):
-                    break
-            out["top_meanwhile"] = (project.root / "src" / "rtl" / "top.sv").read_text()
-            other_run.process.kill()  # (the lc run ends)
-
-    anyio.run(main)
-    assert out["top_meanwhile"] == "module top;\nendmodule\n" and out["outcome"] == "complete"
-    assert "// fix: B" in (project.root / "src" / "rtl" / "top.sv").read_text() and lanes.latest_tag(project) == "v2"
-    assert not (project.state_dir / "run.lb.lock").exists()
-
-
-def test_a_flow_run_inside_the_checking_run_forks_the_checking_run(tmp_path):
-    project = _project(tmp_path, lane_flows=("ld",))
-    _lane_flow(project.root, "ld", "- {id: spec, kind: t_spec}\n- {id: direct, kind: t_direct, deps: [spec]}")
-    project.cfg.pipeline.auto_answer, project.cfg.lanes.auto_merge = True, False
-    eng = Engine(project, flow=_flow(project, "ld"))
-    seen = []
-    eng.bus.subscribe(seen.append)
-    assert anyio.run(lambda: eng.run(yes=True)) == "complete"
-    assert (project.root / "src" / "rtl" / "top.sv").read_text() == "module top;\nendmodule\n"
-    lane = lanes.lane_dir(project, "v1", "ld")
-    assert "// fix: D" in (lane / "src" / "rtl" / "top.sv").read_text() and lanes.tag_results(project, "v1")["ld"]["status"] == "fixed"
-    assert not [e for e in seen if e.kind == "run_finished" and e.data.get("outcome") == "cancelled"]   # (the nested run is not "cancelled")
-    assert not (project.state_dir / "run.design.lock").exists() and not (project.state_dir / "run.ld.lock").exists()
