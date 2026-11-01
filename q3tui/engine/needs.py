@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
-from q3tui.config.schema import Config
 from q3tui.engine.artifacts import Artifacts, expand
 from q3tui.flowdef.load import Lookup
 from q3tui.flowdef.model import Instance
-from q3tui.tools.roles import available
 from q3tui.workspace.sites import Sites
 
 
@@ -29,7 +28,8 @@ def installed_ref(name: str, lookup: Lookup) -> str | None:
     return None
 
 
-def missing(inst: Instance, artifacts: Artifacts, lookup: Lookup, config: Config, root: Path) -> list[str]:
+def missing(inst: Instance, artifacts: Artifacts, lookup: Lookup, tool_available: Callable[[str], str | None],
+            root: Path) -> list[str]:
     """What the step lacks, one line each (empty when nothing is missing)."""
     out: list[str] = []
     flow = artifacts.flow
@@ -39,7 +39,7 @@ def missing(inst: Instance, artifacts: Artifacts, lookup: Lookup, config: Config
             out.append(f"the input `{i.artifact}`{where} does not exist")
     for t in inst.tools:
         if t["required"]:
-            why = available(config, t["role"])
+            why = tool_available(t["role"])
             if why:
                 out.append(why)
     for pk in inst.packages:

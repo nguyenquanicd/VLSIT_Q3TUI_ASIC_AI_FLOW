@@ -41,6 +41,8 @@ from q3tui.engine.state import (
 from q3tui.engine.views import review_items
 from q3tui.flowdef.load import Lookup
 from q3tui.flowdef.model import Flow, Instance
+from q3tui.tools.roles import ToolEnv
+from q3tui.workspace.approvals import Approvals
 from q3tui.workspace.project import Project
 
 DISPLAY_ORDER = ("running", "failed", "missing_input", "question waiting", "stale", "approval waiting", "approved",
@@ -114,7 +116,8 @@ class Scope:
 class Engine:
     def __init__(self, project: Project, flow: Flow, config: ConfigLayers, lookup: Lookup, *,
                  code_for: Callable[[Instance], StepCode] | None = None, services: Services | None = None,
-                 bus: EventBus | None = None, allow_run: Callable[[Instance, str], bool] | None = None):
+                 bus: EventBus | None = None, allow_run: Callable[[Instance, str], bool] | None = None,
+                 approvals: Approvals | None = None, tool_env: ToolEnv | None = None):
         if not flow.ok:
             raise EngineError("the flow has errors:\n" + "\n".join(map(str, flow.problems)))
         self.project, self.flow, self.config, self.lookup = project, flow, config, lookup
@@ -127,6 +130,8 @@ class Engine:
         self.decisions = Decisions(project.decisions_file)
         self.artifacts = Artifacts(flow, project.root)
         self.lock = Lock(project.lock_file)
+        self.approvals = approvals
+        self.tool_env = tool_env or ToolEnv(config.config, approved=self._setup_approved)
         self.run_id = ""
         self.running: dict[str, asyncio.Task] = {}
         self._run_task: asyncio.Task | None = None
@@ -144,6 +149,16 @@ class Engine:
     def emit(self, kind: str, step: str = "", **fields) -> None:
         stage = self.flow.stage_of(step).name if step in self.flow.instances else ""
         self.bus.emit(kind, run_id=self.run_id, stage=stage, step=step, **fields)
+
+    def _setup_approved(self, command: str) -> bool:
+        """A `setup_script` from the project layer runs only once you allowed it."""
+        if self.config.source("tools.setup_script") != "project":
+            return True
+        return self.approvals is not None and self.approvals.allowed(self.root, "command", command)
+
+    def tool_available(self, role: str) -> str | None:
+        self.tool_env.ensure(self.config.config)
+        return self.tool_env.available(role)
 
     @property
     def is_running(self) -> bool:
@@ -213,7 +228,7 @@ class Engine:
         return out
 
     def missing(self, sid: str) -> list[str]:
-        return missing(self.flow.instances[sid], self.artifacts, self.lookup, self.config.config, self.root)
+        return missing(self.flow.instances[sid], self.artifacts, self.lookup, self.tool_available, self.root)
 
     def units(self, sid: str) -> list[str]:
         inst = self.flow.instances[sid]
@@ -455,7 +470,8 @@ class Engine:
             st.rebase = []
             return False
         ctx = self._ctx(inst, Changes(first_run=False))
-        code = self.code_for(inst)
+        code = self._safe_code(inst)
+        ctx._code = code
         results = Checker(inst, self.artifacts, self.root, tools=st.tools,
                           code_check=lambda name: code.check(name, ctx),
                           allow_run=self._allow_run(inst)).run_all()
@@ -466,6 +482,13 @@ class Engine:
         self.emit("step_skipped", step=sid, reason="up_to_date")
         self.save()
         return True
+
+    def _safe_code(self, inst: Instance) -> StepCode:
+        try:
+            return self.code_for(inst)
+        except Exception as exc:  # noqa: BLE001 -- reported; the step then has no code to call
+            self.emit("error", step=inst.id, message=f"the code of {inst.id} does not load: {exc}")
+            return _NoCode()
 
     def _allow_run(self, inst: Instance) -> Callable[[str], bool] | None:
         if self.allow_run is None:
@@ -543,7 +566,18 @@ class Engine:
         ctx._instance = inst
         ctx._stage = self.flow.stage_of(sid)
         ctx._allowed = self._readable(inst)
+        ctx._tool_available = self.tool_available
+        ctx._code = None
         return ctx
+
+    def _hook(self, name: str, *args) -> None:
+        """Tell the services (LLM runtime) where the step is in its life: started, finished."""
+        fn = getattr(self.services, name, None)
+        if fn is not None:
+            try:
+                fn(*args)
+            except Exception as exc:  # noqa: BLE001 -- a service's bookkeeping never breaks the run
+                self.emit("warning", step=args[0]._instance.id, message=f"{name}: {exc}")
 
     def _readable(self, inst: Instance) -> dict[str, list[Path]]:
         """What the step's LLM may read and write (spec/flow.md "What the LLM may read")."""
@@ -570,6 +604,19 @@ class Engine:
         self._run_cost += usd
 
     async def _run_step(self, sid: str, mode: str | None) -> str:
+        box: dict = {}
+        result = "failed"
+        try:
+            result = await self._run_step_body(sid, mode, box)
+            return result
+        except asyncio.CancelledError:
+            result = "cancelled"
+            raise
+        finally:
+            if "ctx" in box:
+                self._hook("step_finished", box["ctx"], result)
+
+    async def _run_step_body(self, sid: str, mode: str | None, box: dict) -> str:
         inst = self.flow.instances[sid]
         st = self.state.step(sid)
         before = copy.deepcopy(st)
@@ -590,9 +637,13 @@ class Engine:
         self.save()
         self.emit("step_started", step=sid, changes=changes.summary(), regenerate=mode == "regenerate")
         ctx = self._ctx(inst, changes)
-        code = self.code_for(inst)
+        box["ctx"] = ctx
         cost_before = st.cost_usd
+        code = _NoCode()
         try:
+            code = self.code_for(inst)
+            ctx._code = code
+            self._hook("step_started", ctx)
             await code.run(ctx)
             for art, kept in seeds_before.items():  # a seed, once written, is yours: never overwritten
                 now_files = {f: f.read_bytes() for f in self.artifacts.files(art)}
@@ -742,9 +793,11 @@ class Engine:
         self._on_approve(inst, code)
 
     def _on_approve(self, inst: Instance, code: StepCode | None = None) -> None:
-        code = code or self.code_for(inst)
+        code = code or self._safe_code(inst)
         try:
-            code.on_approve(self._ctx(inst, Changes(first_run=False)))
+            ctx = self._ctx(inst, Changes(first_run=False))
+            ctx._code = code
+            code.on_approve(ctx)
         except Exception as exc:  # noqa: BLE001 -- on_approve must not break an approval
             self.emit("error", step=inst.id, message=f"on_approve of {inst.id}: {exc}")
 

@@ -28,7 +28,9 @@ class Ops:
     def __init__(self, engine: Engine, *, home: Path):
         self.engine = engine
         self.home = home
-        self.approvals = Approvals(home / "approvals.yaml")
+        self.approvals = engine.approvals or Approvals(home / "approvals.yaml")
+        engine.approvals = self.approvals
+        self.addons = None  # q3tui.runtime.addons.Addons, set when the flow's addons are loaded
 
     @property
     def config(self) -> ConfigLayers:
@@ -133,6 +135,30 @@ class Ops:
     def reset_cost(self) -> None:
         self.engine.reset_cost()
 
+    # -- actions of the steps' addons -----------------------------------------------------------
+
+    def actions(self) -> list:
+        return list(self.addons.actions.values()) if self.addons else []
+
+    def call_action(self, name: str, **params) -> str:
+        """Run an action an addon registered; it returns one line for the log."""
+        action = self.addons.actions.get(name) if self.addons else None
+        if action is None:
+            raise EngineError(f"no action `{name}`")
+        unknown = set(params) - set(action.params)
+        if unknown:
+            raise EngineError(f"action `{name}` takes {', '.join(action.params) or 'no params'}, not {', '.join(unknown)}")
+        line = str(action.fn(self, **params))
+        self.engine.emit("log", step=action.step, message=line)
+        return line
+
+    def import_files(self, files: list[Path]) -> dict[str, str | None]:
+        """Offer files to the importers of the flow, in the order of its steps: each file and the step that took
+        it (None: nobody)."""
+        from q3tui.runtime.addons import offer
+
+        return offer(self.addons.importers if self.addons else [], [Path(f) for f in files], self)
+
     # -- packages, sites, approvals, presets ---------------------------------------------------
 
     def _package_source(self, name: str) -> dict:
@@ -162,6 +188,8 @@ class Ops:
 
     def allow(self, kind: Kind, content: str | bytes) -> None:
         self.approvals.allow(self.engine.project.root, kind, content)
+        if kind == "command" and content == self.config.config.tools.setup_script:
+            self.engine.tool_env.load()  # the tools' environment can be made now
 
     def deny(self, kind: Kind, content: str | bytes) -> None:
         """Nothing is stored: a command or code not allowed is asked about again next time."""
