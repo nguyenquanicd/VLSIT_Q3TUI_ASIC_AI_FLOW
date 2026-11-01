@@ -66,7 +66,7 @@ if [ "$UNINSTALL" = 1 ]; then
   command -v uv >/dev/null 2>&1 || die "uv not found: nothing to uninstall with"
   say "removing the q3tui command"
   run uv tool uninstall q3tui
-  [ "$DRY" = 1 ] || ok "removed (your ~/.q3tui settings and your projects are untouched)"
+  [ "$DRY" = 1 ] || ok "removed (your \$Q3TUI_HOME and your projects are untouched)"
   exit 0
 fi
 
@@ -88,26 +88,29 @@ case ":$PATH:" in
   *) warn "$BIN_DIR is not on PATH — run 'uv tool update-shell' (or add 'export PATH=\"$BIN_DIR:\$PATH\"' to your shell profile) and open a new shell" ;;
 esac
 
-# --- user settings ----------------------------------------------------------------------------------------------------
-CONF_DIR="${Q3TUI_HOME:-$HOME/.q3tui}"
-if [ -f "$CONF_DIR/q3tui.yaml" ]; then
-  ok "keeping your settings: $CONF_DIR/q3tui.yaml"
-elif [ -f "$REPO/q3tui.example.yaml" ]; then
-  say "writing a starting configuration: $CONF_DIR/q3tui.yaml (edit the model, tool modules, flow)"
-  run mkdir -p "$CONF_DIR"
-  run cp "$REPO/q3tui.example.yaml" "$CONF_DIR/q3tui.yaml"
+# --- user config (spec/config.md "Defaults and installation") ---------------------------------------------------------
+TOOL_PY="$(uv tool dir 2>/dev/null)/q3tui/bin/python"
+if [ "$DRY" = 1 ]; then
+  printf '   [dry-run] create %s/config.yaml if it is missing (llm.model, llm.effort, pipeline.flow)\n' "${Q3TUI_HOME:-$HOME/.q3tui}"
+else
+  "$TOOL_PY" -c '
+from q3tui.config import install_user_config
+from q3tui.paths import user_config_file
+path = user_config_file()
+print(" \033[32m✔\033[0m", "created" if install_user_config(path) else "keeping your", "user config:", path)
+'
 fi
 
 # --- what the script cannot do for you --------------------------------------------------------------------------------
 if command -v claude >/dev/null 2>&1; then
   ok "Claude Code found: $(command -v claude) (Q3TUI uses the Claude Agent SDK: log in with 'claude' once, or set ANTHROPIC_API_KEY)"
 else
-  warn "Claude Code CLI not found — Q3TUI's LLM calls go through the Claude Agent SDK: install Claude Code and log in, or set ANTHROPIC_API_KEY"
+  warn "Claude Code CLI not found: Q3TUI's LLM calls go through the Claude Agent SDK; install Claude Code and log in, or set ANTHROPIC_API_KEY"
 fi
 if command -v module >/dev/null 2>&1 || [ -f /etc/profile.d/modules.sh ]; then
-  ok "environment modules available (Synopsys tools are loaded through tools.json 'modules')"
+  ok "environment modules available (the tools load them through tools.modules in the config)"
 else
-  warn "no 'module' command: Synopsys tools must be on PATH, or set 'setup_script' in tools.json"
+  warn "no 'module' command: the tools must be on PATH, or set tools.setup_script in the config"
 fi
 
 # --- verify -----------------------------------------------------------------------------------------------------------
@@ -115,16 +118,14 @@ if [ "$DRY" != 1 ]; then
   say "checking the install"
   export PATH="$BIN_DIR:$PATH"
   command -v q3tui >/dev/null 2>&1 || die "the q3tui command is not on PATH yet (see the PATH note above)"
-  q3tui --version
-  q3tui flow list
+  q3tui --help >/dev/null && ok "q3tui runs"
 fi
 
 cat <<EOF
 
 $(printf '\033[1m')Next steps$(printf '\033[0m')
+  Install a flow (a site linked into \$Q3TUI_HOME: spec/workspace.md "Sites"), then:
   mkdir my_block && cd my_block
-  q3tui tools init        # tools.json: VCS lint / compile / run, Design Compiler — edit modules and the .db library
-  q3tui tools check       # are the tools found?
-  q3tui run --intent "…"  # or put your spec in spec/ ; \`q3tui\` alone opens the TUI (/run, ? for keys)
-Docs: $REPO/docs/spec/README.md · flows: docs/spec/vlsit-flow.md · examples: $REPO/examples/
+  q3tui                   # opens the TUI: write the intent on Home, then run (Ctrl+R)
+Spec: $REPO/spec/
 EOF

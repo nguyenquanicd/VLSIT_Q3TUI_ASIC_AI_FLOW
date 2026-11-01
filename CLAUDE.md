@@ -1,45 +1,47 @@
 # Q3TUI
 
-Our own multi-agent chip design/verification platform.
+A terminal workspace that runs hardware design flows (FLOW / STAGE / STEP files, from a separate flow repository)
+as a make-like pipeline of code and LLM steps.
 
-- Our design + roadmap: `docs/spec/` — keep it in sync when behaviour changes. Current milestone is in `docs/spec/README.md`.
+## The spec
+
+`spec/<aspect>.md` is the source of truth; the code follows it. Each fact has one owner aspect; the others link to it.
+
+- It describes only the target state: no history, no "was / is gone / replaces", no comparison with an
+  implementation, nothing left ambiguous (an undecided point goes under "Open items").
+- A change to the code that differs from the spec is discussed with the user first, then written into the spec in
+  the same commit.
+- The flows themselves (vlsit, …) and the content of their artifacts are not specified here.
+- Code docstrings point to the spec as `spec/<aspect>.md "Section"`.
 
 ## Stack
 
-- Python ≥ 3.11, `uv` (`uv sync`, `uv run pytest`), package `q3tui/` at the repo root.
-- LLM: **Claude Agent SDK** (`claude-agent-sdk`) only — all LLM calls go through `q3tui.llm.runtime.run_stage`. Default model `claude-sonnet-5-5` (config `llm.model`).
-- RTL parsing: `pyslang` (`q3tui.hdl.parse`). EDA tools: pluggable, vendor-agnostic role adapters in `q3tui.eda` (lint, synthesis, simulation, formal, debug); agents never call vendor binaries directly.
+- Python ≥ 3.11 with `uv` (`uv sync`, `uv run pytest`, `uv run ruff check q3tui tests`; line length 100).
+- LLM: the Claude Agent SDK only, through `q3tui/llm/runtime.py`. TUI: Textual, with a library of components
+  ported from shadcn (`q3tui/tui/ui/`).
 
 ## Layout
 
-- `core/` — CLI, config, settings, project layout, events, stats, language, icons, ops; `llm/` — runtime, roles, prompts, TUI assistant; `eda/` — tool adapters, tools-by-role (`eda/tools.py`, `eda/presets/`); `hdl/` — filelist + pyslang parsing.
-- `pipeline/engine.py` — step graph, content-hash staleness, gates, spec imports; `pipeline.json` state.
-- Flow (`pipeline.flow`, default **`spec`**); built-in flows: `spec` (spec → parse → config; docs/spec/spec-flow.md), `rtl` (RTL, reusing the spec flow's three steps: rules → Verible flags, CSR from the APB-CSR-Generator, format, style lint, smoke test; `flows/rtl/`, docs/spec/rtl-flow.md), `fpga`, `asic`, `dv` (spec → parse → config → `testplan` → `tb` → `prepare` → `simulate`; `prepare`: the programs / data the plain testbench's tests load, `src/sw/`, built with `sw_build` (RISC-V GCC + Spike), `flows/dv/prepare/`; the testbench kind is the `tb` option `testbench`: `plain` — any IP, a reviewed test plan, `flows/dv/plain/`; `uvm` — AXI-style memory-mapped IPs with an existing VIP: the verification contract with its open issues, the testbench with the RTL as its DUT, `flows/dv/uvm/`; `auto` picks uvm when a VIP is set; the simulations are judged from the logs; docs/spec/dv-flow.md, docs/spec/dut-dv.md; example `examples/axi4_sram_ctrl`), `sanity` (CDC / RDC, docs/spec/sanity-flow.md), `project` and `example` (a minimal folder flow: spec → parse).
-- Flows are data (`flows/__init__.py`, `q3tui/flows/<name>/`, docs/spec/flows.md): `pipeline.flow: <name|path>` picks a flow file (project `flows/`, `~/.q3tui/flows/`, built-in) that lists step **kinds** (`steps.KINDS`, `register_kind`), deps, gate modes (`human|auto|auto_answer|none`; `pipeline.gate_modes` overrides, `Ops.set_gate_mode`), options, `gap_targets`, `sees`. `spec` is a folder `q3tui/flows/spec/` with one folder per step (`step.py`, `md/` (skill.md + the original prompts), `rules/`, `schemas/`, `scripts/`; shared base in `flows/spec/lib/`: `base`, `artifacts`, `constraints`; the tb / sva / verify / doc steps of the former VLSIT flow were removed); flows can be folders, files, markdown (docs/spec/flows.md). Engine code never hardcodes step names for a flow: use `engine.pipeline_steps`, `engine.label`, `engine.gate_modes()`; TUI panels are registered per step kind (`tui/panels.py`).
-- Sessions: `session: flow` in a flow file (none built in now) = one persistent Claude session for the whole flow (role `flow` in `llm/roles.py`, `engine.session_mode()`), `fresh` = per stage; `pipeline.session` overrides. In `flow` mode, reviewers (`roles.FLOW_FRESH`) and the flow file's `fresh_steps` still run fresh.
-- Tools by role (`eda/tools.py`; the project's `config/tools.json` is the one place, no flow defaults — `q3tui tools init` seeds it from `eda/presets/`; LLM stages get `tools_available`): steps call `run_role(tools, "lint", …)`, never a binary; the file gives command templates + log parser; a missing capability (`supports: [sva]`) is reported N/A, never passed.
-- Step code: `steps/spec/` (the spec step, kind `spec`), `flows/spec/<step>/step.py` (the kinds `vlsit_parse`, `vlsit_config`), `flows/dv/{testplan,tb,prepare,simulate}/step.py` (the kinds `dv_testplan`, `dv_tb`, `dv_prepare`, `dv_simulate`: they dispatch on `uvm.testbench_kind` to the plain helpers of `flows/dv/plain/` or to the entry points `run_testplan` / `run_testbench` / `run_simulate` of `flows/dv/uvm/__init__.py`; the three steps read their options from the `tb` step), `flows/rtl/<step>/step.py` (the rtl flow's own kinds; its rtl generator base is `flows/rtl/rtl/gen.py`), shared pieces in `steps/common.py` (questions, answers, scoped change requests), `flows/spec/lib/` and `flows/rtl/lib/`. A step is a `StepDef` subclass that declares inputs/outputs; the engine decides when it runs.
-- `core/events.py` — event bus; CLI printer, TUI and `events.jsonl` all subscribe. `core/loop.py` — `q3tui loop`: sanity analysis → hand-off → owner flow → analysis, bounded, stops on no improvement (docs/spec/sanity-flow.md "The fix loop"). `core/lanes.py` — lanes (docs/spec/lanes.md): `q3tui tag` freezes the design (`.q3tui/tags/<name>/`, read-only), `q3tui lanes run|merge|converge|status|clean` runs the checking flows (`lanes.flows`) at the same time, each in its own project folder `<project>.lanes/<tag>/<lane>/` (spec/ and src/ hard-linked to the tag, copied when a step writes there: `lanes.before_step` in `Engine.run_step`), records what a lane asks of the design steps (`note_request`), merges by replaying those requests in the project folder; the TUI's `L` (LanesScreen). Runs of several flows in one folder (docs/spec/pipeline.md "Runs of several flows"): one run per flow (`.q3tui/run.<flow>.lock`), `pipeline.json` saved as a per-step merge (`engine.merge_states`), a step another run executes is waited for (`StepRecord.pid`); a checking run whose fix would change the design forks into a lane (`ForkToLane` → `lanes.fork_run`, merged when the other runs end: `lanes.fork` / `lanes.auto_merge`).
-- Imports (docs/spec/spec-flow.md "Importing"): `core/importer.py` sorts a folder by code into spec / rtl (testbench, SVA and test files are recognised only to keep them out of the RTL); `Engine.import_path` copies each kind to the step whose `import_dir` takes it and records it in `.q3tui/imports/<kind>.json`; imported spec documents go to `spec/ref/` and the spec step's LLM ports them into the template's sections (`port_intent`; only the spec step reads `spec/ref/`); imported RTL is the module map (parse) and is checked + conformed, not rewritten (rtl); testbench / test files are sorted as kind `tb` but the dv `tb` step does not take them yet (reported as not imported), SVA, scripts and filelists are left out; the folder imported from is denied to every stage.
-- `core/ops.py` — every user action (template/section edits, write_section, review, answer, approve, change, reset, run, model, cost). TUI keys and assistant tools both call it; add new user actions here and expose them in both.
-- `tui/` — Textual app over the same engine; `llm/assistant.py` — TUI chat with a tool for every op (destructive ones confirm via the TUI).
+- `q3tui/config/`: `config.yaml` in three layers (user, project, session), the schema and its defaults.
+- `q3tui/flowdef/`: loading FLOW / STAGE / STEP / SKILL files (lookup, params, conditions, placeholders).
+- `q3tui/engine/`: the step graph, staleness by hash, gates, questions, the fix loop, `events.jsonl`, and `Ops`
+  (every user action; the TUI, the CLI and the assistant all call it).
+- `q3tui/runtime/`: loading step code (`step.py`) and addons, the built-in runner of steps without code, the
+  services a step gets (`ctx`), opening a project.
+- `q3tui/llm/`: the LLM runtime (sessions, structured output, budgets, what a task may read and write).
+- `q3tui/tools/`: tools by role (environment, placeholders, log readers, results).
+- `q3tui/workspace/`: the project (`.q3tui/`), `$Q3TUI_HOME`, sites and packages.
+- `q3tui/assistant/`: the chat of the TUI, with a tool for each action of `Ops`.
+- `q3tui/tui/`: screens, widgets, the component library (`ui/`), diagrams in Markdown.
+- `q3tui/step.py`: the API step code imports. `q3tui/cli.py`: the `q3tui` command.
 
 ## Conventions
 
-- **Changes propagate as updates, not re-runs** (user rule; docs/spec/pipeline.md "Changes propagate…"): every step snapshots what it was built from (`step_meta`), diffs by code on the next run, skips the LLM when nothing relevant changed (set `ctx.unchanged` → approval kept), and otherwise asks for a patch of only the affected parts, applied by code. Full regeneration only on first run, reset or `--regenerate`. Upstream answers/defaults are passed down as settled decisions (`engine.settled_questions`, `drop_settled`). Questions carry a kind saying which earlier step owns the answer (`spec_gap` / `req_gap` / `arch_gap` / `design_choice`; the flow's `gap_targets` map them to its steps — spec flow: `req_gap` → parse, `arch_gap` → config; `engine.gap_target`, `push_decision`): a later step never works around an earlier step's problem, it hands it back. New steps must follow this. Change requests may be scoped to one unit (`[rtl:<module>] …`, `scoped` / `split_feedback`): steps with units re-run only the units named (the rtl flow's style_lint and smoke dispatch fixes this way).
-- Deterministic first: anything computable (parsing, tool runs, rendering) is code; LLM stages get it as ground truth via prompts or in-process MCP tools (`mcp__q3tui__*`).
-- Agents return content as data where they can; code writes the files. Prompts carry only what the unit needs, static parts first; fixes go to small sessions with the problems and the current content. Tool output is capped centrally (`llm.tool_output_limit`); `llm.stage_token_budget` flags runaway stages.
-- An LLM stage = `Stage(...)` with an explicit builtin tool allow-list (read-only stages: `Read`, `Grep`, `Glob`), `permission_mode="dontAsk"`, and a pydantic `output_model` for structured output.
-- Steps write deliverables to the project folders and internals to `.q3tui/` (layout: `docs/spec/project-layout.md`): `config/` (yours: `tools.json`, `pdks.json`, `rtl_rules.md`, `skills/`), `spec/` (inputs), `constraints/sdc/`, `src/{rtl,tb}/` (`project.tb_dir`: the dv flow's testbench), `schemas/` (generated JSON, `questions/<step>.*`), `reviews/` (yours, kept on reset), `reports/` (rendered results: sanity tables, the dv flow's `dv_*` / conformance reports), `docs/` (the final spec only), `build/{syn/{fpga,asic},sim,sanity}/` (disposable tool output). Folder names come from `project.*` (`Project.config_dir`, `sdc_dir`, `fpga_dir`, `reviews_dir`, …): never hardcode them in a step. `project.backup()` before overwriting.
-- File access: a `PreToolUse` hook confines every LLM stage to `Stage.cwd` + `add_dirs` and blocks `deny_dirs` (e.g. old tool output: `build/`). `.q3tui/` (backups, run logs) is always denied (added in `StepContext.llm`) and has an `.ignore` so Grep skips it; the built-in Glob ignores `.ignore`, so `runtime.build_options` swaps it for `mcp__q3tui__glob` (`safe_glob`: lists only allowed, non-hidden, non-denied files) — never let old outputs feed a stage.
-- Structured output is not strictly enforced by the SDK: `run_stage` validates with pydantic and re-asks in the same session; `output_schema()` must keep field names intact.
-- Performance: the TUI refreshes on events (debounced, visible panel only). Keep hot paths free of DOM-wide `query()`, cache file-derived data by mtime (templates, spec sections, model, file hashes), use the single-widget Rich `Markdown` in `tui/views.py` (Textual's Markdown widget mounts thousands of nodes), and import the Agent SDK / pyslang lazily (CLI start ~0.35 s).
-- Questions can carry `options` (2–4 suggested answers, each with its design `impact`: area / speed / power / complexity); the TUI picker (`ChoiceScreen`) shows them + "Other…" — answers still go through `Ops.answer`.
-- Tests must not call a live LLM: monkeypatch `q3tui.llm.runtime.run_stage` with `tests/fakes.FakeLLM` (the spec-flow stages: handlers registered in `tests/vlsit_fakes.py`). Engine / TUI tests that are not about a flow run the small test flow `tests/fakes.use_test_flow` (spec, then code-only `rtl` and `tb` test steps). TUI tests use Textual's `run_test` pilot. EDA tools are usually absent — test command construction and log parsing, not tool runs.
-- Cheap live checks: a project `q3tui.yaml` with `llm: {model: claude-haiku-4-5, effort: null}`.
-- Independence (user decision): RTL never sees the testbench (`src/tb/`) or the SVA; the testbench (dv flow `tb`, the rtl flow's smoke writer) sees only the spec, the requirements and the configuration, never the RTL (`sees:` in FLOW.md for decisions). Enforce with `deny_dirs`.
-- Team mode (docs/spec/team.md, `team.enabled`): `llm/roles.py` routes each task by stage name (`role_of`) to its role's persistent session (architect / modeler / designer / verifier). Keep a role's system prompt and tool list stable (no unit names in tool descriptions: the prompt cache); stage instructions go in the message. New reviewers / delegates / investigators must stay fresh (`_FRESH`).
-- Playbook skills (`flows/rtl/skills/<name>/SKILL.md`; yours in `config/skills/`, loader `flows/rtl/lib/skills.py`; docs/spec/rtl-flow.md "Skills"): an LLM stage's prompt lists them, the LLM reads what it needs — prefer giving a stage a skill and in-process tools (`mcp__q3tui__*`) over scripting its steps in code; code confines files, checks the result and owns the fix loop (`request_change` to the owning step + `meta["loop"]`).
-- Pydantic models of an LLM stage's answer live in an importable module (`flows/rtl/lib/models.py`), not in a `step.py` (those are loaded from their file: forward references do not resolve).
-- Real-tool checks: `tests/test_rtl_verible_real.py` and the real-generator test in `tests/test_rtl_csr.py` skip when the tool is absent (`VERIBLE_BIN`, `$CSR_GEN_HOME`). Running Q3TUI inside a Claude Code session: `ENABLE_CLAUDEAI_MCP_SERVERS=false` is set by `llm/runtime.py` (connector tool lists cost 100–200k tokens per stage otherwise).
-- Examples: `examples/apb_slave` (an intent-only project for the spec flow).
+- Deterministic first: what code can compute, code computes; the LLM gets it as ground truth.
+- Changes propagate as updates, not re-runs; a later step never works around an earlier step's problem, it hands it
+  back to the step that owns it.
+- Nothing flow-specific in the core: no step names, no artifact schemas, no EDA tool names.
+- The TUI uses the components of `q3tui/tui/ui/` first, and a component of its own only where none fits. Every panel
+  (`ResizablePanel`) gives one cell of padding left and right; nothing inside adds its own inset.
+- Tests never call a live LLM: patch `q3tui.llm.runtime.query` with a fake. TUI tests use Textual's `run_test`. A
+  test that needs an outside tool skips when it is absent.
