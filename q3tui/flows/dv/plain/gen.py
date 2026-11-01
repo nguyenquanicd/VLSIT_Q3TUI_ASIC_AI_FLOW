@@ -5,6 +5,7 @@ for every failed check) and one `TC_SUMMARY total=<n> failed=<n>`."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from q3tui.flows.dv.plain.plan import file_name, task_name
@@ -64,6 +65,47 @@ def top_problems(text: str) -> list[str]:
     if "module tb_top" not in text:
         problems.append("the testbench top module must be named tb_top")
     return problems
+
+
+_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+_ROUTINE = re.compile(r"\b(?:task|function)\b([^;]*);")
+_DEFINE = re.compile(r"`define\s+(\w+)(\([^)]*\))?")
+_DECL = re.compile(r"^\s*(?:parameter|localparam|logic|bit|reg|wire|int|integer|byte|shortint|longint|string|event|real|time)\b([^;]*);", re.M)
+_WORD = re.compile(r"`?\b[A-Za-z_]\w*\b")
+
+
+def top_interface(text: str) -> dict[str, str]:
+    """What the test cases may use of tb_top (they are included into it): its tasks and functions (name → header), macros (`NAME → its parameters)
+    and declarations (name → the declaration). Read by code, not parsed: enough to tell whether a change touched one of them."""
+    text = _COMMENT.sub(" ", text)
+    out: dict[str, str] = {}
+    for m in _ROUTINE.finditer(text):
+        head = " ".join(m.group(1).split())
+        name = re.search(r"([A-Za-z_]\w*)\s*\(", head) or re.search(r"([A-Za-z_]\w*)\s*$", head)
+        if name:
+            out[name.group(1)] = head
+    for m in _DEFINE.finditer(text):
+        out[f"`{m.group(1)}"] = m.group(2) or ""
+    for m in _DECL.finditer(text):
+        decl = " ".join(m.group(0).split())
+        for part in re.sub(r"\[[^\]]*\]", " ", m.group(1)).split(","):
+            names = re.findall(r"[A-Za-z_]\w*", part.split("=")[0])
+            if names:
+                out[names[-1]] = decl
+    return out
+
+
+def interface_changes(before: str, after: str) -> set[str] | None:
+    """The names of tb_top's interface that changed or went (None: nothing found to compare: every test case counts as affected)."""
+    old, new = top_interface(before), top_interface(after)
+    if not old:
+        return None
+    return {n for n, sig in old.items() if new.get(n) != sig}
+
+
+def identifiers(text: str) -> set[str]:
+    """The names a test case uses (a macro with its backtick)."""
+    return set(_WORD.findall(_COMMENT.sub(" ", text)))
 
 
 def rtl_files(project_root: Path, rtl_dir: Path) -> list[Path]:

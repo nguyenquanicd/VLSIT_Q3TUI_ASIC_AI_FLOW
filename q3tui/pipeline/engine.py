@@ -6,7 +6,7 @@ import json
 import os
 import re
 import shutil
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,24 +18,41 @@ from q3tui.core.events import EventBus
 from q3tui.pipeline.base import StepContext, StepDef, StepFailed, checkpoint_dir
 from q3tui.pipeline.state import GateRecord, PipelineState
 from q3tui.core.project import Project, sha256_file, sha256_json
-from q3tui.core import lanes
 
 DECISION_PREFIX = "[decision]"  # change requests that come from the user's own answers to a later step's question
 
 Status = Literal["pending", "stale", "done", "user", "failed", "running", "missing_input", "unavailable"]
 PACKAGE = Path(__file__).resolve().parents[1]  # the q3tui package: its files are named relative to it in the hashes
 
-# the flow whose run this task is (set by the outermost `Engine.run`): a checking flow's run forks into a copy before it changes the design
-RUN_FLOW: ContextVar[str | None] = ContextVar("q3tui_run_flow", default=None)
+# runs of several flows share the design (`Engine._take_design`): the lock file of this process's outermost run (set by `Engine.run`), where
+# the run says what it does with the design (`phase`: running, step, fix_wait, fixing), and what the step of this task holds of it
+RUN_LOCK: ContextVar[Path | None] = ContextVar("q3tui_run_lock", default=None)
+HOLD: ContextVar[str | None] = ContextVar("q3tui_design_hold", default=None)
 
 
-class ForkToLane(BaseException):
-    """A checking flow's run is about to run a design step (spec … RTL) for a change it made: it goes on in a copy (core/lanes.py `fork_run`).
-    A BaseException, like a cancellation: the steps' own `except Exception` (a hand-off that failed) must not swallow it."""
+def design_steps(project: Project) -> set[str]:
+    """The steps of the design flows (`pipeline.design_flows`: spec … RTL): running one changes the design."""
+    cached = getattr(project, "_design_steps", None)
+    if cached is None:
+        from q3tui import flows
 
-    def __init__(self, step: str):
-        super().__init__(step)
-        self.step = step
+        cached = set()
+        for name in project.cfg.pipeline.design_flows:
+            try:
+                cached |= {s.id for s in flows.load_flow(name, project.root).steps}
+            except Exception:  # noqa: BLE001 - a design flow that is not there makes no design step
+                continue
+        project._design_steps = cached  # type: ignore[attr-defined]
+    return cached
+
+
+@dataclass
+class _Turn:
+    """What a step took of the design (`Engine._take_design`): the phase its run goes back to when it ends."""
+
+    restore: dict
+    token: Token
+    waited: bool
 
 
 def _alive(pid: int) -> bool:
@@ -116,6 +133,20 @@ def describe_error(exc: BaseException) -> str:
     if isinstance(exc, StepFailed):
         return str(exc)
     return f"{type(exc).__name__}: {exc}"
+
+def failure_kind(exc: BaseException) -> str:
+    """`tool` when the step's tool failed (crashed, timed out, missing, bad command: eda.tools.ToolBroken / eda.base.ToolUnavailable, also as
+    the cause of a StepFailed), else `step` (the design, the step's own checks, an LLM stage…)."""
+    from q3tui.eda.base import ToolUnavailable
+    from q3tui.eda.tools import ToolBroken
+
+    seen = 0
+    while exc is not None and seen < 5:
+        if isinstance(exc, (ToolBroken, ToolUnavailable)):
+            return "tool"
+        exc, seen = exc.__cause__, seen + 1
+    return "step"
+
 
 class EngineError(RuntimeError):
     pass
@@ -267,10 +298,19 @@ class Engine:
         """The run of this flow in another, live process ({pid, started, flow}), or None: one run per flow."""
         return next((r for r in self.other_runs() if r["flow"] in (self.flow.name, "?")), None)
 
-    def _take_lock(self, phase: str = "running") -> None:
+    def _take_lock(self, phase: str | None = None) -> None:
+        """This run's lock; phase None: as this process left it (a run that takes it again after a flow run inside it keeps what it holds of
+        the design), else `running`."""
         self.project.ensure_state_dir()
-        self.lock_path.write_text(json.dumps({"pid": os.getpid(), "started": datetime.now().isoformat(timespec="seconds"), "flow": self.flow.name,
-                                              "phase": phase}))
+        info = {"pid": os.getpid(), "started": datetime.now().isoformat(timespec="seconds"), "flow": self.flow.name, "phase": phase or "running"}
+        if phase is None:
+            try:
+                old = json.loads(self.lock_path.read_text())
+                if int(old["pid"]) == os.getpid():
+                    info.update({k: old[k] for k in ("started", "phase", "step") if k in old})
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        self.lock_path.write_text(json.dumps(info))
 
     def _drop_lock(self) -> None:
         try:
@@ -384,8 +424,8 @@ class Engine:
             status, detail = ("stale" if rec.outputs else "pending"), "interrupted (the run was stopped during this step)"
         elif rec and rec.status == "done":
             status = "user" if rec.origin == "user" else "done"
-            if rec.inputs_hash != self.inputs_hash(step):
-                status = "stale"
+            if rec.inputs_hash != self.inputs_hash(step) or self.state.feedback.get(step.name):
+                status = "stale"  # (change requests queued for it are never in its result: it runs for them)
             current = self._hash_files(step.outputs(self))
             edited = sorted(p for p, h in rec.outputs.items() if current.get(p) not in (None, h))
         elif rec and rec.status == "failed":
@@ -541,7 +581,6 @@ class Engine:
         if not step.implemented:
             raise EngineError(f"'{name}' is not implemented yet")
         self.state.feedback.setdefault(name, []).append(text.strip())
-        lanes.note_request(self.project, name, text.strip(), lanes.CURRENT_STEP.get())
         if self.gate_required(step):
             self.state.gates[name] = GateRecord(status="open")
         self.save()
@@ -568,6 +607,9 @@ class Engine:
             answer_fn = getattr(step, "answer", None)
             if answer_fn and answer_fn(self, question_id, text):
                 self.state.accepted_defaults.get(step.name, {}).pop(question_id, None)
+                auto = (self.state.step_meta.get(step.name) or {}).get("auto_answers")
+                if auto and question_id in auto:
+                    auto.remove(question_id)  # (yours now, not the default an unattended run gave: _auto_answer_failure)
                 q = current.get(question_id)
                 if q is not None:
                     self._close_question(step.name, q, text.strip(), "answered")
@@ -671,7 +713,6 @@ class Engine:
             self.bus.emit("log", origin, message=f"decision not sent to {target}: its output is yours")
             return
         self.state.feedback.setdefault(target, []).append(f"{DECISION_PREFIX} {text}")
-        lanes.note_request(self.project, target, f"{DECISION_PREFIX} {text}", origin)
         if rebase:
             meta = self.state.step_meta.setdefault(target, {})
             meta["rebase"] = sorted(set(meta.get("rebase", [])) | {origin})
@@ -920,20 +961,95 @@ class Engine:
 
     # -- execution -----------------------------------------------------------------------------
 
-    def _forks(self, step: StepDef) -> bool:
-        """A checking flow's run (lanes.flows) is about to run a design step (spec … RTL) of the project folder for a change: it goes on in a
-        copy instead (core/lanes.py `fork_run`), so the design never changes under the other runs."""
-        flow = RUN_FLOW.get()
-        lc = self.project.cfg.lanes
-        if not flow or not lc.fork or flow not in lc.flows:
-            return False
-        if lanes.lane_info(self.project) or step.name not in lanes.design_steps(self.project):
-            return False
-        return bool(self.state.feedback.get(step.name) or self.state.step_meta.get(step.name, {}).get("deferred_decisions"))
+    # -- the design, shared by the runs of several flows ----------------------------------------------------------------------
+
+    def _phase(self) -> dict:
+        """What this process's run says it does with the design ({phase, step}); {} outside a run."""
+        lock = RUN_LOCK.get()
+        try:
+            info = json.loads(lock.read_text()) if lock else {}
+            return {k: info[k] for k in ("phase", "step") if k in info} if int(info.get("pid", 0)) == os.getpid() else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _set_phase(self, phase: str, step: str | None = None) -> None:
+        lock = RUN_LOCK.get()
+        try:
+            info = json.loads(lock.read_text()) if lock else None
+        except (OSError, ValueError):
+            return
+        if not info or int(info.get("pid", 0)) != os.getpid():
+            return
+        info["phase"] = phase
+        info.pop("step", None)
+        if step:
+            info["step"] = step
+        tmp = lock.with_name(lock.name + ".tmp")  # (not a run*.lock: the others read it whole or not at all)
+        tmp.write_text(json.dumps(info))
+        os.replace(tmp, lock)
+
+    def _design_lock(self):
+        """Held while a run looks at the others and says what it does with the design: the two are one step for every run."""
+        import fcntl
+
+        fh = open(self.project.state_dir / "design.lock", "a")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        return fh
+
+    async def _take_design(self, step: StepDef) -> _Turn | None:
+        """Runs of several flows share the design (docs/spec/pipeline.md "Runs of several flows"). A step of a design flow (spec … RTL:
+        `pipeline.design_flows`) changes it: it waits until no run of another process is in a step, and those runs start no step meanwhile
+        (`fix_wait`). A step of any other flow reads it: it waits while another run changes the design or waits to. A run that changed the
+        design holds it until it goes on with a step that only reads it, or ends: the fix is done (format, lint … included). None: nothing
+        to take (not in a run, or the step runs inside a step that holds the design already: a check within the change)."""
+        lock, held = RUN_LOCK.get(), HOLD.get()
+        writer = step.name in design_steps(self.project)
+        if lock is None or held == "fixing" or (held == "step" and not writer):
+            return None
+        mine = self._phase()
+        if writer and mine.get("phase") == "fixing":  # (the next step of the change its run is making)
+            return _Turn({"phase": "fixing", "step": mine.get("step")}, HOLD.set("fixing"), False)
+        # a change holds the design until its run reads again; a step inside another (a hand-off within a check) gives back what that one held
+        restore = mine if held else ({"phase": "fixing", "step": step.name} if writer else {"phase": "running"})
+        want, blockers = ("fixing", ("step", "fixing")) if writer else ("step", ("fix_wait", "fixing"))
+        self._set_phase("fix_wait" if writer else "running", step.name if writer else None)
+        waited = False
+        try:
+            while True:
+                with self._design_lock():
+                    busy = [r for r in self.other_runs() if r.get("phase") in blockers]
+                    if not busy:
+                        self._set_phase(want, step.name)
+                        break
+                if not waited:
+                    who = ", ".join(sorted({r["flow"] + (f" ({r['step']})" if r.get("step") else "") for r in busy}))
+                    self.bus.emit("log", step.name, message=f"{step.name} changes the design: waiting for the step(s) of {who} to end" if writer
+                                  else f"{step.name} waits: {who} is changing the design")
+                    waited = True
+                await anyio.sleep(self.WAIT_S)
+        except BaseException:  # (stopped while waiting: the step does not run, nor does the one around it)
+            self._set_phase("running")
+            raise
+        return _Turn(restore, HOLD.set(want), waited)
+
+    def _give_design(self, turn: _Turn | None) -> None:
+        if turn is not None:
+            HOLD.reset(turn.token)
+            self._set_phase(turn.restore.get("phase") or "running", turn.restore.get("step"))
 
     async def run_step(self, step: StepDef, regenerate: bool = False) -> None:
-        if self._forks(step):
-            raise ForkToLane(step.name)
+        turn = await self._take_design(step)
+        try:
+            if turn and turn.waited:
+                self.sync()  # (what the run it waited for changed)
+                if not regenerate and self.evaluate(step).status in ("done", "user"):
+                    self.bus.emit("log", step.name, message=f"{step.name} was brought up to date by another run meanwhile: not run again")
+                    return
+            await self._run_step(step, regenerate)
+        finally:
+            self._give_design(turn)
+
+    async def _run_step(self, step: StepDef, regenerate: bool) -> None:
         emit = self.bus.scoped(step.name)
         rec = self.state.step(step.name)
         before = self._hash_files(step.inputs(self))  # (what it starts from: an input another run changes meanwhile does not count as read)
@@ -949,7 +1065,7 @@ class Engine:
         decisions_only = bool(feedback) and all(f.startswith(DECISION_PREFIX) for f in feedback)
         other_inputs_same = rec.status == "done" and rec.inputs_hash == self._inputs_hash_without_feedback(step, feedback)
         self._running.add(step.name)
-        rec.status, rec.error, rec.pid = "running", None, os.getpid()
+        rec.status, rec.error, rec.failure, rec.pid = "running", None, None, os.getpid()
         self.save()
         emit("step_started", title=step.title, feedback=feedback, regenerate=regenerate)
         fspec = self.flow.spec(step.name)
@@ -957,9 +1073,7 @@ class Engine:
         checkpoints = checkpoint_dir(self.project, step.name)
         if regenerate:
             shutil.rmtree(checkpoints, ignore_errors=True)
-        current = lanes.CURRENT_STEP.set(step.name)  # (who makes the change requests made meanwhile: a lane records them)
         try:
-            lanes.before_step(self, step)  # (a lane folder: the folders the step writes become its own copies of the tag's)
             await step.run(ctx)
             if fspec and fspec.passes:  # the flow file's pass conditions: a step that does not meet them has failed
                 from q3tui.flows import check_pass
@@ -976,18 +1090,17 @@ class Engine:
                 shutil.rmtree(checkpoints, ignore_errors=True)
             if isinstance(exc, Exception):
                 rec.status, rec.error, rec.pid = "failed", describe_error(exc), None
+                rec.failure = {"kind": failure_kind(exc), "flow": self.flow.name, "at": datetime.now().isoformat(timespec="milliseconds")}
                 rec.cost_usd += ctx.cost_usd
                 self.save()
-                emit("step_finished", status="failed", error=rec.error)
+                self.record_version(f"{self.flow.name} · {step.name}: failed", step.name)
+                emit("step_finished", status="failed", error=rec.error, failure=rec.failure["kind"])
             else:  # cancelled (stop / quit): back to where it was
                 self.state.steps[step.name] = previous
                 self.save()
                 emit("step_finished", status="cancelled")
             raise exc
-        finally:
-            lanes.CURRENT_STEP.reset(current)
         self._running.discard(step.name)
-        lanes.after_step(self, step, feedback)
         shutil.rmtree(checkpoints, ignore_errors=True)  # finished: nothing to resume
         if feedback:
             self.state.feedback_history.setdefault(step.name, []).extend(feedback)
@@ -1028,7 +1141,8 @@ class Engine:
             o_rec, o_step = self.state.steps.get(origin), self.by_name.get(origin)
             if o_rec and o_step and o_rec.status == "done" and self._rebase_ok(o_step, emit):
                 o_step.on_rebase(self)
-                o_rec.inputs_hash = self.inputs_hash(o_step)  # it already contains the decision
+                # it already contains the decision — not the change requests queued for it meanwhile (a simulation's RTL fixes): it runs for those
+                o_rec.inputs_hash = self._inputs_hash_without_feedback(o_step, self.state.feedback.get(origin, []))
                 # the steps between (e.g. req, between spec and arch) update for the same decision next: the origin
                 # already contains it, so their update must not send it round again
                 between = names[names.index(step.name) + 1: names.index(origin)] if origin in names else []
@@ -1044,12 +1158,34 @@ class Engine:
             if not own and o_rec and o_step and o_rec.status == "done" and self._rebase_ok(o_step, emit):
                 # it ran for the origin's decisions only
                 o_step.on_rebase(self)
-                o_rec.inputs_hash = self.inputs_hash(o_step)
-                emit("log", message=f"updated for {origin}'s own decisions: {origin} already contains them (kept, not re-run)")
+                queued = self.state.feedback.get(origin, [])
+                o_rec.inputs_hash = self._inputs_hash_without_feedback(o_step, queued)
+                emit("log", message=f"updated for {origin}'s own decisions: {origin} already contains them"
+                                    + (f"; it runs next for the {len(queued)} change request(s) queued for it" if queued else " (kept, not re-run)"))
             if not chain:
                 m.pop("rebase_after", None)
         self.save()
+        self.record_version(f"{self.flow.name} · {step.name}: done", step.name)
         emit("step_finished", status="done", cost_usd=ctx.cost_usd, outputs=list(rec.outputs))
+
+    def record_version(self, title: str, step: str | None = None, passed: bool = False) -> str | None:
+        """A version of the project in Q3TUI's history (core/history.py) when it changed (`passed`: always, marked passed/<flow>). Never stops
+        a run: a history that cannot be written is a warning."""
+        from q3tui.core import history
+
+        body = "\n".join(f"{k}: {v}" for k, v in (("flow", self.flow.name), ("step", step), ("run", getattr(self, "_run_id", None))) if v)
+        try:
+            return history.record(self.project, title, body, mark=self.flow.name if passed else None, always=passed)
+        except history.HistoryError as exc:
+            self.bus.emit("warning", step, message=f"history: no version recorded ({exc})")
+            return None
+
+    def _record_pass(self) -> None:
+        """The flow passed: every step of it is done and up to date (a run of a few steps that ended is not a pass of the flow)."""
+        if all(self.evaluate(s).status in ("done", "user") for s in self.steps):
+            rev = self.record_version(f"{self.flow.name} passed", passed=True)
+            if rev:
+                self.bus.emit("log", message=f"history: version {rev[:8]} marked passed/{self.flow.name}")
 
     def _rebase_ok(self, step: StepDef, emit) -> bool:
         try:
@@ -1098,12 +1234,12 @@ class Engine:
                                            f"{other.get('started', '?').replace('T', ' ')}): watch it, or stop it first")
             return "blocked"
         self._take_lock()
-        token = RUN_FLOW.set(self.flow.name) if RUN_FLOW.get() is None else None  # (a flow run inside another run keeps the outer one)
+        token = RUN_LOCK.set(self.lock_path) if RUN_LOCK.get() is None else None  # (a flow run inside another run: the outer one's lock)
         try:
             return await self._run_locked(start, stop, only, yes, regenerate)
         finally:
             if token is not None:
-                RUN_FLOW.reset(token)
+                RUN_LOCK.reset(token)
             self._drop_lock()
 
     def auto_reviews(self) -> bool:
@@ -1142,6 +1278,8 @@ class Engine:
         self.bus.emit("log", origin, message=f"fix loop: running the {name} flow for the fixes handed to it, then this flow again")
         try:
             outcome = await other._drive(other._range(None, None, None), yes, set())
+            if outcome == "complete":
+                other._record_pass()
         except StepFailed as exc:
             self.bus.emit("error", message=f"the {name} flow (run for {origin}'s fixes): {exc}")
             outcome = "failed"
@@ -1194,23 +1332,18 @@ class Engine:
         outcome: Outcome = "complete"
         self._apply_old_deferred()
         try:
-            try:
-                outcome = await self._drive(selected, yes, regenerate)
-            except ForkToLane as fork:
-                if RUN_FLOW.get() != self.flow.name:
-                    raise  # (a flow run inside the checking run: the checking run forks)
-                outcome = await lanes.fork_run(self, fork, yes)
+            outcome = await self._drive(selected, yes, regenerate)
         except StepFailed as exc:
             self.bus.emit("error", message=str(exc))
             outcome = "failed"
         except Exception as exc:  # noqa: BLE001 - reported to the user, state already saved
             self.bus.emit("error", message=describe_error(exc))
             outcome = "failed"
-        except ForkToLane:
-            raise  # (a flow run inside a checking run: that run forks, this one is not cancelled)
         except BaseException:
             self.bus.emit("run_finished", outcome="cancelled")
             raise
+        if outcome == "complete":
+            self._record_pass()
         self.bus.emit("run_finished", outcome=outcome, total_cost_usd=self.state.total_cost_usd)
         return outcome
 
@@ -1261,7 +1394,12 @@ class Engine:
                 self.bus.emit("error", step.name, message=view.detail)
                 return "blocked"
             else:
-                await self.run_step(step, regenerate=regen)
+                try:
+                    await self.run_step(step, regenerate=regen)
+                except StepFailed:
+                    if not self._auto_answer_failure(step):
+                        raise
+                    return "restart"  # (the answers update the steps they belong to, then this step runs again)
             if not self._gate_ok(step, yes):
                 return "gate"
             if await self._unattended(step):
@@ -1273,6 +1411,34 @@ class Engine:
                                                         f"{'it' if len(earlier) == 1 else 'them'} first, then going on")
                 return "restart"
         return "complete"
+
+    def _auto_answer_failure(self, step: StepDef) -> bool:
+        """pipeline.auto_answer: a step that failed waiting for your decision (a smoke test's blocking question) gets the defaults as the
+        answers and runs again — you chose to run unattended — bounded per run by pipeline.max_fix_iterations. False: the failure stands."""
+        if not (self.project.cfg.pipeline.auto_answer or self.gate_mode(step.name) == "auto_answer") or getattr(step, "proposes_only", False):
+            return False
+        open_q = [q for q in self.questions() if q["step"] == step.name and q["status"] == "open"]
+        if not any(q.get("blocking") for q in open_q):
+            return False
+        ids = ", ".join(q["id"] for q in open_q)
+        meta = self.state.step_meta.setdefault(step.name, {})
+        run = getattr(self, "_run_id", None)
+        if meta.get("auto_answered_run") != run:  # (as _auto_answer_proposals: the bound is per run)
+            meta["auto_answered"], meta["auto_answered_run"] = 0, run
+        rounds = int(meta.get("auto_answered", 0))
+        if rounds >= self.project.cfg.pipeline.max_fix_iterations:
+            self.bus.emit("warning", step.name, message=f"auto-answer: {rounds} round(s) of defaults already (pipeline.max_fix_iterations); "
+                                                        f"waiting for you on {ids}")
+            return False
+        for q in open_q:
+            self.answer(q["id"], q.get("default_assumption") or "yes")
+        meta = self.state.step_meta.setdefault(step.name, {})  # (answering may have synced the state: this step's meta anew)
+        meta["auto_answered"] = rounds + 1
+        meta["auto_answers"] = sorted(set(meta.get("auto_answers") or []) | {q["id"] for q in open_q})  # (not yours: a step's fix rounds do not start over for them)
+        self.save()
+        self.bus.emit("warning", step.name, message=f"auto-answer: {step.name} failed waiting for {ids}: answered with the default(s), "
+                                                    "running it again")
+        return True
 
     async def _unattended(self, step: StepDef) -> bool:
         """StepDef.unattended for a step finished under auto-answer (project-wide or its own gate mode)."""
