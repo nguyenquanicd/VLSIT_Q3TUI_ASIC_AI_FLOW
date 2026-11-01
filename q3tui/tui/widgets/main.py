@@ -21,7 +21,7 @@ from q3tui.tui.ui.item import Item, ItemContent, ItemDescription, ItemGroup, Ite
 from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePanelGroup
 from q3tui.tui.ui.tabs import Tabs, TabsContent, TabsList, TabsTrigger
 from q3tui.tui.views import View, build_views
-from q3tui.tui.widgets.activities import line
+from q3tui.tui.widgets.activities import EventLog
 from q3tui.tui.widgets.markdown import Q3Markdown
 
 # display state -> the buttons of the step's main actions: (label, action, key)
@@ -176,14 +176,10 @@ class StepMain(Vertical):
         yield _scroll(ItemList(*rows, id="list-questions"))
 
     def _log(self):
-        lines = []
+        events = []
         if self.engine is not None and self.step is not None:
-            for e in read_events(self.engine.project.events_file):
-                if e.get("step") == self.step:
-                    item = line(e)
-                    if item is not None:
-                        lines.append(item)
-        return VerticalScroll(*lines[-500:], id="step-log")
+            events = [e for e in read_events(self.engine.project.events_file) if e.get("step") == self.step]
+        return EventLog(events, id="step-log")
 
     # -- updating -----------------------------------------------------------------------------------
 

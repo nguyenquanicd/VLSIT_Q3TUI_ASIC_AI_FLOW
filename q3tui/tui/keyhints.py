@@ -76,12 +76,15 @@ def _hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
                 keys = [("↑↓", "question"), ("enter", "answer")]
             elif type(focused).__name__ == "Button":
                 keys = [("enter", "press")]
+            elif type(focused).__name__ == "EventLine":
+                keys = [("enter", "open / close")]
             else:
                 keys = [("←→", "tab")]
             step = [k for k in _step_keys(display) if k[0] in ("a", "shift+a", "q", "r")]
             return [*keys, *step, *move]
         if _find(focused, "Activities"):
-            return [("↑↓", "scroll"), ("ctrl+end", "latest"), *move]
+            fold = [("enter", "open / close")] if type(focused).__name__ == "EventLine" else []
+            return [*fold, ("↑↓", "scroll"), ("ctrl+end", "latest"), *move]
         return move
     if kind == "SettingsScreen":
         if getattr(focused, "id", "") == "search":

@@ -247,3 +247,49 @@ async def test_row_menu_is_a_context_menu_with_the_gate_in_effect(tmp_path, home
         await pilot.press("enter")  # Run only
         await pilot.pause()
         assert menu.active_popup is None
+
+
+RUN = [
+    {"kind": "run_started", "ts": "2026-11-01T09:45:42", "scope": {"only": "spec"}},
+    {"kind": "stage_started", "ts": "2026-11-01T09:45:42", "stage": "s"},
+    {"kind": "step_started", "ts": "2026-11-01T09:45:42", "step": "spec", "changes": {"first_run": True}},
+    {"kind": "task_started", "ts": "2026-11-01T09:45:42", "step": "spec", "task": "spec", "model": "m"},
+    {"kind": "tool_call", "ts": "2026-11-01T09:45:43", "step": "spec", "tool": "Read", "input": "spec/intent.md"},
+    {"kind": "task_finished", "ts": "2026-11-01T09:45:51", "step": "spec", "task": "spec", "cost_usd": 0.12,
+     "turns": 3},
+    {"kind": "step_finished", "ts": "2026-11-01T09:45:51", "step": "spec", "result": "done", "cost_usd": 0.12},
+    {"kind": "stage_finished", "ts": "2026-11-01T09:45:51", "stage": "s", "outcome": "waiting"},
+    {"kind": "run_finished", "ts": "2026-11-01T09:45:51", "outcomes": {"s": "waiting"}, "cost_usd": 0.12},
+]
+
+
+async def test_a_step_is_one_line_with_its_llm_work_folded_under_it():
+    from textual.app import App
+
+    from q3tui.tui.ui.collapsible import CollapsibleContent
+    from q3tui.tui.ui.marker import Marker
+    from q3tui.tui.ui.trace import TraceCollapsible
+    from q3tui.tui.widgets.activities import EventLine, EventLog
+
+    class Live(App):
+        def compose(self):
+            yield EventLog(id="live")
+            yield EventLog(RUN, id="past")
+
+    app = Live()
+    async with app.run_test(size=(100, 40)) as pilot:
+        live = app.query_one("#live", EventLog)
+        for e in RUN[:5]:
+            await live.write(e)
+        await pilot.pause()
+        box = live.query_one(TraceCollapsible)
+        assert box.open and box.query_one(EventLine).status == "running"  # open while it runs
+        assert len(box.query_one(CollapsibleContent).query(EventLine)) == 2  # the task and its tool call
+        for e in RUN[5:]:
+            await live.write(e)
+        await pilot.pause()
+        line = box.query(EventLine).first()
+        assert not box.open and line.status is None and "done" in line.description and "3 turns" in line.description
+        assert len(live.query(TraceCollapsible)) == 1 and len(live.query(Marker)) == 2  # one line for the step
+        past = app.query_one("#past", EventLog).query_one(TraceCollapsible)  # the Log tab: read back, closed
+        assert not past.open and len(past.query_one(CollapsibleContent).query(EventLine)) == 3
