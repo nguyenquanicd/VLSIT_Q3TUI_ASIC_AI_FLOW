@@ -41,7 +41,13 @@ REVIEW_MARK = {"confirmed": ("✓", "$text-success"), "not_reviewed": ("•", "$
 
 
 class ItemList(OptionList):
-    DEFAULT_CSS = "ItemList { height: 1fr; border: none; background: transparent; }"
+    # The focus shows like everywhere else (the Flow tree, the alerts): the chosen row on $panel, never a border.
+    DEFAULT_CSS = """
+    ItemList, ItemList:focus { height: 1fr; border: none; background: transparent; padding: 0; }
+    ItemList > .option-list--option-highlighted { background: $surface; text-style: none; }
+    ItemList:focus > .option-list--option-highlighted { background: $panel; text-style: none; }
+    ItemList > .option-list--option-hover { background: $panel; }
+    """
 
 
 class StepMain(Vertical):
