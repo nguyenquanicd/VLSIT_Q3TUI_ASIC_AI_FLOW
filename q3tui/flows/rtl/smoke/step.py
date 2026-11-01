@@ -206,16 +206,18 @@ class Step(RtlFlowStep):
             report["triage"].append(v.model_dump())
             unit = v.module if v.module in modules else next(iter(sorted(modules)), "")
             key = f"{v.verdict}|{unit}|{v.id}"
-            if v.verdict in ("rtl_bug", "tb_bug") and v.request.strip() and seen.get(key, 0) >= cfg.pipeline.escalate_after_repeats:
+            # a bug whose fix was written into the summary (the request left empty) is still a fix to hand over, not a question for you
+            fix = v.request.strip() or v.summary.strip()
+            if v.verdict in ("rtl_bug", "tb_bug") and fix and seen.get(key, 0) >= cfg.pipeline.escalate_after_repeats:
                 # the same failure keeps coming back after the fix was handed over: not a thing another round settles (a spec that disagrees with a rule,
                 # a name the generator will not use): ask, as `verify` does
                 asks.append(Question(id="", blocking=True, kind="design_choice", question=(
                     f"Smoke test {v.id} keeps failing ({v.verdict.replace('_', ' ')}{' in ' + unit if unit else ''}, {seen[key] + 1} times): {v.summary} How should it be settled?"),
                     default_assumption="Keep the spec as the reference and change the implementation once more, starting from the evidence."))
-            elif v.verdict == "rtl_bug" and v.request.strip():
+            elif v.verdict == "rtl_bug" and fix:
                 by_module.setdefault(unit, []).append(v)
                 history.append({"key": key, "round": rounds + 1})
-            elif v.verdict == "tb_bug" and v.request.strip():
+            elif v.verdict == "tb_bug" and fix:
                 history.append({"key": key, "round": rounds + 1})
                 engine.request_change(self.name, f"From the smoke triage ({v.id}): {v.summary} {v.request}")
                 ctx.emit("log", message=f"smoke {v.id}: testbench bug → smoke: {v.summary[:100]}")

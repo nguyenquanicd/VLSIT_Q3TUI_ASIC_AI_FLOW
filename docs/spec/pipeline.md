@@ -184,8 +184,8 @@ loop with that flow: the fix loop runs it within the same run (same process, loc
 then this flow again, whose steps that read its outputs are stale by then. A flow that does not
 finish stops the run with its outcome. The step itself decides when not to ask again (the dv
 triage: the RTL did not change, or the failures did not go down); otherwise it fails with the
-hand-off for you to run. With lanes ([lanes.md](lanes.md)) these fixes stay in a folder per failing
-lane, so the other checking flows keep reading a frozen RTL tag.
+hand-off for you to run. While runs of other flows are going on, such a fix waits for its turn to change the design
+("Runs of several flows" below).
 
 **Scoped change requests** (`[step:unit] text`, `steps.common.scoped` / `split_feedback`):
 a step with units (modules, test cases) re-runs only the units named (`[rtl:<module>]`,
@@ -282,12 +282,19 @@ process (the TUI's background runs, one per flow; `q3tui --flow X run` the same)
 - **What a step read is what counts.** When another run was going on while a step ran, an input that changed meanwhile and is not one of
   the step's own outputs keeps its hash from before the step: the result is for what it read, so it stays out of date (a warning says
   which file).
-- **The design never changes under the other runs.** A checking flow's run (`lanes.flows`: dv, fpga, sanity) that is about to run a design
-  step (`lanes.design_flows`: spec … RTL) for a change — the dv triage's RTL bug, the PPA hand-off, a decision for the spec — goes on in a
-  copy instead (lanes.md "A run that forks"): the design as it is becomes a tag, the run its lane folder over it, the change requests move
-  there; the fix is applied and the flow runs again in the copy, its fix loop included. A fork that fixed something merges back by itself
-  when the run is unattended (`lanes.auto_merge`) once no other run is going on in the project folder (forks waiting to merge go one at a
-  time); else its fixes wait for `m` on the Lanes screen. `lanes.fork: false` keeps the old behaviour (the fix changes the project folder).
+- **The design never changes under a step of another run.** The steps of the design flows (`pipeline.design_flows`, default `[rtl]`: spec …
+  RTL) change the design; every other step reads it. A design step — the dv triage's RTL bug, the PPA hand-off, a decision for the spec —
+  waits until no other run is in a step, then has the design to itself; a reading step waits while another run is changing the design
+  (a design step that waits goes first). Each run's lock says its phase (`running`, `step`, `fix_wait`, `fixing`); the turn is taken
+  under a file lock (`.q3tui/design.lock`, `Engine._take_design`). A run that changed the design keeps it until its next reading step,
+  so its own check sees the fix first. After waiting, a step that another run brought up to date meanwhile is not run again.
+
+## The project's versions
+
+Each step that finishes (done or failed) records a version of the project when something changed, and each flow that passes (every step of it
+done and up to date at the end of a run, also a flow the fix loop ran) records `<flow> passed`, marked `passed/<flow>`
+(`Engine.record_version`, `core/history.py`; Q3TUI's own history in `.q3tui/history/`, never pushed, apart from your git). Steps read it by code:
+the dv triage is told what changed since a failing test last passed ([history.md](history.md)).
 
 ## Pipeline controls
 

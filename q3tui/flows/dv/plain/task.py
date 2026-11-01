@@ -87,3 +87,12 @@ def fix_prompt(*, label: str, problems: str, files: dict[str, str]) -> str:
     body = "\n\n".join(f"`{p}`:\n```systemverilog\n{t}\n```" for p, t in files.items())
     return (f"# Task: sửa testbench ({label})\nTrình biên dịch/Q3TUI báo các lỗi sau (sự thật, sửa nguyên nhân):\n{problems}\n\n"
             f"Nội dung hiện tại:\n{body}\n\nSửa bằng Edit/Write rồi trả về tóm tắt.")
+
+
+def top_change_prompt(*, path: str, requests: list[str], text: str) -> str:
+    """A small session for change requests on tb_top only (`[tb:top] …`): the requests and the current file. The test cases are rewritten only when
+    a task, macro or signal they use changes its declaration, so the session keeps those unless a request needs them changed."""
+    return (f"# Task: sửa `{path}` theo yêu cầu thay đổi (chỉ file này)\n\nYêu cầu thay đổi:\n" + "\n".join(f"- {r}" for r in requests)
+            + "\n\nCác test case (tests/*.sv, được include vào bên trong tb_top) dùng task, function, macro và tín hiệu của tb_top: giữ nguyên tên và "
+              "khai báo (tham số) của chúng, trừ khi yêu cầu bắt buộc phải đổi — đổi thì các test case dùng chúng sẽ được viết lại. Chỉ sửa phần cần sửa.\n\n"
+            + f"Nội dung hiện tại:\n```systemverilog\n{text}\n```\n\nSửa bằng Edit rồi trả về tóm tắt.")

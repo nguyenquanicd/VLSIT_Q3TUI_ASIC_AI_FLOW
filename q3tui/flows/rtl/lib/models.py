@@ -73,7 +73,8 @@ class SmokePlan(BaseModel):
 class Verdict(BaseModel):
     id: str = Field(description="the failing behaviour (or 'compile')")
     verdict: Literal["rtl_bug", "tb_bug", "spec_issue", "unsure"]
-    module: str = Field("", description="rtl_bug: the RTL module to change")
+    module: str = Field("", description="rtl_bug: the RTL module to change; tb_bug: `top` when the fix belongs in the testbench's shared top "
+                                         "(tb_top.sv: its monitors, checkers, helper tasks every test uses), else empty (the test's own file)")
     summary: str
     request: str = Field("", description="rtl_bug / tb_bug: what to change, concretely")
     decision: str = Field("", description="spec_issue / unsure: the open decision it waits for, the same short key for every failure that waits for it "

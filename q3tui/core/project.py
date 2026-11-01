@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -42,8 +43,12 @@ def sha256_json(data: Any) -> str:
 
 
 def write_json(path: Path, data: Any) -> Path:
+    """Whole or not at all: written to a temporary file and renamed over it, so a reader in another process (the TUI while a run writes)
+    never sees it empty or half written."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, default=str) + "\n")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, default=str) + "\n")
+    os.replace(tmp, path)
     return path
 
 

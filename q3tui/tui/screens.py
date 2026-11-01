@@ -7,9 +7,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.message import Message
-from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static, TextArea
 
+from q3tui.tui.dialog import Dialog
 from q3tui.tui.picker import Choice, ChoiceResult, ChoiceScreen  # noqa: F401 - re-exported with the other screens
 
 
@@ -41,7 +41,7 @@ class GateScreen(ChoiceScreen):
         self.dismiss(result.value if result is not None and result.value else "later")
 
 
-class TextPromptScreen(ModalScreen[str | None]):
+class TextPromptScreen(Dialog[str | None]):
     """Text input: an answer, a change request, guidance (multi-line: Enter = new line, ctrl+s
     submits) or a short value like a title (one line: Enter submits). The body (e.g. the
     question) is shown in full, line breaks kept, scrollable."""
@@ -104,7 +104,7 @@ from q3tui.core.settings import EFFORTS, MODELS  # noqa: E402 - one list for the
 _NONE = "__none__"
 
 
-class SettingsScreen(ModalScreen[dict | None]):
+class SettingsScreen(Dialog[dict | None]):
     """Settings in tabs (General, LLM, one per step), built from q3tui/core/settings.py."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("ctrl+s", "apply", "Apply")]
@@ -264,7 +264,7 @@ class SettingsScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class ModelScreen(ModalScreen[dict | None]):
+class ModelScreen(Dialog[dict | None]):
     """Pick LLM model + effort; optionally remember in the project's q3tui.yaml."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -353,7 +353,7 @@ class ResetScreen(ChoiceScreen):
         self.dismiss(v if v in ("step", "all") else None)
 
 
-class PickToolsScreen(ModalScreen[list[int] | None]):
+class PickToolsScreen(Dialog[list[int] | None]):
     """Add tools: every tool found at a path as a checkbox row (all checked); the highlighted one shows its command and what code doubts about it.
 
     `items`: [(label, detail)]. ctrl+s dismisses with the indexes checked, Esc with None. Space toggles, `a` checks / unchecks all."""
@@ -414,7 +414,7 @@ class PickToolsScreen(ModalScreen[list[int] | None]):
         self.action_add() if event.button.id == "add" else self.action_cancel()
 
 
-class EditScreen(ModalScreen[dict | None]):
+class EditScreen(Dialog[dict | None]):
     """Small form: fields are (key, label, value, kind[, options]) with kind line | text | choice.
 
     ctrl+s saves, Esc cancels. Returns {key: value} for all fields. `buttons`: [(id, label, fn(screen))] extra buttons next to Save (a flow's
@@ -685,7 +685,7 @@ class HistoryInput(TextArea):
         self.value = text
 
 
-class StatsScreen(ModalScreen[None]):
+class StatsScreen(Dialog[None]):
     """Usage statistics: tokens per model / step / stage, cost, LLM time, step wall time."""
 
     BINDINGS = [Binding("escape,q", "close", "Close"), Binding("t", "toggle_scope", "All time / this session"),
@@ -798,7 +798,7 @@ class StatsScreen(ModalScreen[None]):
               for r in s.recent])
 
 
-class FlowScreen(ModalScreen[dict | None]):
+class FlowScreen(Dialog[dict | None]):
     """Flow editor: add / remove / reorder steps, and edit each step's dependencies, gate, view globs, pass conditions and notes.
 
     rows: [{step, title (shown), kind, deps, gate (mode | None), view, pass, notes, + whatever the app keeps (label, options…)}].
@@ -995,7 +995,7 @@ class FlowScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class PromptsScreen(ModalScreen[None]):
+class PromptsScreen(Dialog[None]):
     """Prompt editor: pick a step (all its stages) or a stage, read its built-in system prompt, edit your override.
 
     The override is appended to the built-in prompt (mode append) or replaces it (mode replace); empty removes it.
@@ -1067,7 +1067,7 @@ class PromptsScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class SkillScreen(ModalScreen[None]):
+class SkillScreen(Dialog[None]):
     """Skill editor: pick a step, edit its skill.md — front matter (kind, deps, gate, options, view, pass), notes for its LLM
     tasks, and the `<!-- NAME -->` sections that are its stage system prompts. `get(step) -> {text, file}`, `put(step, text)`."""
 
@@ -1137,7 +1137,7 @@ class SkillScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class DiagramScreen(ModalScreen[None]):
+class DiagramScreen(Dialog[None]):
     """Diagrams full screen: the whole terminal, scrolled both ways (arrows / h j k l, shift+←/→ a page sideways,
     Home / End), n / p for the next / previous diagram of the same view."""
 
@@ -1204,103 +1204,129 @@ class DiagramScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class LanesScreen(ModalScreen[None]):
-    """Lanes (docs/spec/lanes.md): the tags and each lane's result on them, read from the files every 2 s. t tags the design; r runs the lanes
-    on the latest tag, m merges their fixes, c converges (lanes → merge → … until every lane passes on one tag): in the background."""
+class HistoryScreen(Dialog[None]):
+    """Q3TUI's own record of the project (core/history.py): the versions, newest first, and the highlighted one: what it changed, or (d)
+    everything since it; r puts files back as they were in it (asks which, then to confirm)."""
 
-    BINDINGS = [Binding("escape,q", "close", "Close"), Binding("t", "tag", "Tag the design"), Binding("r", "run", "Run the lanes"),
-                Binding("m", "merge", "Merge the fixes"), Binding("c", "converge", "Converge")]
+    BINDINGS = [Binding("escape,q", "close", "Close"), Binding("d", "toggle_since", "Its changes / since then"), Binding("r", "restore", "Restore")]
     DEFAULT_CSS = """
-    LanesScreen #lanes-box { width: 150; height: 85%; }
-    LanesScreen DataTable { height: 1fr; }
-    LanesScreen #lanes-detail { height: auto; max-height: 8; padding: 0 1; }
+    HistoryScreen #hist-box { width: 95%; height: 90%; }
+    HistoryScreen #hist-main { height: 1fr; }
+    HistoryScreen #hist-list { width: 72; height: 1fr; border: none; padding: 0; background: transparent; }
+    HistoryScreen #hist-detail { width: 1fr; height: 1fr; padding: 0 1; border-left: solid $panel-lighten-2; }
     """
-    STYLE = {"passed": "green", "fixed": "cyan", "failed": "red", "needs_you": "yellow"}
+    DIFF_LINES = 800
 
-    def __init__(self, ops, start):
+    def __init__(self, ops, restored=None):
+        """`ops`: core.ops.Ops; `restored`: called after files were restored (the app refreshes)."""
         super().__init__()
-        self.ops, self.start = ops, start  # start(args) → message: a `q3tui …` command in the background
+        self.ops, self.restored = ops, restored
+        self.since = False
+        self.versions: list = []
 
     def compose(self) -> ComposeResult:
-        from textual.widgets import DataTable
+        from textual.containers import VerticalScroll
+        from textual.widgets import OptionList
 
-        with Vertical(id="lanes-box", classes="modal-box"):
-            yield Label("Lanes", classes="modal-title")
-            yield DataTable(id="lanes-table", zebra_stripes=True, cursor_type="row")
-            yield Static("", id="lanes-detail")
-            yield Static("t: tag the design · r: run the lanes · m: merge their fixes · c: converge · Esc: close", classes="modal-hint")
+        with Vertical(id="hist-box", classes="modal-box"):
+            yield Label("History of the project", classes="modal-title")
+            with Horizontal(id="hist-main"):
+                yield OptionList(id="hist-list")
+                with VerticalScroll(id="hist-detail"):
+                    yield Static("", id="hist-text", markup=False)
+            yield Static("↑/↓ a version · d: what it changed / everything since it · r: restore files from it · Esc: close", classes="modal-hint")
 
     def on_mount(self) -> None:
-        from textual.widgets import DataTable
+        self._load()
 
-        self.query_one(DataTable).add_columns("Tag", "Lane", "Status", "Cost", "Detail")
-        self._fill()
-        self.set_interval(2.0, self._fill)
+    def _load(self) -> None:
+        from rich.text import Text
+        from textual.widgets import OptionList
+        from textual.widgets.option_list import Option
 
-    def _rows(self) -> list[tuple]:
+        lst = self.query_one("#hist-list", OptionList)
+        lst.clear_options()
+        self.versions = self.ops.history(limit=300)
+        if not self.versions:
+            self.query_one("#hist-text", Static).update(self.ops.history_text())
+            return
+        for i, v in enumerate(self.versions):
+            t = Text()
+            t.append(f"{v.short} ", "grey50")
+            t.append(f"{v.when[5:]} ", "grey62")
+            t.append(v.title, "bold green" if v.marks else "")
+            if v.marks:
+                t.append(f" [{', '.join(v.marks)}]", "green")
+            lst.add_option(Option(t, id=f"v-{i}"))
+        lst.highlighted = 0
+        lst.focus()
+        self._show(0)
+
+    def on_option_list_option_highlighted(self, event) -> None:
+        event.stop()
+        self._show(event.option_index)
+
+    def _show(self, i: int | None) -> None:
+        from rich.console import Group
+        from rich.syntax import Syntax
         from rich.text import Text
 
-        from q3tui.core import lanes
+        if i is None or not 0 <= i < len(self.versions):
+            return
+        v = self.versions[i]
+        head = Text()
+        head.append(f"{v.short}  {v.when}  {v.title}", "bold")
+        if v.marks:
+            head.append(f"  [{', '.join(v.marks)}]", "green")
+        if v.body:
+            head.append("\n" + v.body, "grey62")
+        if v.files:
+            head.append(f"\nchanged: {', '.join(v.files[:20])}{' …' if len(v.files) > 20 else ''}", "grey62")
+        try:
+            d = self.ops.history_diff(v.rev, None if self.since else "own", max_lines=self.DIFF_LINES)
+        except Exception as exc:  # noqa: BLE001 - shown, never a traceback
+            d = str(exc)
+        what = Text("\neverything since this version (→ the last one):" if self.since else "\nwhat this version changed:", "italic grey62")
+        self.query_one("#hist-text", Static).update(Group(head, what, Syntax(d, "diff", theme="ansi_dark", word_wrap=True)))
 
-        project = self.ops.project
-        rows = []
-        for t in reversed(lanes.list_tags(project)):
-            name = t["name"] + (" ✔" if (lanes.tags_dir(project) / t["name"] / "converged").is_file() else "")
-            results = lanes.tag_results(project, t["name"])
-            if not results:
-                rows.append((t["name"], name, "–", Text("no lane run yet", "grey50"), "", t["at"].replace("T", " ")))
-            for lane, r in results.items():
-                st = str(r.get("status", "?"))
-                rows.append((f"{t['name']}/{lane}", name, lane, Text(st, self.STYLE.get(st, "")), f"${r.get('cost_usd', 0):.2f}",
-                             " ".join(str(r.get("detail") or "").split())[:110]))
-        return rows
+    def action_toggle_since(self) -> None:
+        from textual.widgets import OptionList
 
-    def _fill(self) -> None:
-        from textual.widgets import DataTable
+        self.since = not self.since
+        self._show(self.query_one("#hist-list", OptionList).highlighted)
 
-        from q3tui.tui.views import fill_table
+    def action_restore(self) -> None:
+        from textual.widgets import OptionList
 
-        rows = self._rows()
-        fill_table(self.query_one(DataTable), rows)
-        if not rows:
-            self.query_one("#lanes-detail", Static).update("no tag yet: t freezes the design (the design flows done and approved)")
+        i = self.query_one("#hist-list", OptionList).highlighted
+        if i is None or not 0 <= i < len(self.versions):
+            return
+        v = self.versions[i]
 
-    def on_data_table_row_highlighted(self, event) -> None:
-        from q3tui.core import lanes
+        def got(text: str | None) -> None:
+            if not text:
+                return
+            paths = text.split()
 
-        key = event.row_key.value if event.row_key else ""
-        tag, _, lane = str(key).partition("/")
-        r = lanes.tag_results(self.ops.project, tag).get(lane, {}) if lane else {}
-        text = (f"{lane} on {tag}: {r.get('status')} — {r.get('detail') or ''}\nfolder: {r.get('folder', '')}"
-                + (f"\nrequests to the design: {r['requests']}" if r.get("requests") else "")
-                + (f" · own fixes: {', '.join(r['own_fixes'])}" if r.get("own_fixes") else "")) if r else ""
-        self.query_one("#lanes-detail", Static).update(text)
+            def go(ok: bool | None) -> None:
+                if not ok:
+                    return
+                try:
+                    self.app.notify(self.ops.restore_version(v.rev, [p for p in paths if p != "."]))
+                except Exception as exc:  # noqa: BLE001 - friendly message, never a traceback
+                    self.app.notify(str(exc), severity="error")
+                    return
+                if self.restored:
+                    self.restored()
+                self._load()
+
+            what = "the whole project" if paths == ["."] else ", ".join(paths)
+            self.app.push_screen(ConfirmScreen(f"Restore {what} from version {v.short}?",
+                                               "The files are written back as they were then; what changes is backed up to .q3tui/bkp/."), go)
+
+        self.app.push_screen(TextPromptScreen(f"Restore from version {v.short} ({v.when} {v.title})",
+                                              "Files or folders, space-separated (e.g. src/rtl/m_lane_mul.sv src/tb); `.` for the whole project.",
+                                              multiline=False), got)
 
     def action_close(self) -> None:
         self.dismiss(None)
-
-    def action_tag(self) -> None:
-        try:
-            self.app.notify(self.ops.tag())
-        except Exception as exc:  # noqa: BLE001 - said, nothing is tagged
-            self.app.notify(str(exc), severity="error", timeout=12)
-        self._fill()
-
-    def action_run(self) -> None:
-        self.app.notify(self.start(["lanes", "run"]))
-
-    def _confirmed(self, question: str, detail: str, args: list[str]) -> None:
-        self.app.push_screen(ConfirmScreen(question, detail), lambda ok: self.app.notify(self.start(args)) if ok else None)
-
-    def action_merge(self) -> None:
-        try:
-            preview = self.ops.lanes_merge_preview()
-        except Exception as exc:  # noqa: BLE001
-            self.app.notify(str(exc), severity="error")
-            return
-        self._confirmed("Merge the lanes' fixes into the project folder?", preview + "\nThen the design flows run and the next tag is made.",
-                        ["lanes", "merge", "--yes"])
-
-    def action_converge(self) -> None:
-        self._confirmed("Converge?", "Lanes on the latest tag → merge their fixes → the next tag → lanes again, until every lane passes on one "
-                                     "tag (bounded by lanes.max_rounds / lanes.max_cost_usd). Runs in the background.", ["lanes", "converge", "--yes"])

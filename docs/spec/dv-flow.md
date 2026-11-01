@@ -130,17 +130,23 @@ spec, by the playbook skill `sim-triage` (`flows/dv/skills/`; yours in `config/s
 
 | Verdict | What happens |
 |---|---|
-| `tb_bug` | a change request for `tb`, scoped to that test (`[tb:TC-019] …`; the UVM kind: the whole step). `simulate` marks its loop: the engine updates `tb`, then runs `simulate` again |
+| `tb_bug` | a change request for `tb`, scoped to that test (`[tb:TC-019] …`), or to the shared top when the fault is there (`module: top` → `[tb:top] …`: a small session on `tb_top.sv`; the test cases are rewritten only when they use a task, signal or macro whose declaration changed); the UVM kind: the whole step. `simulate` marks its loop: the engine updates `tb`, then runs `simulate` again |
 | `rtl_bug` | a change request for the `rtl` step of the flow that owns the RTL (`handoff_flow`, default `rtl`), scoped to the module (`[rtl:<module>] …`). In an unattended run (`pipeline.auto_approve` / `auto_answer`, or `--yes`) the fix loop runs that flow within the run (`engine.hand_to_flow`, same process, lock and event log), then `tb` and `simulate` on the new RTL; bounded by the fix rounds, a fix that keeps coming back (`escalate_after_repeats`, counted only once the RTL changed after it) becomes a question, and a round after which the RTL did not change or the failures did not go down stops with the hand-off for you. Otherwise `simulate` stays failed until you run that flow |
 | `spec_issue` / `unsure` | a blocking question for you (`spec_gap` / `design_choice`); nothing is changed |
+
+A failing test that **passed before** is judged with what changed since ([history.md](history.md)): `simulate` keeps the version of the project each
+test last passed with, and the triage prompt gets the versions since that changed the RTL (which flow and step made them), the other files changed
+since and the RTL diff; the module's change request carries its own diff since, so the rtl step fixes the change rather than starting over.
 
 A module a generator made (the rtl flow's `csr` step: `src/rtl/csr/provided.json`) is named in the triage prompt ("Generated RTL"): a bug in it is an `rtl_bug`
 like any other (the `rtl` step changes it in place, and the change is kept as a patch that the `csr` step applies again when it generates the module again:
 [rtl-flow.md](rtl-flow.md) "Generated RTL: changes as patches"), unless your spec forbids editing it or the rtl option `keep_generated` is on: then it is a
 `spec_issue` whose proposal names the choices (fix the generator, allow the change in place, revise the spec to the generated behaviour).
 
-The rounds are bounded (`max_rounds`, else `pipeline.max_fix_iterations`) and counted until the tests pass, you regenerate, or you answer. A fix handed over and coming back again after
-`pipeline.escalate_after_repeats` rounds becomes a question, not another round. The testbench is never changed to agree with the RTL: the spec is the reference. Every verdict is in
+The rounds are bounded (`max_rounds`, else `pipeline.max_fix_iterations`) and counted until the tests pass, you regenerate, or you answer (an answer an unattended run
+gave with the default does not count; a round that only asks counts as a round). A fix handed over and coming back again after
+`pipeline.escalate_after_repeats` rounds becomes a question, not another round — in an unattended run after one wider try first (what was tried, and where else
+to look: a testbench fix goes to `tb_top` and the test), so a run without you ends at the bound instead of asking the same question again and again. The testbench is never changed to agree with the RTL: the spec is the reference. Every verdict is in
 `schemas/dv_triage.json` (the **Triage** tab). When the triage cannot run (no credentials), the failure is reported as it was.
 
 ## Inputs, outputs, folders
