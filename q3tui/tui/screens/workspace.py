@@ -44,7 +44,6 @@ class WorkspaceScreen(PartScreen):
         Binding("q", "step('answer')", show=False), Binding("c", "step('confirm_item')", show=False),
         Binding("C", "step('confirm_all')", show=False), Binding("w", "step('change_item')", show=False),
         Binding("m", "step('ask_item')", show=False),
-        Binding("left_square_bracket", "tab(-1)", show=False), Binding("right_square_bracket", "tab(1)", show=False),
         Binding("ctrl+l", "new_chat", show=False),
     ]
 
@@ -250,9 +249,6 @@ class WorkspaceScreen(PartScreen):
             self.app.toast("Pick a step first, in the Flow tab", variant="warning")
             return
         self.do(action, sid)
-
-    def action_tab(self, direction: int) -> None:
-        self.main.next_tab(direction)
 
     def action_new_chat(self) -> None:
         self.query_one(ChatPanel).new_chat()

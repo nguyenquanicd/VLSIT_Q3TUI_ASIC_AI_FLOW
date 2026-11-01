@@ -79,7 +79,7 @@ def _hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
             else:
                 keys = [("←→", "tab")]
             step = [k for k in _step_keys(display) if k[0] in ("a", "shift+a", "q", "r")]
-            return [*keys, ("[ ]", "tab"), *step, *move]
+            return [*keys, *step, *move]
         if _find(focused, "Activities"):
             return [("↑↓", "scroll"), ("ctrl+end", "latest"), *move]
         return move

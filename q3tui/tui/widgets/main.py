@@ -229,14 +229,6 @@ class StepMain(Vertical):
         sel = self.screen.get_selected_text() if hasattr(self.screen, "get_selected_text") else None
         return sel or ""
 
-    def next_tab(self, direction: int) -> None:
-        tabs = self.query(Tabs)
-        if not tabs:
-            return
-        t = tabs.first()
-        values = [x.value for x in t.triggers]
-        t.select(values[(values.index(t.value) + direction) % len(values)])
-
     def on_descendant_focus(self, event) -> None:
         """A row that takes the focus is the chosen one; its detail shows."""
         row = event.widget if isinstance(event.widget, Item) else None
