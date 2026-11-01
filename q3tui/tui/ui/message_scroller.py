@@ -106,10 +106,14 @@ class MessageScroller(Vertical):
         self.call_after_refresh(self._keep_place, before_height, before_y)
 
     def _keep_place(self, before_height: int, before_y: float) -> None:
+        if not self.query(_Viewport):  # removed before the refresh came (a view rebuilt)
+            return
         view = self.viewport
         view.scroll_to(y=before_y + (view.virtual_size.height - before_height), animate=False)
 
     def jump_to_end(self) -> None:
+        if not self.query(_Viewport):  # removed before the refresh came (a view rebuilt)
+            return
         self.viewport.scroll_end(animate=False)
         self.following = True
         self.set_class(False, "-away")

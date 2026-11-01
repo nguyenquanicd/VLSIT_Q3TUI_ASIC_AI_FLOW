@@ -570,3 +570,25 @@ async def test_the_answer_all_command_answers_every_open_question_with_its_defau
         assert by_key["a.one"].status == "answered" and by_key["a.three"].status == "open"
         notes = [str(n.render()) for n in app.screen.query(".chat-note")]
         assert any("1 answered with their default: spec-Q1" in n for n in notes)
+
+
+async def test_a_log_removed_before_its_jump_to_the_end_does_not_crash():
+    """Main rebuilds while a step runs: a Log can be removed before the refresh its jump waits for."""
+    from textual.app import App
+
+    from q3tui.tui.widgets.activities import EventLog
+
+    class Live(App):
+        def compose(self):
+            yield EventLog(RUN, id="log")
+
+    app = Live()
+    async with app.run_test(size=(100, 30)) as pilot:
+        log = app.query_one("#log", EventLog)
+        await pilot.pause()
+        log.call_after_refresh(log.jump_to_end)
+        await log.remove_children()  # its viewport is gone when the refresh comes
+        await pilot.pause()
+        log.jump_to_end()
+        log._keep_place(0, 0)
+        assert app.return_code is None
