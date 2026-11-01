@@ -8,8 +8,8 @@ import time
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
 
+from q3tui.tui.screens.base import PartScreen
 from q3tui.tui.ui.command import CommandDialog, CommandItem
 from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePanelGroup
 from q3tui.tui.ui.tabs import Tabs, TabsContent, TabsList, TabsTrigger
@@ -20,7 +20,7 @@ from q3tui.tui.widgets.flow_tree import FlowTree
 from q3tui.tui.widgets.main import StepMain
 
 
-class WorkspaceScreen(Screen):
+class WorkspaceScreen(PartScreen):
     DEFAULT_CSS = """
     WorkspaceScreen #columns { height: 1fr; margin: 1 0; }
     WorkspaceScreen #sidebar-tabs { height: 1fr; }
@@ -78,10 +78,17 @@ class WorkspaceScreen(Screen):
 
     def on_mount(self) -> None:
         self.refresh_statuses()
-        self.app.refresh_keys()
+        super().on_mount()
 
-    def on_descendant_focus(self) -> None:
-        self.app.refresh_keys()
+    def main_part(self):
+        rows = [r for r in self.tree.rows if r.kind == "step"]
+        chosen = next((r for r in rows if r.ident == self.tree.selected), rows[0] if rows else None)
+        return chosen
+
+    def parts(self) -> list:
+        tabs = self.query_one("#sidebar-tabs", Tabs)
+        side = self.query_one(ChatPanel) if tabs.value == "assistant" else self.tree
+        return [side, self.main, self.query_one(Activities)]
 
     def on_unmount(self) -> None:
         self.save_sizes()

@@ -13,14 +13,21 @@ from q3tui.tui.screens.home import HomeScreen
 from q3tui.tui.screens.settings import SettingsScreen
 from q3tui.tui.screens.workspace import WorkspaceScreen
 from q3tui.tui.themes import VLSIT_DARK
-from q3tui.tui.ui.command import CommandDialog, CommandGroup, CommandItem
+from q3tui.tui.ui.command import CommandDialog, CommandItem
 from q3tui.tui.ui.dialog import Dialog, DialogDescription, DialogHeader, DialogTitle
 from q3tui.tui.ui.dropdown_menu import DropdownMenu
 from q3tui.tui.ui.icons import set_icon_set
 from q3tui.tui.ui.menubar import Menubar
 from q3tui.tui.ui.toast import toast
 from q3tui.tui.widgets.bars import RuntimeStats, StatusBar, TitleBar, menus
-from q3tui.tui.widgets.dialogs import DefinitionDialog, ShortcutsDialog, allow, download
+from q3tui.tui.widgets.dialogs import (
+    CostDialog,
+    DefinitionDialog,
+    ShortcutsDialog,
+    allow,
+    confirm,
+    download,
+)
 
 SHORTCUTS = [
     ("Ctrl+Q", "quit"), ("Ctrl+K", "command palette"), ("Ctrl+R", "run the flow"), ("Ctrl+X", "stop the run"),
@@ -268,12 +275,12 @@ class Q3App(App):
     def action_cost_details(self) -> None:
         if self.opened.ops is None:
             return
-        cost = self.opened.ops.cost()
-        steps = "\n".join(f"{s}: ${c:,.4f}" for s, c in cost["steps"].items() if c)
-        self.push_screen(CommandDialog(CommandGroup(
-            f"Total ${cost['total_usd']:,.4f} · assistant ${cost['assistant_usd']:,.4f}",
-            *(CommandItem(line) for line in steps.splitlines()), CommandItem("Reset cost", "reset-cost"))),
-            self.menu_value)
+        def chosen(value) -> None:
+            if value == "reset":
+                self.push_screen(confirm("Reset the cost?", "The totals go back to 0; the reset is kept as an audit "
+                                         "entry."), lambda ok: ok and self.menu_value("reset-cost"))
+
+        self.push_screen(CostDialog(self.opened.ops.cost(), self.costs()["session"]), chosen)
 
     # -- menus, palette and dropdowns -------------------------------------------------------------
 

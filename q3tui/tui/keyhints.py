@@ -1,54 +1,86 @@
-"""The keys of the moment, shown in the status bar: they follow the focus (spec/tui.md "Rules" 5)."""
+"""The keys of the status bar: only those of the part that has the focus, and only the ones that work there now
+(spec/tui.md "Rules" 5)."""
 
 from __future__ import annotations
 
 from textual.widget import Widget
 
 
-def _within(widget: Widget | None, name: str) -> bool:
+def _find(widget: Widget | None, name: str) -> Widget | None:
     node = widget
     while node is not None:
         if type(node).__name__ == name:
-            return True
+            return node
         node = node.parent
-    return False
+    return None
+
+
+def _step_keys(display: str | None) -> list[tuple[str, str]]:
+    """The keys of a step, by its display state (a key that would be refused is not shown)."""
+    keys = [("t", "run to"), ("o", "only"), ("f", "from"), ("s", "stage")]
+    if display in ("done", "approved", "stale", "approval waiting", "question waiting"):
+        keys.append((".", "again"))
+    if display == "approval waiting":
+        keys += [("a", "approve"), ("shift+a", "force")]
+    if display == "question waiting":
+        keys.append(("q", "answer"))
+    if display in ("done", "approved", "approval waiting"):
+        keys.append(("r", "change"))
+    return keys
 
 
 def hints(screen, focused: Widget | None) -> list[tuple[str, str]]:
-    """What the keys do where the focus is, the most useful first; then the screen's general keys."""
     kind = type(screen).__name__
-    general = [("ctrl+r", "run"), ("ctrl+k", "commands"), ("f1", "keys")]
+    move = [("tab", "next part")]
     if kind == "HomeScreen":
-        alerts = bool(screen.query("AlertList"))
-        if _within(focused, "PromptBox"):
-            keys = [("enter", "write the file"), ("shift+enter", "new line")]
-            return keys + ([("tab", "alerts")] if alerts else []) + general
-        if _within(focused, "AlertList"):
-            return [("↑↓", "choose"), ("enter", "open"), ("shift+tab", "input")] + general
-        return ([("tab", "alerts")] if alerts else []) + general + [("alt+comma", "settings")]
+        if _find(focused, "PromptBox"):
+            return [("enter", "write the file"), ("shift+enter", "new line"), *move]
+        if _find(focused, "AlertList"):
+            return [("↑↓", "choose"), ("space", "open"), ("shift+tab", "input")]
+        return move
     if kind == "WorkspaceScreen":
-        if _within(focused, "ChatInput"):
-            return [("enter", "send"), ("shift+enter", "new line"), ("/", "commands"), ("escape", "stop"),
-                    ("ctrl+l", "new chat")]
-        if _within(focused, "ChatPanel"):
-            return [("alt+1", "type"), ("ctrl+l", "new chat")] + general
-        if _within(focused, "FlowTree"):
-            row = focused if type(focused).__name__ == "FlowRow" else None
-            if row is not None and row.kind == "stage":
-                return [("↑↓", "move"), ("enter", "fold"), ("left", "close"), ("right", "open"), ("s", "run")] \
-                    + general
-            return [("enter", "view"), ("t", "run to"), ("o", "only"), ("f", "from"), (".", "again"), ("a", "approve"),
-                    ("r", "change"), ("q", "answer")] + general
-        if _within(focused, "StepMain"):
-            if _within(focused, "ItemList"):
-                return [("↑↓", "item"), ("c", "confirm"), ("shift+c", "all"), ("w", "change item"),
-                        ("m", "ask"), ("[ ]", "tab"), ("a", "approve")] + general
-            return [("[ ]", "tab"), ("a", "approve"), ("r", "change"), ("q", "answer"), ("t", "run to")] + general
-        if _within(focused, "Activities"):
-            return [("↑↓", "scroll"), ("ctrl+end", "latest")] + general
-        return [("alt+1", "assistant"), ("alt+2", "flow"), ("alt+3", "main"), ("alt+4", "activities")] + general
+        chat = _find(focused, "ChatPanel")
+        if _find(focused, "ChatInput"):
+            keys = [("enter", "send"), ("shift+enter", "new line"), ("/", "commands")]
+            if chat is not None and chat.busy:
+                keys.append(("escape", "stop"))
+            return [*keys, ("ctrl+l", "new chat"), *move]
+        if chat is not None:
+            return [("ctrl+l", "new chat"), *move]
+        row = _find(focused, "FlowRow")
+        if row is not None:
+            if row.kind == "stage":
+                return [("↑↓", "move"), ("enter", "fold"), ("←→", "close / open"), *move]
+            display = row.status.display if row.status else None
+            return [("↑↓", "move"), ("enter", "view"), *_step_keys(display), *move]
+        main = _find(focused, "StepMain")
+        if main is not None and main.step:
+            ops = screen.app.opened.ops
+            display = ops.status(main.step).display if ops else None
+            fid = getattr(focused, "id", "") or ""
+            if _find(focused, "ItemList") is not None and fid != "list-questions":
+                keys = [("↑↓", "item"), ("c", "confirm"), ("shift+c", "all"), ("w", "change it"), ("m", "ask")]
+            elif fid == "list-questions":
+                keys = [("↑↓", "question"), ("enter", "answer")]
+            elif type(focused).__name__ == "Button":
+                keys = [("enter", "press")]
+            else:
+                keys = [("←→", "tab")]
+            step = [k for k in _step_keys(display) if k[0] in ("a", "shift+a", "q", "r")]
+            return [*keys, ("[ ]", "tab"), *step, *move]
+        if _find(focused, "Activities"):
+            return [("↑↓", "scroll"), ("ctrl+end", "latest"), *move]
+        return move
     if kind == "SettingsScreen":
-        if _within(focused, "SettingRow"):
-            return [("enter", "save"), ("tab", "next"), ("ctrl+f", "search"), ("escape", "back")]
-        return [("ctrl+f", "search"), ("tab", "next"), ("escape", "back")]
-    return general
+        if getattr(focused, "id", "") == "search":
+            return [("enter", "search"), ("escape", "back"), *move]
+        if _find(focused, "SettingRow"):
+            if type(focused).__name__ == "Select":
+                return [("enter", "choose"), ("escape", "back"), *move]
+            if type(focused).__name__ == "Button":
+                return [("enter", "press"), ("escape", "back"), *move]
+            return [("enter", "save"), ("escape", "back"), ("ctrl+f", "search"), *move]
+        if _find(focused, "ChatInput"):
+            return [("enter", "send"), ("shift+enter", "new line"), ("alt+1", "hide assistant"), *move]
+        return [("escape", "back"), ("ctrl+f", "search"), ("alt+1", "assistant"), *move]
+    return move

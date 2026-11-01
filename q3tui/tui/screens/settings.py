@@ -13,11 +13,11 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
-from textual.screen import Screen
 from textual.widgets import Static
 
 from q3tui.config import ConfigError
 from q3tui.config.schema import Config
+from q3tui.tui.screens.base import PartScreen
 from q3tui.tui.ui.button import Button
 from q3tui.tui.ui.command import CommandDialog, CommandItem
 from q3tui.tui.ui.input import Input
@@ -96,13 +96,13 @@ class SettingRow(Vertical):
     SettingRow .row-edit Button { margin-left: 1; }
     """
 
-    def __init__(self, key: Key, layer: str) -> None:
+    def __init__(self, key: Key, layer: str, merged: dict) -> None:
         super().__init__()
-        self.key, self.config_layer = key, layer
+        self.key, self.config_layer, self.merged = key, layer, merged
 
     def compose(self) -> ComposeResult:
         cfg = self.app.opened.config
-        effective = get(cfg.config.model_dump(mode="json"), self.key.dotted)
+        effective = get(self.merged, self.key.dotted)
         source = cfg.source(self.key.dotted)
         here = cfg.layer_value(self.config_layer, self.key.dotted)
         with Horizontal(classes="row-head"):
@@ -168,10 +168,14 @@ class SettingRow(Vertical):
             self.screen.call_later(self.screen.redraw)
 
 
-class SettingsScreen(Screen):
+class SettingsScreen(PartScreen):
     DEFAULT_CSS = """
     SettingsScreen #settings-body { margin: 1 0; }
-    SettingsScreen #search { margin: 0 1 1 1; }
+    SettingsScreen #settings-head { height: 1; margin: 0 1 1 1; }
+    SettingsScreen #search { width: 1fr; }
+    SettingsScreen #toggle-assistant { margin-left: 1; }
+    SettingsScreen #chat-side { display: none; }
+    SettingsScreen.-assistant #chat-side { display: block; }
     SettingsScreen .group-title { text-style: bold; color: $primary; padding: 0 1; margin-top: 1; }
     SettingsScreen #layer-tabs { height: 1fr; }
     SettingsScreen #layer-tabs TabsContent { height: 1fr; margin-top: 0; }
@@ -179,7 +183,8 @@ class SettingsScreen(Screen):
     SettingsScreen .site-row { height: 1; }
     SettingsScreen .site-row Static { width: 1fr; }
     """
-    BINDINGS = [Binding("ctrl+f", "search", show=False), Binding("escape", "back", show=False)]
+    BINDINGS = [Binding("ctrl+f", "search", show=False), Binding("escape", "back", show=False),
+                Binding("alt+1", "toggle_assistant", show=False)]
 
     def __init__(self, bars, group: str | None = None) -> None:
         super().__init__()
@@ -192,17 +197,21 @@ class SettingsScreen(Screen):
         title, status = self.bars()
         yield title
         opened = self.app.opened
+        merged = opened.config.config.model_dump(mode="json")
         yield ResizablePanelGroup(
-            ResizablePanel(ChatPanel(opened.ops, lambda: {"screen": "settings"}, id="chat"), size=30),
-            ResizableHandle(),
-            ResizablePanel(Vertical(Input(placeholder="Search keys (Ctrl+F)", id="search"),
+            ResizablePanel(id="chat-side", size=30),
+            ResizableHandle(id="chat-handle"),
+            ResizablePanel(Vertical(Horizontal(Input(placeholder="Search keys (Ctrl+F)", id="search"),
+                                               Button("Assistant", id="toggle-assistant"), id="settings-head"),
                                     Tabs(TabsList(*(TabsTrigger(x.title(), x) for x in LAYERS)),
-                                         *(TabsContent(x, VerticalScroll(*self.rows(x), id=f"rows-{x}")) for x in LAYERS),
+                                         *(TabsContent(x, VerticalScroll(
+                                             *(self.rows(x, merged) if x == self.layer_tab else ()), id=f"rows-{x}"))
+                                           for x in LAYERS),
                                          value=self.layer_tab, id="layer-tabs")), size=70),
             id="settings-body")
         yield status
 
-    def rows(self, layer: str):
+    def rows(self, layer: str, merged: dict):
         for title, section in GROUPS:
             keys = [k for k in group_keys(section) if self.filter in k.dotted.lower() or self.filter in k.doc.lower()]
             if not keys:
@@ -211,7 +220,7 @@ class SettingsScreen(Screen):
             if section == "tools":
                 yield Horizontal(Button("Apply preset ▾", id="apply-preset"), classes="sites")
             for k in keys:
-                yield SettingRow(k, layer)
+                yield SettingRow(k, layer, merged)
         if not self.filter or "site" in self.filter or "package" in self.filter:
             yield Static("Sites & packages", classes="group-title")
             yield Vertical(*self.site_rows(), classes="sites")
@@ -245,12 +254,40 @@ class SettingsScreen(Screen):
         await self.recompose()
 
     def on_mount(self) -> None:
-        self.app.refresh_keys()
+        super().on_mount()
+        self.query_one("#chat-handle").display = False
         if self.group:
             self.call_after_refresh(self._scroll_to_group)
 
-    def on_descendant_focus(self) -> None:
-        self.app.refresh_keys()
+    def main_part(self):
+        rows = self.query(f"#rows-{self.layer_tab} SettingRow #value")
+        return rows.first() if rows else self.query_one("#search")
+
+    @on(Tabs.Changed, "#layer-tabs")
+    async def _layer_changed(self, event: Tabs.Changed) -> None:
+        """A tab's rows are made the first time it is shown (lazy)."""
+        self.layer_tab = event.value
+        rows = self.query_one(f"#rows-{event.value}", VerticalScroll)
+        if not rows.children:
+            await rows.mount_all(list(self.rows(event.value, self.app.opened.config.config.model_dump(mode="json"))))
+
+    def action_toggle_assistant(self) -> None:
+        """The Assistant is hidden at first; its button (or the key) shows or hides it."""
+        side = self.query_one("#chat-side")
+        showing = not self.has_class("-assistant")
+        self.set_class(showing, "-assistant")
+        self.query_one("#chat-handle").display = showing
+        if showing and not side.children:
+            side.mount(ChatPanel(self.app.opened.ops, lambda: {"screen": "settings"}, id="chat"))
+        if showing:
+            self.call_after_refresh(lambda: self.query("#chat-input") and self.query_one("#chat-input").focus())
+        else:
+            self.focus_main()
+
+    @on(Button.Pressed, "#toggle-assistant")
+    def _toggle_pressed(self, event) -> None:
+        event.stop()
+        self.action_toggle_assistant()
 
     def _scroll_to_group(self) -> None:
         hits = self.query(f"#group-{self.group}-{self.layer_tab}")

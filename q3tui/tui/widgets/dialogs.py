@@ -107,3 +107,20 @@ class ShortcutsDialog(Dialog):
     def __init__(self, rows: list[tuple[str, str]]) -> None:
         text = "\n".join(f"{k:<24} {v}" for k, v in rows)
         super().__init__(DialogHeader(DialogTitle("Keyboard shortcuts")), Static(text, markup=False), width=72)
+
+
+class CostDialog(Dialog):
+    """The cost: total, session, assistant and each step that spent something; [Reset cost] and [Close].
+    Returns `reset` or None."""
+
+    def __init__(self, cost: dict, session: float) -> None:
+        rows = [("Project (until reset)", cost["total_usd"] + cost.get("assistant_usd", 0.0)),
+                ("This session", session), ("Assistant", cost.get("assistant_usd", 0.0))]
+        rows += [(f"  {step}", usd) for step, usd in sorted(cost["steps"].items(), key=lambda kv: -kv[1]) if usd]
+        width = max(len(name) for name, _ in rows) + 2
+        table = "\n".join(f"{name:<{width}}${usd:>10,.4f}" for name, usd in rows)
+        resets = cost.get("resets") or []
+        note = f"Reset {len(resets)} time(s), last at {resets[-1]['at']}." if resets else "Never reset."
+        super().__init__(DialogHeader(DialogTitle("Cost"), DialogDescription(note)), Static(table, markup=False),
+                         DialogFooter(DialogClose("Close", None, key="escape"), DialogClose("Reset cost", "reset")),
+                         width=64)

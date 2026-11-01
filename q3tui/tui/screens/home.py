@@ -6,10 +6,10 @@ from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
-from textual.screen import Screen
 from textual.widgets import Static
 
 from q3tui.tui.alerts import AlertSpec, alerts, first_user_file
+from q3tui.tui.screens.base import PartScreen
 from q3tui.tui.ui.alert import Alert, AlertDescription, AlertTitle
 from q3tui.tui.ui.prompt_box import PromptBox
 from q3tui.tui.widgets.brand import WelcomeBrand
@@ -46,14 +46,15 @@ class HomeAlert(Alert):
 
 
 class AlertList(Vertical, can_focus=True):
-    """The alerts of Home: Up / Down choose one, Enter does its action (Tab comes here from the input box)."""
+    """The alerts of Home: Up / Down choose one, Space does its action; one is always chosen while it has the
+    focus."""
 
     DEFAULT_CSS = """
     AlertList { height: auto; margin-top: 1; }
     AlertList:focus { background: transparent; }
     """
     BINDINGS = [Binding("up", "move(-1)", show=False), Binding("down", "move(1)", show=False),
-                Binding("enter", "act", show=False)]
+                Binding("space", "act", show=False)]
 
     def __init__(self, *alerts: HomeAlert) -> None:
         super().__init__(*alerts)
@@ -63,13 +64,13 @@ class AlertList(Vertical, can_focus=True):
     def items(self) -> list[HomeAlert]:
         return list(self.query(HomeAlert))
 
-    def select(self, index: int) -> None:
+    def select(self, index: int, *, shown: bool = True) -> None:
         items = self.items
         if not items:
             return
         self.index = index % len(items)
         for n, item in enumerate(items):
-            item.set_class(n == self.index and self.has_focus, "-selected")
+            item.set_class(shown and n == self.index, "-selected")
         items[self.index].scroll_visible(animate=False)
 
     def on_focus(self) -> None:
@@ -88,7 +89,7 @@ class AlertList(Vertical, can_focus=True):
             items[self.index].act()
 
 
-class HomeScreen(Screen):
+class HomeScreen(PartScreen):
     DEFAULT_CSS = """
     HomeScreen #home-body { width: 1fr; height: 1fr; margin: 1 0; }
     HomeScreen #welcome-stage { width: 1fr; height: auto; align: center top; padding: 1 3; }
@@ -119,11 +120,17 @@ class HomeScreen(Screen):
 
     def on_mount(self) -> None:
         self._fit(self.size.width)
-        self.action_focus_prompt()
-        self.app.refresh_keys()
+        super().on_mount()
 
-    def on_descendant_focus(self) -> None:
-        self.app.refresh_keys()
+    def main_part(self):
+        boxes = self.query("PromptBox PromptInput")
+        if boxes:
+            return boxes.first()
+        alerts_ = self.query(AlertList)
+        return alerts_.first() if alerts_ else None
+
+    def parts(self) -> list:
+        return [*self.query(PromptBox), *self.query(AlertList)]
 
     def on_resize(self, event: events.Resize) -> None:
         self._fit(event.size.width)
