@@ -3,6 +3,7 @@ fake LLM (spec/tools.md, spec/extensibility.md, spec/llm-runtime.md). No live LL
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -334,3 +335,32 @@ class Step:
 
 def test_tool_use_block_marks_a_write():
     assert ToolUseBlock("1", "Write", {}).name in llm.WRITE_TOOLS
+
+
+@pytest.mark.skipif(shutil.which("q3-hdl") is None, reason="the design reader q3-hdl (a tool of the flow) is not installed")
+async def test_the_design_reader_is_a_tool_by_role(tmp_path):
+    """Reading the design is the flow's tool `hdl` (q3-hdl), run by role like any other tool: not part of Q3TUI."""
+    step_py = '''
+import json
+import shutil
+
+class Step:
+    async def run(self, ctx):
+        out = ctx.outputs["ports"]
+        r = await ctx.tool("hdl", command="parse", files=[str(p) for p in ctx.inputs["rtl"]], top="top",
+                           out=str(out.with_suffix(".design.json")))
+        design = json.loads(out.with_suffix(".design.json").read_text())
+        out.write_text(json.dumps([p["name"] for p in design["modules"]["top"]["ports"]]))
+'''
+    home = home_with(tmp_path, {"ports": (
+        ("inputs:\n  - {artifact: rtl, path: src/top.sv}\noutputs:\n  - {artifact: ports, path: out/ports.json}\n"
+         "tools:\n  - {role: hdl}\npass:\n  - {check: \"tool hdl ok and errors == 0\"}\n"), "")},
+        {"steps/ports/step.py": step_py})
+    write(home / "config.yaml", "tools:\n  roles:\n    hdl: {cmd: 'q3-hdl {command} {files} --top {top} -o {out}'}\n")
+    write(tmp_path / "proj/src/top.sv", "module top(input logic clk, input logic rst_n, output logic q);\n"
+          "  always_ff @(posedge clk or negedge rst_n) q <= !rst_n ? 1'b0 : ~q;\nendmodule\n")
+    opened = open_project(tmp_path / "proj", home=home, flow="f")
+    assert not opened.problems, opened.problems
+    res = await opened.ops.run()
+    assert res[0].outcome == "complete", opened.engine.status("ports").reason
+    assert json.loads((opened.project.root / "out/ports.json").read_text()) == ["clk", "rst_n", "q"]

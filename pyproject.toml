@@ -10,7 +10,6 @@ dependencies = [
     "jsonschema>=4.0",
     "openpyxl>=3.1.5",   # used by flow step code (CSR workbooks)
     "pydantic>=2.7",
-    "pyslang>=9.0",
     "pytest>=8.0",       # used by flow step code (golden models' self-tests)
     "pyyaml>=6.0",
     "rich>=13.0",
