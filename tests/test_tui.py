@@ -155,3 +155,20 @@ async def test_home_shows_the_existing_intent(tmp_path, home):
         await pilot.press("enter")
         await pilot.pause()
         assert (tmp_path / "proj/spec/intent.md").read_text() == "a FIFO of 16\n"
+
+
+async def test_global_alt_keys_work_while_typing(tmp_path, home):
+    from textual import events
+
+    write(tmp_path / "proj/.q3tui/state/pipeline.json", "{}")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        await pilot.press("alt+1")
+        await pilot.pause()
+        assert type(app.focused).__name__ == "ChatInput"
+        # what the terminal parser makes of ESC 2: the key alt+2 carrying the character "2"
+        app.post_message(events.Key("alt+2", "2"))
+        await pilot.pause(0.3)
+        assert app.screen.query_one("#sidebar-tabs").value == "flow"
+        assert app.screen.query_one("#chat-input").text == ""  # the digit was not typed

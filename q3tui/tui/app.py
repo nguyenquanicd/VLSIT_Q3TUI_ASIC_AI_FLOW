@@ -45,22 +45,23 @@ SHORTCUTS = [
 class Q3App(App):
     CSS_PATH = "styles/app.tcss"
     TITLE = "Q3TUI"
+    # Global keys work everywhere, typing included (spec/tui.md "Rules" 1): a text field would otherwise take Alt+1 as
+    # the digit it carries, so every one of them is a priority binding.
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
         Binding("ctrl+k", "palette", "Commands", priority=True),
         Binding("ctrl+r", "run", "Run", priority=True),
         Binding("ctrl+x", "stop", "Stop", priority=True),
-        Binding("ctrl+n", "new_project", show=False),
-        Binding("ctrl+o", "open_project", show=False),
-        Binding("alt+comma", "settings", show=False),
-        Binding("f1", "shortcuts", show=False),
-        Binding("f6", "dropdown('flow-menu')", show=False),
-        Binding("f7", "dropdown('runtime-menu')", show=False),
-        Binding("f8", "cost_details", show=False),
-        Binding("alt+f", "menu('file')", show=False), Binding("alt+r", "menu('run')", show=False),
-        Binding("alt+v", "menu('view')", show=False), Binding("alt+h", "menu('help')", show=False),
-        Binding("alt+1", "focus_area(1)", show=False), Binding("alt+2", "focus_area(2)", show=False),
-        Binding("alt+3", "focus_area(3)", show=False), Binding("alt+4", "focus_area(4)", show=False),
+        Binding("ctrl+n", "new_project", show=False, priority=True),
+        Binding("ctrl+o", "open_project", show=False, priority=True),
+        Binding("alt+comma", "settings", show=False, priority=True),
+        Binding("f1", "shortcuts", show=False, priority=True),
+        Binding("f6", "dropdown('flow-menu')", show=False, priority=True),
+        Binding("f7", "dropdown('runtime-menu')", show=False, priority=True),
+        Binding("f8", "cost_details", show=False, priority=True),
+        *(Binding(f"alt+{k}", f"menu('{m}')", show=False, priority=True)
+          for k, m in (("f", "file"), ("r", "run"), ("v", "view"), ("h", "help"))),
+        *(Binding(f"alt+{n}", f"focus_area({n})", show=False, priority=True) for n in range(1, 5)),
     ]
 
     def __init__(self, opened: Opened, *, session: list[str] | None = None, home: Path | None = None) -> None:

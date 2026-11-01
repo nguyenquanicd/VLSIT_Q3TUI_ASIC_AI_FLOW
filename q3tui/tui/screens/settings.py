@@ -186,8 +186,7 @@ class SettingsScreen(PartScreen):
     SettingsScreen .site-row { height: 1; }
     SettingsScreen .site-row Static { width: 1fr; }
     """
-    BINDINGS = [Binding("ctrl+f", "search", show=False), Binding("escape", "back", show=False),
-                Binding("alt+1", "toggle_assistant", show=False)]
+    BINDINGS = [Binding("ctrl+f", "search", show=False), Binding("escape", "back", show=False)]
 
     def __init__(self, bars, group: str | None = None) -> None:
         super().__init__()
