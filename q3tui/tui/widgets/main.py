@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.message import Message
-from textual.widgets import Markdown, OptionList, Static
+from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
 from q3tui.engine import Engine
@@ -22,6 +22,7 @@ from q3tui.tui.ui.resizable import ResizableHandle, ResizablePanel, ResizablePan
 from q3tui.tui.ui.tabs import Tabs, TabsContent, TabsList, TabsTrigger
 from q3tui.tui.views import View, build_views
 from q3tui.tui.widgets.activities import line
+from q3tui.tui.widgets.markdown import Q3Markdown
 
 # display state -> the buttons of the step's main actions: (label, action, key)
 BUTTONS: dict[str, list[tuple[str, str, str | None]]] = {
@@ -119,7 +120,7 @@ class StepMain(Vertical):
             yield Static(f"`{v.artifact}` is not written yet.", classes="missing", markup=False)
             return
         if v.kind == "document":
-            yield VerticalScroll(Markdown(v.text, classes="view-detail"))
+            yield VerticalScroll(Q3Markdown(v.text, classes="view-detail"))
             return
         options = []
         for it in v.items:
@@ -129,7 +130,7 @@ class StepMain(Vertical):
         yield ResizablePanelGroup(
             ResizablePanel(ItemList(*options, id=f"list-{v.artifact}"), size=35),
             ResizableHandle(),
-            ResizablePanel(VerticalScroll(Markdown(first, classes="view-detail", id=f"detail-{v.artifact}")), size=65),
+            ResizablePanel(VerticalScroll(Q3Markdown(first, classes="view-detail", id=f"detail-{v.artifact}")), size=65),
         )
 
     def _questions(self, questions):
@@ -209,7 +210,7 @@ class StepMain(Vertical):
         item = next((i for i in view.items if i.id == event.option.id), None) if view else None
         details = self.query(f"#detail-{artifact}")
         if item is not None and details:
-            details.first(Markdown).update(item.detail)
+            details.first(Q3Markdown).update(item.detail)
 
     @on(Tabs.Changed, "#main-tabs")
     def _tab_changed(self, event: Tabs.Changed) -> None:
