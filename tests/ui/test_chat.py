@@ -568,17 +568,22 @@ async def test_a_freeform_answer_replaces_the_chosen_choice_and_a_choice_clears_
         await pilot.press("a")
         await pilot.pause()
         assert q.answers == {"why": "Speed"}
+        assert not app.query(".q-count") and not app.query(".q-progress")  # one question: no count
+        mark = app.query_one(".q-other-mark")
+        assert str(mark.render()) == icon("radio_off")  # the field is the last choice, a radio
         field = app.query_one(".q-freeform")
         field.focus()
         await pilot.pause()
         await pilot.press(*"fun")
         await pilot.pause()
         assert q.answers == {"why": "fun"} and app.query_one("RadioGroup", RadioGroup).value is None
+        assert str(mark.render()) == icon("radio_on")
         app.query_one("RadioGroupItem").focus()
         await pilot.pause()
         await pilot.press("b")
         await pilot.pause()
         assert q.answers == {"why": "Joy"} and field.value == ""
+        assert str(mark.render()) == icon("radio_off")
         await pilot.press("alt+right")
         await pilot.pause()
         assert app.submitted == [{"why": "Joy"}]

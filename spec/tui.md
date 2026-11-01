@@ -150,7 +150,7 @@ colours:
 
 | When                                                          | Component                                    |
 | ------------------------------------------------------------- | -------------------------------------------- |
-| you answer a question                                         | Dialog with the Questionnaire (the question's options, the default marked, a field of your own) |
+| you answer a question                                         | Dialog with the Questionnaire (the question's options, the default marked, and a last choice "Something else" you type in) |
 | you send a change request                                     | Dialog with a Textarea; Ctrl+S sends         |
 | a step's definition changed (when Q3TUI opens a project, Engine) | Dialog listing the steps and versions: [Run again] [Later] |
 | a destructive action you asked for (a reset, a regenerate, a forced approval) | AlertDialog: [Confirm] [Cancel] |

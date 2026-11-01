@@ -13,6 +13,7 @@ from textual.widgets import Static
 from q3tui.tui.ui.button import Button
 from q3tui.tui.ui.choice import Checkbox, RadioGroup, RadioGroupItem
 from q3tui.tui.ui.field import FieldDescription, FieldError
+from q3tui.tui.ui.icons import icon
 from q3tui.tui.ui.input import Input
 from q3tui.tui.ui.progress import Progress
 
@@ -50,7 +51,10 @@ class Question:
 class Questionnaire(Vertical):
     """`Questionnaire(Question("lang", "Favorite language?", ["Python", "Rust"]), ...)`.
 
-    Shows one question at a time with "Question 2 of 3" and a progress bar. Choices are keyed
+    Shows one question at a time with "Question 2 of 3" and a progress bar (neither for a single
+    question). With `freeform`, the last choice is a radio (a checkbox for `multiple`) whose label
+    is a field: typing in it
+    is the answer, and picking another choice clears it. Choices are keyed
     **A, B, C...**: the letter picks (or toggles) a choice from anywhere, and the arrow keys move
     through a single-choice list. **Alt+Right** goes on (Submit on the last question), **Alt+Left**
     goes back, and **Alt+S** skips a skippable question; each action shows its key. A required
@@ -67,6 +71,11 @@ class Questionnaire(Vertical):
     Questionnaire > .q-title { text-style: bold; color: $foreground; height: auto; }
     Questionnaire > .q-actions { height: auto; align-horizontal: right; }
     Questionnaire > .q-actions > Button { margin-left: 2; }
+    Questionnaire .q-list { height: auto; }
+    Questionnaire .q-other { height: 1; }
+    Questionnaire .q-other-mark { width: 2; height: 1; padding: 0 0 0 1; color: $foreground; }
+    Questionnaire .q-other > Input, Questionnaire .q-other > Input:focus { width: 1fr; height: 1;
+        border: none; }
     """
 
     class Changed(Message):
@@ -128,11 +137,13 @@ class Questionnaire(Vertical):
     # -- building -----------------------------------------------------------------------------
     def _build(self) -> list:
         q, total = self.question, len(self.questions)
-        parts: list = [
-            Static(f"Question {self.index + 1} of {total}", classes="q-count", markup=False),
-            Progress(self.index + 1, total, show_value=False, classes="q-progress"),
-            Static(q.title, classes="q-title", markup=False),
-        ]
+        parts: list = []
+        if total > 1:
+            parts += [
+                Static(f"Question {self.index + 1} of {total}", classes="q-count", markup=False),
+                Progress(self.index + 1, total, show_value=False, classes="q-progress"),
+            ]
+        parts.append(Static(q.title, classes="q-title", markup=False))
         if q.description:
             parts.append(FieldDescription(q.description))
         options = q.options()
@@ -167,7 +178,12 @@ class Questionnaire(Vertical):
                 if isinstance(picked, str) and picked not in {c.value or c.label for c in options}
                 else ""
             )
-            parts.append(Input(text, placeholder="Something else…", classes="q-freeform"))
+            other = Horizontal(  # one row under the choices, as a choice of their list
+                Static(self._other_mark(text), classes="q-other-mark", markup=False),
+                Input(text, placeholder="Something else", classes="q-freeform"),
+                classes="q-other",
+            )
+            parts.append(Vertical(parts.pop(), other, classes="q-list"))
         parts.append(FieldError(id="q-error"))
         actions = []
         if self.index > 0:
@@ -196,6 +212,11 @@ class Questionnaire(Vertical):
         if n < len(choices) and not choices[n].disabled:
             choices[n].focus()
             choices[n].activate()
+
+    def _other_mark(self, text: str) -> str:
+        """The mark of the field's choice: a checkbox or a radio like the others, on while it has text."""
+        kind = "checkbox" if self.question.multiple else "radio"
+        return icon(f"{kind}_on" if text.strip() else f"{kind}_off")
 
     @staticmethod
     def _text(choice: QuestionChoice) -> str:
@@ -226,6 +247,8 @@ class Questionnaire(Vertical):
         event.stop()
         q = self.question
         text = event.value.strip()
+        for mark in self.query(".q-other-mark"):
+            mark.update(self._other_mark(text))
         if q.multiple:
             current = [v for v in (self.answers.get(q.id) or []) if v in self._values()]
             self.answers[q.id] = [*current, text] if text else current
