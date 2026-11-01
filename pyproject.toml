@@ -1,30 +1,33 @@
 [project]
 name = "q3tui"
-version = "0.1.0"
-description = "Multi-agent platform for chip design and verification, built on the Claude Agent SDK"
+version = "0.2.0"
+description = "A terminal workspace for AI-driven chip design, built on the Claude Agent SDK"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "claude-agent-sdk>=0.2.160",
-    "pytest>=8.0",  # runs the golden model's self-tests
     "click>=8.1",
-    "jsonschema>=4.0",  # VLSIT flow artifacts are validated against their JSON Schemas
+    "jsonschema>=4.0",
+    "openpyxl>=3.1.5",   # used by flow step code (CSR workbooks)
     "pydantic>=2.7",
-    "pyyaml>=6.0",
     "pyslang>=9.0",
+    "pytest>=8.0",       # used by flow step code (golden models' self-tests)
+    "pyyaml>=6.0",
     "rich>=13.0",
-    "textual>=8.2.8",
-    "openpyxl>=3.1.5",
+    "ruamel-yaml>=0.18", # writes config files keeping comments and layout
     "termaid>=0.9",
+    "textual>=8.2.8,<9",
 ]
 
 [project.scripts]
-q3tui = "q3tui.core.cli:run_cli"
+q3tui = "q3tui.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.12",
+    "textual-dev>=1.7",
 ]
 
 [build-system]
@@ -37,4 +40,7 @@ packages = ["q3tui"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["vcs: needs real Synopsys VCS (set Q3TUI_VCS_MODULE); skipped otherwise"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
