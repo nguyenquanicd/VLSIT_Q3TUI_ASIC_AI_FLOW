@@ -656,7 +656,7 @@ def test_vlsit_statuses_in_a_new_project(tmp_path):
     flow = load_flow("vlsit", lookup, cfg)
     eng = Engine(project, flow, cfg, lookup)
     statuses = {s: eng.status(s) for s in flow.order()}
-    assert statuses["spec"].display == "pending"  # its inputs are optional; a step of the flow writes the rest
+    assert statuses["spec"].missing == ["the input `intent` (spec/intent.md) does not exist"]
     assert {s.display for s in statuses.values()} <= {"pending", "missing_input"}
-    lacking = [s for s in statuses.values() if s.display == "missing_input"]
+    lacking = [s for s in statuses.values() if s.display == "missing_input" and s.id != "spec"]
     assert lacking and all("tool role" in s.reason or "package" in s.reason for s in lacking)

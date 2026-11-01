@@ -73,6 +73,6 @@ def first_user_file(opened: Opened) -> str | None:
         return None
     for sid in eng.flow.order():
         for i in eng.flow.instances[sid].inputs:
-            if i.path and not any(c in i.path for c in "*?[") and not (eng.root / i.path).exists():
+            if i.path and i.required and not any(c in i.path for c in "*?[") and not (eng.root / i.path).exists():
                 return i.path
     return None
