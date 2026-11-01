@@ -111,7 +111,9 @@ class HomeScreen(PartScreen):
         with VerticalScroll(id="home-body"), Container(id="welcome-stage"), Vertical(id="welcome"):
             yield WelcomeBrand(opened.flow.name or opened.config.config.pipeline.flow)
             if target:
-                yield Static(f"Write {target}: what the design must do", id="home-file", markup=False)
+                exists = (opened.project.root / target).is_file()
+                what = f"{target}: edit it, Enter saves" if exists else f"Write {target}: what the design must do"
+                yield Static(what, id="home-file", markup=False)
                 yield PromptBox()
             specs = alerts(opened)
             if specs:
@@ -120,6 +122,10 @@ class HomeScreen(PartScreen):
 
     def on_mount(self) -> None:
         self._fit(self.size.width)
+        target = first_user_file(self.app.opened)
+        path = self.app.opened.project.root / target if target else None
+        if path is not None and path.is_file() and self.query(PromptBox):
+            self.query_one(PromptBox).set_value(path.read_text().rstrip("\n"), at_end=False)
         super().on_mount()
 
     def main_part(self):

@@ -141,3 +141,17 @@ async def test_f8_opens_the_cost(tmp_path, home):
         await pilot.press("escape")
         await pilot.pause()
         assert type(app.screen).__name__ == "HomeScreen"
+
+
+async def test_home_shows_the_existing_intent(tmp_path, home):
+    write(tmp_path / "proj/spec/intent.md", "a FIFO\n")
+    app = app_for(tmp_path, home)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, HomeScreen)
+        box = app.screen.query_one("PromptInput")
+        assert box.text == "a FIFO"
+        await pilot.press("end", *" of 16")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert (tmp_path / "proj/spec/intent.md").read_text() == "a FIFO of 16\n"

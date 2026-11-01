@@ -67,12 +67,13 @@ def _thing(line: str) -> tuple[str, str]:
 
 
 def first_user_file(opened: Opened) -> str | None:
-    """The flow's first user file that a step requires and that is missing (the input box of Home writes it)."""
+    """The flow's first user file that a step requires (the input box of Home writes it; when it exists already,
+    the box shows it to edit)."""
     eng = opened.engine
     if eng is None:
         return None
     for sid in eng.flow.order():
         for i in eng.flow.instances[sid].inputs:
-            if i.path and i.required and not any(c in i.path for c in "*?[") and not (eng.root / i.path).exists():
+            if i.path and i.required and not any(c in i.path for c in "*?["):
                 return i.path
     return None
