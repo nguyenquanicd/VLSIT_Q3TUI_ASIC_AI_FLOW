@@ -77,6 +77,9 @@ class Q3App(App):
     # -- start --------------------------------------------------------------------------------------
 
     def on_mount(self) -> None:
+        from q3tui.tui.scrollbars import install
+
+        install()
         self.register_theme(VLSIT_DARK)
         self.theme = VLSIT_DARK.name
         self._attach()
