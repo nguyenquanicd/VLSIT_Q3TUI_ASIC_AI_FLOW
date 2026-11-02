@@ -186,7 +186,7 @@ def run_role(tools: ToolSet, name: str, workdir: Path, variables: dict[str, obje
 
 
 class ToolBroken(StepFailed):
-    """A tool failed without saying why in code terms (bad command line, missing license / module, wrong option): its
+    """A tool failed without saying why in code terms (bad command line, missing module, wrong option): its
     problem, not the design's — the step stops at once; no LLM fix round can repair it."""
 
 

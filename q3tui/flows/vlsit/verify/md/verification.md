@@ -387,7 +387,7 @@ Hỏi: **"Ký Gate 5 (đóng phase Verification)? Các REQ-ID pending/locked v�
     "vcs": "${VCS_VERSION}",
     "yosys": "0.58",
     "pdk": "GF180MCU TT 025C 1v80",
-    "pdk_lib": "/tools/PDK/GF180/globalfoundries-pdk-libs-gf180mcu_fd_sc_mcu7t5v0/liberty/gf180mcu_fd_sc_mcu7t5v0__tt_025C_1v80.lib"
+    "pdk_lib": "$PDK_ROOT/GF180/globalfoundries-pdk-libs-gf180mcu_fd_sc_mcu7t5v0/liberty/gf180mcu_fd_sc_mcu7t5v0__tt_025C_1v80.lib"
   }
 }
 ```

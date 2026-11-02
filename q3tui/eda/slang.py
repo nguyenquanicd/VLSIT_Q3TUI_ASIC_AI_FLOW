@@ -1,4 +1,4 @@
-"""`syntax` role via pyslang — always available, no licence needed."""
+"""`syntax` role via pyslang — always available."""
 
 from __future__ import annotations
 

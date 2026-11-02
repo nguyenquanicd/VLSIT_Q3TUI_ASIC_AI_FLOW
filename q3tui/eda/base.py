@@ -147,8 +147,7 @@ def run_command(
 
 
 def compile_settled(tool, request, workdir: Path):
-    """A compile that did not finish (killed, timed out — rv32im: VCS hung 600 s while several units ran it, likely a
-    license wait) is the tool's problem, not the code's: run once more; the caller reports one that still does not
+    """A compile that did not finish (killed, timed out — rv32im: VCS hung 600 s while several units ran it) is the tool's problem, not the code's: run once more; the caller reports one that still does not
     finish as such, never as errors of the code it compiled."""
     result = tool.compile(request, workdir)
     if (result.timed_out or result.returncode is None) and not result.errors:

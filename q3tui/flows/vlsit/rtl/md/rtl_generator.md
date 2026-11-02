@@ -201,7 +201,7 @@ verilator --lint-only --sv -Wall --top-module rv32im_core -f src/rtl/filelist.f 
 Tạo `src/rtl/synth_gf180_tt.ys`:
 ```tcl
 # Synthesis script — GF180MCU TT 25C 1.8V
-set GF180_TT "/tools/PDK/GF180/globalfoundries-pdk-libs-gf180mcu_fd_sc_mcu7t5v0/liberty/gf180mcu_fd_sc_mcu7t5v0__tt_025C_1v80.lib"
+set GF180_TT "$PDK_ROOT/GF180/globalfoundries-pdk-libs-gf180mcu_fd_sc_mcu7t5v0/liberty/gf180mcu_fd_sc_mcu7t5v0__tt_025C_1v80.lib"
 
 read_verilog -sv -f src/rtl/filelist.f
 hierarchy -check -top rv32im_core
@@ -220,7 +220,7 @@ write_json src/rtl/synth_gf180_tt.json
 
 Tạo `src/rtl/synth_gf180_ss.ys` (SS corner — worst case):
 ```tcl
-set GF180_SS "/tools/PDK/GF180/globalfoundries-pdk-libs-gf180mcu_fd_sc_mcu7t5v0/liberty/gf180mcu_fd_sc_mcu7t5v0__ss_125C_1v62.lib"
+set GF180_SS "$PDK_ROOT/GF180/globalfoundries-pdk-libs-gf180mcu_fd_sc_mcu7t5v0/liberty/gf180mcu_fd_sc_mcu7t5v0__ss_125C_1v62.lib"
 
 read_verilog -sv -f src/rtl/filelist.f
 hierarchy -check -top rv32im_core

@@ -116,4 +116,4 @@ mcp_servers: []                   # extra MCP servers available to LLM stages
 ```
 
 Tools run as `bash -c 'source <setup_script> && source <modules_init> && module load <tools.modules + role modules> && exec <cmd>'`.
-A config for this site is in [`q3tui.example.yaml`](../../q3tui.example.yaml).
+An example config is in [`q3tui.example.yaml`](../../q3tui.example.yaml).
