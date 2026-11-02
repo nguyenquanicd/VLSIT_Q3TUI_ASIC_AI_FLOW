@@ -115,6 +115,9 @@ class ToolRole(_Strict):
     modules: list[str] = Field(default_factory=list)
     ok_returncodes: list[int] = Field(default_factory=lambda: [0])
     supports: list[str] = Field(default_factory=list)  # capabilities, e.g. ["sva"]; a missing one is reported as N/A
+    # the text of a script the command reads ({script} in cmd), written by Q3TUI with the same placeholders filled (other braces, e.g. Tcl's, stay):
+    # e.g. the `wave` role's simulator commands that dump the signals of a debug run
+    script: str = ""
 
 
 class ToolsConfig(_Strict):

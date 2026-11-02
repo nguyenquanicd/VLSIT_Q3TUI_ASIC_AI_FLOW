@@ -71,8 +71,12 @@ class PlainTb(VlsitStep):
 
     def inputs(self, engine) -> list[Path]:
         p = engine.project
+        lay = self.lay(engine)
+        # the RTL too: the testbench is compiled with it (a changed RTL is compiled again; the writers never see it — `_deny` — and skip their LLM
+        # stages by their own hashes, which leave the RTL out), else simulate runs a simv older than the RTL
+        rtl = [*tb_gen.rtl_files(p.root, lay.rtl), lay.rtl / "filelist.f"]
         return [*p.spec_documents(), artifacts.path(p, "structured_spec.json"), artifacts.path(p, "final_config.json"), artifacts.path(p, "test_plan.json"),
-                self._q_paths(engine)[1]]  # (not the RTL: the testbench is written without it)
+                self._q_paths(engine)[1], *rtl]
 
     def outputs(self, engine) -> list[Path]:
         lay = self.lay(engine)
@@ -336,18 +340,7 @@ class PlainTb(VlsitStep):
     # -- compile check --------------------------------------------------------------------------------------------
 
     def _compile(self, run: _Run, selected: list[dict]):
-        from q3tui.eda.tools import run_role
-
-        lay, project = run.lay, run.ctx.project
-        work = lay.sim / "tb"
-        fl, absf, files = tb_gen.filelists(project.root, lay.tb, lay.rtl, work, selected)
-        res = run_role(run.tools, "sim", work, {"filelist": absf, "top": "tb_top", "files": [str(f) for f in files],
-                                                "incdirs": [f"+incdir+{lay.tb.resolve()}"], "workdir": work, "project": project.root},
-                       log_name="compile.log")
-        from q3tui.eda.tools import check_broken
-
-        check_broken(res, "sim")
-        return res
+        return compile_simv(run.tools, run.ctx.project, run.lay, selected)
 
     async def _compile_loop(self, run: _Run, selected: list[dict]) -> dict:
         import anyio
@@ -486,3 +479,19 @@ class PlainTb(VlsitStep):
             q_md.write_text(render_questions(qs, answers, f"Open questions — {self.title}", engine.state.accepted_defaults.get(self.name, {})))
         open_q = [q for q in qs if q.id not in answers]
         ctx.emit("questions", count=len(open_q), blocking=sum(q.blocking for q in open_q))
+
+
+def compile_simv(tools, project, lay, selected: list[dict]):
+    """Compile the testbench with the RTL (the tool role `sim`) into build/sim/tb; when it compiled, the sources it was built from are stamped
+    (`tb_gen.write_stamp`): `simulate` compiles again when they changed since (an RTL changed by a flow, or by hand)."""
+    from q3tui.eda.tools import check_broken, run_role
+
+    work = lay.sim / "tb"
+    fl, absf, files = tb_gen.filelists(project.root, lay.tb, lay.rtl, work, selected)
+    res = run_role(tools, "sim", work, {"filelist": absf, "top": "tb_top", "files": [str(f) for f in files],
+                                        "incdirs": [f"+incdir+{lay.tb.resolve()}"], "workdir": work, "project": project.root},
+                   log_name="compile.log")
+    check_broken(res, "sim")
+    if res.ok and not res.errors:
+        tb_gen.write_stamp(work, tb_gen.sources_hash(project.root, lay.tb, lay.rtl))
+    return res

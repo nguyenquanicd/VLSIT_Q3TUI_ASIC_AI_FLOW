@@ -212,6 +212,29 @@ def missing_input(engine) -> str | None:
     return None
 
 
+async def _fresh_simv(ctx, tools, lay, cases: list[dict]) -> None:
+    """The simv must be the RTL and the testbench as they are now: one compiled from other sources (no stamp, or the RTL / testbench changed since —
+    by a flow, or by hand) is compiled again before any test runs, so no test runs an old design (rv32iv_sm: ten rounds on a simv older than the fix)."""
+    import anyio
+
+    from q3tui.flows.dv.plain import gen as tb_gen
+    from q3tui.flows.dv.plain.tb import compile_simv
+    from q3tui.pipeline.base import StepFailed
+
+    project, work = ctx.project, lay.sim / "tb"
+    now = tb_gen.sources_hash(project.root, lay.tb, lay.rtl)
+    built = tb_gen.read_stamp(work)
+    if built == now:
+        return
+    ctx.emit("log", message="simulate: the simv " + ("was compiled from other sources than the RTL and testbench now" if built else "has no record of what it was compiled from")
+                            + ": compiling it again")
+    res = await anyio.to_thread.run_sync(lambda: compile_simv(tools, project, lay, cases))
+    if not res.ok or res.errors:
+        errs = "; ".join(f"{d.file}:{d.line}: {d.message}" if d.file else d.message for d in res.errors[:5])
+        raise StepFailed(f"the testbench no longer compiles with the RTL as it is now ({errs or res.summary}; {project.rel(Path(res.log_path)) if res.log_path else ''}): "
+                         "run step tb (its compile check fixes the testbench, or names the RTL problem)")
+
+
 async def run(step, ctx) -> None:
     import anyio
 
@@ -226,6 +249,7 @@ async def run(step, ctx) -> None:
         raise StepFailed("schemas/selected_testplan.json has no selected test case (step tb)")
     tools = load_tools(ctx.cfg, project.root)
     work = lay.sim / "tb"
+    await _fresh_simv(ctx, tools, lay, cases)
     ok_codes = list(tools.roles["run"].ok_returncodes)
     rows, failed, blocked, timed_out, not_run, seen = [], [], [], [], [], {}
     done: dict[str, tuple] = {}  # tc → (res, status, note, missing, broken)

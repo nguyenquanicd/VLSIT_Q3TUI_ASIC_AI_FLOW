@@ -6,6 +6,8 @@ verdict per failure and code dispatches it, the way the rtl flow's smoke test do
 - `tb_bug`: a change request for the `tb` step, scoped to that test (`[tb:TC-019] …`), or to the shared tb_top when the verdict says `module: top` (`[tb:top] …`: a small session on
   tb_top.sv; the test cases stay unless they use what changed); the UVM kind: the whole step. `simulate` goes on normally and marks its loop: the engine updates `tb`,
   then `simulate` runs again. Bounded by `options.max_rounds` or `pipeline.max_fix_iterations`.
+- `prepare_bug`: the program or data the test loads (src/sw/, the `prepare` step's) is wrong: a change request for `prepare`, scoped to that test (`[prepare:TC-050] …`); the engine
+  updates `prepare` (it builds the programs again), then `simulate` runs again. Bounded like the tb fixes. Plain testbench with a `prepare` step only (else a question).
 - `rtl_bug`: a change request for the `rtl` step of the flow that owns the RTL (`handoff_flow` of the tb options, default `rtl`), scoped to the module (`[rtl:<module>] …`). That flow has to run
   to apply it; the RTL is an input of `tb`, so `tb` and `simulate` then run again on the new RTL. In an unattended run (`engine.unattended_run`) the fix loop runs that flow itself
   (`engine.hand_to_flow`), bounded like the tb fixes; a round after which the RTL did not change, or the failures did not go down, stops it. Otherwise `simulate` stays failed until you run it.
@@ -184,11 +186,21 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
     stalled = ("the RTL did not change" if last and last.get("rtl") == now_rtl
                else f"the failures did not go down ({last.get('failed')} → {len(failures)})" if last and len(failures) >= int(last.get("failed") or 0) else "")
     tb_files = sorted(p for p in lay.tb.rglob("*") if p.is_file() and p.suffix in (".sv", ".svh", ".f")) if lay.tb.is_dir() else []
+    prepare = kind == "plain" and "prepare" in engine.by_name  # (the plain testbench's programs and data: src/sw, the prepare step's)
+    sw = engine.by_name["prepare"].sw_dir(engine) if prepare else None
+    sw_files = sorted(p for p in sw.rglob("*") if p.is_file() and not p.name.startswith(".")) if sw is not None and sw.is_dir() else []
+    from q3tui.eda.tools import load_tools
+    from q3tui.flows.dv import debug
+
+    probe = debug.for_triage(project, load_tools(cfg, project.root), lay.sim / "tb", kind, {f["id"] for f in failures})
+    if probe is None and kind == "plain":
+        ctx.emit("log", message="simulate: no debug tool (the `wave` role of config/tools.json): the triage judges from the files and logs only")
     skills = skillmod.discover(project.config_dir, DV_FLOW_FILE, ["sim-triage"])  # (the method is a playbook skill: yours in config/skills/ wins, as for the rtl flow's smoke-triage)
     block, _ = spec_block(project)
     parts = ["# Task: triage the failing simulation tests", "", "## Specification", block, "",
              "## Requirements", "\n".join(f"- {k}: {v}" for k, v in reqs.items()) or "(none)", "",
-             f"## Files (read them): testbench ({kind}) {', '.join(project.rel(p) for p in tb_files[:40])}; RTL {', '.join(project.rel(p) for p in rtl[:40])}", "",
+             f"## Files (read them): testbench ({kind}) {', '.join(project.rel(p) for p in tb_files[:40])}; RTL {', '.join(project.rel(p) for p in rtl[:40])}"
+             + (f"; test programs and data the tests load (the prepare step's: a fault in them is a prepare_bug) {', '.join(project.rel(p) for p in sw_files[:40])}" if sw_files else ""), "",
              *_generated_block(rtl_dir, cfg),
              *_since_pass_block(since, project.rel(rtl_dir)),
              "## Already handed over in earlier rounds (do not ask for the same again: say if it did not work, and why)",
@@ -197,39 +209,48 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
     for f in failures:
         parts += [f"### {f['id']} {f.get('name', '')}", f"status: {f['note']}", f"requirements: {', '.join(f.get('reqs') or []) or '–'}", f"log {f.get('log') or '(none)'} (end):",
                   "```", _log_tail(project, f.get("log") or ""), "```", ""]
+    if probe is not None:
+        parts += [DEBUG_RUNS, ""]
     parts.append(skillmod.index(skills, project.root))
     stage = Stage(name="dv_triage", system_prompt=TRIAGE, prompt="\n".join(parts), cwd=project.root, builtin_tools=["Read", "Grep", "Glob"], add_dirs=skillmod.add_dirs(skills), output_model=DvTriage,
-                  deny_dirs=[project.model_dir, project.arch_dir, project.src_dir / "sva"], max_turns=ctx.cfg.tb.max_turns)
+                  deny_dirs=[project.model_dir, project.arch_dir, project.src_dir / "sva"], max_turns=ctx.cfg.tb.max_turns,
+                  sdk_tools=probe.sdk_tools() if probe is not None else [])
     try:
-        verdicts: list[Verdict] = (await ctx.llm(stage)).output.verdicts
+        result = await ctx.llm(stage)
+        verdicts: list[Verdict] = result.output.verdicts
     except StepFailed:
         raise
     except Exception as exc:  # noqa: BLE001 - no credentials, a stage that failed: the tests failed all the same
         raise StepFailed(f"{original}\n(the triage could not run: {str(exc).splitlines()[0] if str(exc) else type(exc).__name__})") from exc
+    if probe is not None:
+        verdicts = await _require_evidence(ctx, stage, result, probe, verdicts)
 
     modules = {p.stem for p in rtl}
     known = {f["id"] for f in failures}
     asks: list[Question] = []
-    to_tb = 0
+    to_tb = to_prep = 0  # (prepare_bug: the test's programs / data, src/sw — the prepare step builds them again, then simulate runs)
     by_module: dict[str, list[Verdict]] = {}
     by_decision: dict[str, list[Verdict]] = {}  # (failures that wait for the same decision: one question)
     seen: dict[str, int] = {}
     for h in history:  # (an RTL fix counts once the RTL changed after it: one handed over and never applied was not tried)
         if not h["key"].startswith("rtl_bug|") or h.get("rtl") not in (None, now_rtl):
             seen[h["key"]] = seen.get(h["key"], 0) + 1
-    report = {"round": rounds + 1, "failures": failures, "verdicts": []}
+    report = {"round": rounds + 1, "failures": failures, "verdicts": [], **({"debug_runs": probe.runs} if probe is not None else {})}
     wider: dict[str, str] = {}  # rtl unit → what the earlier tries were (the wider try of a fix that keeps coming back)
     for v in verdicts:
         report["verdicts"].append(v.model_dump())
         unit = v.module if v.module in modules else next(iter(sorted(modules)), "")
         top = v.verdict == "tb_bug" and kind == "plain" and v.module.strip().lower().removesuffix(".sv") in ("top", "tb_top")  # (the shared tb_top, not the test)
         key = f"{v.verdict}|{unit if v.verdict == 'rtl_bug' else 'top' if top else v.id}|{v.id}"
-        again = v.verdict in ("rtl_bug", "tb_bug") and bool(v.request.strip()) and seen.get(key, 0) >= cfg.pipeline.escalate_after_repeats
+        if v.verdict == "prepare_bug" and not prepare:  # (no prepare step here, or a UVM testbench: nobody to hand it to — a question)
+            v = v.model_copy(update={"verdict": "unsure", "decision": v.decision or "test program fault, no prepare step"})
+        again = v.verdict in HANDS_OVER and bool(v.request.strip()) and seen.get(key, 0) >= cfg.pipeline.escalate_after_repeats
         # it keeps coming back after its fix: an unattended run makes one wider try (what was tried, where else to look) instead of a question nobody reads
         widen = again and engine.unattended_run() and not any(h["key"] == key and h.get("widened") for h in history)
         tried = "; ".join(h["req"][:200] for h in history if h["key"] == key and h.get("req")) or "(not recorded)"
         more = (f"\n\nThis failure came back {seen.get(key, 0)} time(s) after its fix (tried: {tried}). Look wider and fix the cause"
                 + (": the shared tb_top.sv (its monitors, checkers, helper tasks) as well as the test." if v.verdict == "tb_bug" else
+                   ": the shared parts of the programs (startup code, linker script, Makefile, common routines) as well as this test's program." if v.verdict == "prepare_bug" else
                    ": the module's interfaces with its neighbours and the cycle the spec states, not only the line named before.")) if widen else ""
         if again and not widen:
             asks.append(Question(id="", blocking=True, kind="design_choice", question=(
@@ -242,7 +263,7 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
                 wider[unit] = more
         elif v.verdict == "tb_bug" and v.request.strip():
             history.append({"key": key, "round": rounds + 1, "req": v.request.strip(), **({"widened": True} if widen else {})})
-            text = f"From the simulation triage ({v.id}): {v.summary} {v.request}" + more
+            text = f"From the simulation triage ({v.id}): {v.summary} {v.request}" + more  # (no evidence: it names the RTL's signals, which the testbench never sees)
             if kind != "plain":
                 engine.request_change("tb", text)
             else:
@@ -252,6 +273,12 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
             ctx.emit("log", message=f"simulate {v.id}: testbench bug → tb{' (tb_top)' if top else ''}: {v.summary[:100]}"
                                     + (f" — came back {seen.get(key, 0)} time(s): one wider try (tb_top and the test) instead of a question" if widen else ""))
             to_tb += 1
+        elif v.verdict == "prepare_bug" and v.request.strip():
+            history.append({"key": key, "round": rounds + 1, "req": v.request.strip(), **({"widened": True} if widen else {})})
+            engine.request_change("prepare", scoped("prepare", v.id, f"From the simulation triage ({v.id}): {v.summary} {v.request}" + more))
+            ctx.emit("log", message=f"simulate {v.id}: test program bug → prepare: {v.summary[:100]}"
+                                    + (f" — came back {seen.get(key, 0)} time(s): one wider try instead of a question" if widen else ""))
+            to_prep += 1
         else:
             by_decision.setdefault(v.decision.strip().lower() or v.id, []).append(v)
     asks += [vs[0].question("Test", [v.id for v in vs]) for vs in by_decision.values()]
@@ -259,13 +286,13 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
     kept = [q for q in step.questions_list(engine) if q.id in answers]
     step.save_questions(engine, [*kept, *assign_question_ids(asks, kept, "SIM", taken=set(answers))])
     write_json(lay.schemas / TRIAGE_JSON, report)
-    if to_tb:
-        meta["loop"], meta["rounds"] = True, rounds + 1  # the engine updates tb on the change requests, then runs simulate again
+    if to_tb or to_prep:
+        meta["loop"], meta["rounds"] = True, rounds + 1  # the engine updates tb / prepare on the change requests, then runs simulate again
     # the hand-over to the other flow last: it saves this engine's state, lets the other flow's engine write the change request into the same file, and reads it back
     handed: list[str] = []
     owner = str(tb_opts.get("handoff_flow") or "rtl")
     for unit, vs in by_module.items():
-        text = scoped("rtl", unit, f"From the simulation of the testbench ({', '.join(v.id for v in vs)}): " + " | ".join(f"{v.summary} {v.request}" for v in vs)
+        text = scoped("rtl", unit, f"From the simulation of the testbench ({', '.join(v.id for v in vs)}): " + " | ".join(f"{v.summary} {v.request}{_evidence(v)}" for v in vs)
                       + _module_since_pass(project, since, next((p for p in rtl if p.stem == unit), None), [v.id for v in vs]) + wider.get(unit, ""))
         owner = _hand_to_rtl_flow(ctx, owner, text)
         ctx.emit("log", message=f"simulate {', '.join(v.id for v in vs)}: RTL bug → {owner}:rtl ({unit}): {vs[0].summary[:100]}"
@@ -277,7 +304,7 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
         engine.hand_to_flow(step.name, owner)
         meta["rounds"], meta["flow_round"] = rounds + 1, {"rtl": now_rtl, "failed": len(failures)}
         ctx.emit("log", message=f"simulate: the {owner} flow runs next for {', '.join(handed)}, then tb and simulate again")
-    if to_tb or run_owner:
+    if to_tb or to_prep or run_owner:
         if (handed and not run_owner) or asks:
             said = [("also handed to the RTL flow: " + ", ".join(handed) + (f" ({stalled} after the last {owner} flow run: run it yourself)" if stalled else ""))
                     if handed and not run_owner else "", f"{len(asks)} question(s) wait for you" if asks else ""]
@@ -292,6 +319,55 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
     meta["rounds"] = rounds + 1  # (a round that only asks counts too: answered with the defaults by an unattended run, it must not go on forever)
     ids = ", ".join(q["id"] for q in engine.questions() if q["step"] == step.name and q["status"] == "open")
     raise StepFailed(f"simulate: the tests are failing and need your decision on {ids or 'the open questions'} (answer them, then run again):\n{summary}")
+
+
+HANDS_OVER = ("rtl_bug", "tb_bug", "prepare_bug")
+DEBUG_RUNS = """## Debug runs: show it before you hand a fix over
+You have debug tools: `sim_probe` runs one failing test again with a waveform dump of the instances you name, `wave_list` / `wave_values` / `wave_find` read it.
+Reading the code is where you start, not the proof. Before an `rtl_bug`, a `tb_bug` or a `prepare_bug`, show it on a run: dump the instances on the path of the failing check, follow the
+value the check depends on back from the check to the first place where it departs from what the spec states (or where the testbench drives or samples it wrong, or the
+test's program does something other than the spec / ISA says).
+That place decides the verdict, and for an `rtl_bug` the module is the one that place is in. Write in `evidence` the dump's id (D1, …), the signals, the times and the
+values seen against the expected ones. A verdict whose evidence names no dump of this triage hands nothing over. If the runs cannot settle it, answer `unsure`
+and say what is missing."""
+
+
+def _evidence(v: Verdict) -> str:
+    return f" Evidence (a debug run of the simulation triage): {v.evidence.strip()}" if v.evidence.strip() else ""
+
+
+async def _require_evidence(ctx: StepContext, stage: Stage, result, probe, verdicts: list[Verdict]) -> list[Verdict]:
+    """A fix is handed over only with evidence from a debug run: the verdicts that name no dump of this triage are asked for it once, in the same session; what
+    still has none becomes `unsure` (a question, nothing handed over)."""
+    import dataclasses
+
+    def lacking(vs: list[Verdict]) -> list[Verdict]:
+        return [v for v in vs if v.verdict in HANDS_OVER and not probe.cites(v.evidence)]
+
+    missing = lacking(verdicts)
+    if missing and result.session_id:
+        ids = ", ".join(v.id for v in missing)
+        ctx.emit("log", message=f"simulate: the triage of {ids} hands a fix over without evidence from a debug run: it is asked to show it")
+        ask = (f"# Task: show it on a run\nYour verdicts for {ids} hand a fix over ({', '.join(f'{v.id}: {v.verdict}' + (f' in {v.module}' if v.module else '') for v in missing)}) "
+               "without a debug run that shows it. For each: run `sim_probe` on the test with the instances on the failing check's path, find with `wave_values` / "
+               "`wave_find` the first place the value departs from what the spec states, and give that as the evidence with the dump's id. If the run shows the other "
+               "side (or another module) at fault, change the verdict. If it cannot settle it, answer `unsure` with what is missing. Answer again with every verdict.")
+        try:
+            again = await ctx.llm(dataclasses.replace(stage, prompt=ask, resume=result.session_id, deny_dirs=list(stage.deny_dirs)))
+            if again.output is not None:
+                verdicts = again.output.verdicts
+        except StepFailed:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the session could not go on: the verdicts stand as they are, without the hand-over
+            ctx.emit("warning", message=f"simulate: the triage could not be asked for evidence: {str(exc).splitlines()[0] if str(exc) else type(exc).__name__}")
+        missing = lacking(verdicts)
+    for v in missing:
+        ctx.emit("warning", message=f"simulate {v.id}: {v.verdict.replace('_', ' ')}{' in ' + v.module if v.module else ''} not handed over: no debug run showed it")
+        v.summary = (f"{v.summary} (The triage judged it a {v.verdict.replace('_', ' ')}{' in ' + v.module if v.module else ''} but no debug run showed it, so nothing was "
+                     f"handed over{': it proposed: ' + v.request.strip() if v.request.strip() else ''}.)")
+        v.verdict, v.request = "unsure", ""
+        v.decision = v.decision or "no evidence from a debug run"
+    return verdicts
 
 
 def _generated_block(rtl_dir: Path, cfg) -> list[str]:

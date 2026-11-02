@@ -116,6 +116,36 @@ def rtl_files(project_root: Path, rtl_dir: Path) -> list[Path]:
     return sorted(p.resolve() for p in rtl_dir.glob("*.sv")) if rtl_dir.is_dir() else []
 
 
+STAMP = "compiled.json"  # in build/sim/tb: the hash of the sources the simv was compiled from
+
+
+def sources_hash(project_root: Path, tb_dir: Path, rtl_dir: Path) -> str:
+    """The RTL (its filelist's files) and the testbench (every .sv / .svh / .f under src/tb): what the simv is compiled from."""
+    import hashlib
+
+    h = hashlib.sha256()
+    tb = sorted(p for p in tb_dir.rglob("*") if p.is_file() and p.suffix in (".sv", ".svh", ".v", ".vh", ".f")) if tb_dir.is_dir() else []
+    for p in [*rtl_files(project_root, rtl_dir), *tb]:
+        h.update(str(p).encode() + b"\0" + (p.read_bytes() if p.is_file() else b"<missing>") + b"\0")
+    return h.hexdigest()[:16]
+
+
+def write_stamp(work: Path, digest: str) -> None:
+    import json
+
+    work.mkdir(parents=True, exist_ok=True)
+    (work / STAMP).write_text(json.dumps({"sources": digest}))
+
+
+def read_stamp(work: Path) -> str | None:
+    import json
+
+    try:
+        return json.loads((work / STAMP).read_text()).get("sources")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def filelists(project_root: Path, tb_dir: Path, rtl_dir: Path, work: Path, cases: list[dict]) -> tuple[Path, Path, list[Path]]:
     """(deliverable filelist with project-relative paths, absolute one for the tool, the files in it)."""
     rtl = rtl_files(project_root, rtl_dir)

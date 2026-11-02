@@ -132,7 +132,25 @@ spec, by the playbook skill `sim-triage` (`flows/dv/skills/`; yours in `config/s
 |---|---|
 | `tb_bug` | a change request for `tb`, scoped to that test (`[tb:TC-019] …`), or to the shared top when the fault is there (`module: top` → `[tb:top] …`: a small session on `tb_top.sv`; the test cases are rewritten only when they use a task, signal or macro whose declaration changed); the UVM kind: the whole step. `simulate` marks its loop: the engine updates `tb`, then runs `simulate` again |
 | `rtl_bug` | a change request for the `rtl` step of the flow that owns the RTL (`handoff_flow`, default `rtl`), scoped to the module (`[rtl:<module>] …`). In an unattended run (`pipeline.auto_approve` / `auto_answer`, or `--yes`) the fix loop runs that flow within the run (`engine.hand_to_flow`, same process, lock and event log), then `tb` and `simulate` on the new RTL; bounded by the fix rounds, a fix that keeps coming back (`escalate_after_repeats`, counted only once the RTL changed after it) becomes a question, and a round after which the RTL did not change or the failures did not go down stops with the hand-off for you. Otherwise `simulate` stays failed until you run that flow |
+| `prepare_bug` | the program or data the test loads (`src/sw/`, the `prepare` step's: firmware, test programs, golden values) is wrong: a change request for `prepare`, scoped to the test (`[prepare:TC-050] …`); `simulate` marks its loop: the engine updates `prepare` (it changes the sources and builds them again), then runs `simulate` again. Bounded and escalated like `tb_bug` (the wider try: the shared startup code, linker script, Makefile and common routines). Plain testbench with a `prepare` step only, else a question |
 | `spec_issue` / `unsure` | a blocking question for you (`spec_gap` / `design_choice`); nothing is changed |
+
+**Evidence from a run before a hand-over** (`flows/dv/debug.py`, plain testbench). Reading the code is where the triage starts, not its proof: on rv32iv_sm it read
+the whole path of an illegal flag, found "no wrong gate", and still named a module, which was handed a fix it could not find, round after round. With the tool role
+`wave` configured, the triage has debug tools (in-process MCP):
+
+| Tool | What it does |
+|---|---|
+| `sim_probe(test, scopes, depth, until_ns)` | runs one failing test again through the role `wave`, with a waveform dump of the instances named (paths from `tb_top`; depth 1: their signals, 0: all below); returns the result lines, the dump's id (`D1`, `D2`, …) and its signals |
+| `wave_list(dump, pattern)` | the dump's signals matching a pattern |
+| `wave_values(dump, signals, start_ns, end_ns)` | each signal's value at the start and its changes in the window (a signal: its full name or the end of it) |
+| `wave_find(dump, signal, value, after_ns, nth)` | when a signal takes a value |
+
+The VCD is read by code (`eda/vcd.py`, vendor-agnostic); the role's command makes it (the Synopsys preset: VCS UCLI dumps a VPD from the `script` the role gives, `vpd2vcd`
+converts it; the simv must be compiled with `-debug_access+all`). Files: `build/sim/tb/debug/` (D*.log / .vcd). An `rtl_bug`, `tb_bug` or `prepare_bug` hands a fix over only when its
+`evidence` names a dump of this triage (the signals, times and values against the spec's; an RTL change request carries it to the owner, a testbench / program one does not: it names the RTL's signals, which the testbench side never sees). One without is asked once more, in
+the same session, to show it on a run (or change the verdict); what still has none becomes `unsure` (a question, nothing handed over). Every debug run is in
+`dv_triage.json` (`debug_runs`). Without the `wave` role (and for the UVM kind) the triage judges from the files and logs as before, and says so in the log.
 
 A failing test that **passed before** is judged with what changed since ([history.md](history.md)): `simulate` keeps the version of the project each
 test last passed with, and the triage prompt gets the versions since that changed the RTL (which flow and step made them), the other files changed
@@ -179,6 +197,11 @@ in the last phase of `tb`; a spec / RTL difference is reported as a conformance 
   (`rtl_dir`, `top`, `incdirs`, `defines`, `simulator`, `smoke_test`, `param_map`, `port_map`), `semantic.scope` (`smoke` | `all`). The flat options are laid over the
   group (a value set in the dialog wins).
 - `tb:` section of `q3tui.yaml`: `max_fix_attempts` (3), `max_turns` (30), `parallel` (4); the TB tab of the settings dialog. `project.tb_dir` (default `src/tb`).
+- **The simv is the RTL as it is now** (plain). The RTL is an input of `tb` (its writers never see it — `deny_dirs` — and skip their LLM stages by their own hashes, which
+  leave the RTL out): a changed RTL makes `tb` stale and compiles it again, without writing the testbench again. Each compile that passes stamps the sources it was built
+  from (`build/sim/tb/compiled.json`: the hash of the RTL filelist's files and of `src/tb/`); `simulate` compiles again first when they changed since (an RTL changed by
+  hand, or no stamp), and fails ("run step tb") when that compile fails. On rv32iv_sm `tb` stayed "up to date" after the rtl flow's fix, and ten rounds ran a simv older
+  than the fix.
 - Tool roles (`config/tools.json`, see [flows.md](flows.md) "Tools"): plain: `sim` (compile `tb_top` with the RTL; its log is read by the `parse` of the role) and `run` (run the simv with `+TC={tc}`); UVM: `sim_uvm` (compile with the VIP and the RTL) and `run_uvm` (run one UVM test): VCS; `prepare`: `sw_build` (make), `riscv_gcc`, `iss` (Spike), see above. `q3tui tools init`
   writes templates. Tests that need real VCS are skipped unless it is set up (`Q3TUI_VCS_MODULE`).
 
