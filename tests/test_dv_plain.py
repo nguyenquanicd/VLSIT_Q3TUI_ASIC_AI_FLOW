@@ -204,7 +204,8 @@ def vlsit_handler(fake, stage, emit):
         from q3tui.flows.dv.triage import DvTriage
         from q3tui.flows.rtl.lib.models import Verdict
 
-        return StageResult("", DvTriage(verdicts=[Verdict(**v) for v in fake.vlsit_triage_verdicts]), 0.0, 1, "s")
+        verdicts = fake.vlsit_triage_verdicts(stage) if callable(fake.vlsit_triage_verdicts) else fake.vlsit_triage_verdicts  # (a callable: per call, e.g. it runs the debug tools)
+        return StageResult("", DvTriage(verdicts=[Verdict(**v) for v in verdicts]), 0.0, 1, "s")
     if n == "prepare" or n.startswith("prepare_fix"):
         from q3tui.flows.rtl.lib.models import PrepareResult, TestInputs
 
@@ -1067,3 +1068,77 @@ def test_the_toolchain_is_found_by_role_or_by_a_search_and_set_up_into_tools_jso
     none = toolchain.find(None)
     steps = [w for w, _, _ in toolchain.install_steps(none, tmp_path / "home" / "tools")]
     assert not none.ready and steps == ["GCC: download", "GCC: unpack", "dtc: clone", "dtc: build", "Spike: clone", "Spike: build", "riscv-tests: clone"]
+
+
+# -- the simv is always the RTL as it is now ---------------------------------------------------------------------------------------------------------------------
+
+def test_a_changed_rtl_makes_tb_stale_and_compile_again_without_its_llm(tmp_path, tools_dir, llm):
+    """rv32iv_sm: the rtl flow fixed a module, `tb` stayed "up to date" (the RTL was not its input) and ten rounds of simulate ran a simv older than the fix."""
+    from q3tui.flows.dv.plain import gen as tb_gen
+
+    eng = make_engine(tmp_path, tools_dir)
+    run_all(eng)
+    work = tmp_path / "build/sim/tb"
+    before = tb_gen.read_stamp(work)
+    assert before == tb_gen.sources_hash(tmp_path, tmp_path / "src/tb", tmp_path / "src/rtl")
+    assert eng.evaluate(eng.by_name["tb"]).status == "done"
+    leaf = tmp_path / "src/rtl/leaf_b.sv"
+    leaf.write_text(leaf.read_text() + "// fixed by the rtl flow\n")
+    eng2 = Engine(Project.open(tmp_path))
+    assert eng2.evaluate(eng2.by_name["tb"]).status == "stale"
+    n = len(llm.calls)
+    run_step(eng2, "tb")
+    assert not [c for c in llm.calls[n:] if c.name.startswith("tb_")]  # (the testbench is not written again: only compiled)
+    assert tb_gen.read_stamp(work) not in (None, before)
+    stage_deny = [c for c in llm.calls if c.name.startswith("tb_")][0].deny_dirs
+    assert any(Path(d).resolve() == (tmp_path / "src/rtl").resolve() for d in stage_deny)  # (the writers still never see the RTL)
+
+
+def test_simulate_compiles_again_when_the_simv_is_older_than_the_rtl(tmp_path, tools_dir, llm):
+    from q3tui.flows.dv.plain import gen as tb_gen
+
+    eng = make_engine(tmp_path, tools_dir)
+    run_all(eng)
+    work = tmp_path / "build/sim/tb"
+    (work / "compile.log").unlink()
+    run_step(eng, "simulate")
+    assert not (work / "compile.log").exists()  # (the stamp matches: not compiled again)
+    leaf = tmp_path / "src/rtl/leaf_b.sv"
+    leaf.write_text(leaf.read_text() + "// changed by hand\n")
+    run_step(eng, "simulate")
+    assert (work / "compile.log").is_file() and tb_gen.read_stamp(work) == tb_gen.sources_hash(tmp_path, tmp_path / "src/tb", tmp_path / "src/rtl")
+    leaf.write_text(leaf.read_text() + "RTL_ERR\n")
+    with pytest.raises(StepFailed, match="no longer compiles with the RTL"):
+        run_step(eng, "simulate")
+
+
+# -- a failing test whose program is wrong goes to prepare ---------------------------------------------------------------------------------------------------------
+
+def test_a_prepare_bug_goes_to_prepare_scoped_to_the_test_and_simulate_runs_again_after_it(tmp_path, tools_dir, llm, riscv):
+    """rv32iv_sm: the MNIST firmware used vmv.s.x at SEW=8 as a 32-bit move; the triage could only call it a tb_bug, and tb cannot change src/sw."""
+    llm.vlsit_triage_verdicts = [{"id": "TC-002", "verdict": "prepare_bug", "summary": "the program uses vmv.s.x at SEW=8 as a 32-bit move",
+                                  "request": "switch to e32 around vmv.s.x / vmv.x.s in b.S"}]
+    eng = prep_engine(tmp_path, tools_dir, riscv)
+    (tmp_path / "q3tui.yaml").write_text((tmp_path / "q3tui.yaml").read_text().replace("noprog", "failtc2"))
+    eng = Engine(Project.open(tmp_path))
+    run_all(eng)
+    run_step(eng, "prepare")
+    run_step(eng, "simulate")  # (no failure: the fix is dispatched and the engine's loop runs it)
+    (stage,) = [c for c in llm.calls if c.name == "dv_triage"]
+    assert "src/sw/b.S" in stage.prompt and "prepare_bug" in stage.prompt
+    assert eng.state.feedback["prepare"] == ["[prepare:TC-002] From the simulation triage (TC-002): the program uses vmv.s.x at SEW=8 as a 32-bit move "
+                                             "switch to e32 around vmv.s.x / vmv.x.s in b.S"]
+    assert not eng.state.feedback.get("tb")
+    meta = eng.state.step_meta["simulate"]
+    assert meta["loop"] is True and meta["rounds"] == 1 and meta["history"][0]["key"] == "prepare_bug|TC-002|TC-002"
+    n = len(llm.calls)
+    run_step(eng, "prepare")
+    (again,) = [c for c in llm.calls[n:] if c.name == "prepare"]
+    assert "switch to e32 around vmv.s.x" in again.prompt
+
+
+def test_a_prepare_bug_without_a_prepare_step_is_a_question(tmp_path, tools_dir, llm):
+    eng = failing(tmp_path, tools_dir, llm, [{"id": "TC-002", "verdict": "prepare_bug", "summary": "the program is wrong", "request": "fix b.S"}])
+    with pytest.raises(StepFailed, match="need your decision"):
+        run_step(eng, "simulate")
+    assert not eng.state.feedback.get("prepare") and not eng.state.feedback.get("tb")
