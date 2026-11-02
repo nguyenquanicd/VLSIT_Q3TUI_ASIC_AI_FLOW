@@ -75,7 +75,7 @@ def test_default_config_and_files():
     # a reset is a false path, but its port still gets an input delay (CDC tools call a port with none "partially constrained")
     assert "set_input_delay -clock [get_clocks i_clk] -max 1.5 [get_ports {i_rst_n}]" in io and "-min 0 [get_ports {i_rst_n}]" in io
     assert "(none)" in files["extra.tcl"] and "source $_d/extra.tcl" in files["sdc.tcl"]
-    assert "single clock domain" in files["clock_groups.tcl"]
+    assert "set_clock_groups -asynchronous -group [get_clocks {i_clk}]" in files["clock_groups.tcl"]  # (one clock: its own group, VC Static CDC wants it)
     assert "source $_d/clocks.tcl" in files["sdc.tcl"]
 
 
@@ -1209,3 +1209,44 @@ async def test_a_result_that_cannot_be_judged_says_so_and_keeps_its_numbers(proj
     await eng.run()
     v = json.loads((proj.schemas_dir / "ppa_report.json").read_text())["verdict"]
     assert v["plausibility"] == "not judged" and v["overall"] == "pass" and "no credentials" in v["judgment"]["summary"]
+
+
+async def test_a_check_that_changes_the_rtl_after_the_targets_are_met_runs_synthesis_again(proj, monkeypatch):
+    """The post-PPA check (format → smoke) rewrote the RTL after the synthesis that passed: the flow runs again on it, once."""
+    from q3tui.llm import runtime
+    from tests.fakes import ReadsStep
+
+    (proj.root / "flows").mkdir(exist_ok=True)
+    (proj.root / "flows" / "owner.yaml").write_text(
+        "name: owner\nsteps:\n  - {id: spec, kind: spec}\n  - {id: rtl, kind: reads, deps: [spec]}\n"
+        "  - {id: format, kind: reads, deps: [rtl]}\n  - {id: smoke, kind: reads, deps: [format]}\n")
+    _fork(proj, timing_util_report=("options:\n", "options:\n  targets: {min_slack_ns: 5}\n"),
+          ppa_optimize=("handoff_flow: rtl", "handoff_flow: owner"))
+    fake = PlanLLM(_plan())
+    monkeypatch.setattr(runtime, "run_stage", fake)
+    eng = Engine(proj)
+    await eng.run(yes=True)
+    Ops(eng).run_action("ppa_handoff", ids="F1")
+    await Engine(proj, flow=flows.load_flow("owner", proj.root)).run(only="rtl", yes=True)
+    (proj.root / "src" / "rtl" / "blk.sv").write_text(RTL.replace("o_r = 1'b1", "o_r = 1'b0"))
+    flow_dir = proj.root / "flows" / "fpga"
+    t = flow_dir / "timing_util_report" / "md" / "skill.md"
+    t.write_text(t.read_text().replace("targets: {min_slack_ns: 5}", "targets: {}"))
+    skill = flow_dir / "ppa_optimize" / "md" / "skill.md"
+    skill.write_text(skill.read_text().replace("gate: human", "gate: auto_answer"))
+    plain = ReadsStep.run
+
+    async def run(self, ctx):  # the owner's format rewrites whitespace, as Verible does
+        await plain(self, ctx)
+        if self.name == "format":
+            f = ctx.project.root / "src" / "rtl" / "blk.sv"
+            f.write_text(f.read_text().rstrip("\n") + "\n\n")
+
+    monkeypatch.setattr(ReadsStep, "run", run)
+    eng = Engine(proj)
+    events = []
+    eng.bus.subscribe(lambda e: events.append(str(e.data.get("message", ""))))
+    assert await eng.run(yes=True) == "complete"
+    assert any("changed the RTL: synthesis runs again" in m for m in events)
+    assert sum("running owner:format → smoke" in m for m in events) == 1  # (the RTL it left counts as checked)
+    assert all(v.status in ("done", "user") for v in Engine(proj).status())  # synthesis is of the RTL as it is now

@@ -289,6 +289,34 @@ process (the TUI's background runs, one per flow; `q3tui --flow X run` the same)
   under a file lock (`.q3tui/design.lock`, `Engine._take_design`). A run that changed the design keeps it until its next reading step,
   so its own check sees the fix first. After waiting, a step that another run brought up to date meanwhile is not run again.
 
+## Full unattended runs
+
+`q3tui auto` (TUI `/auto`, `/auto stop`; assistant `start_unattended`, confirmed) runs every flow of `pipeline.chain` (default
+`[spec, rtl, dv, sanity, fpga]`) in order without you: gates approved, questions answered with their defaults (`core/chain.py`). It ends when each
+flow has passed with the RTL as it is at the end:
+
+- A flow passes when its run completes with every step done. Sanity runs through its fix loop (`q3tui loop`: analysis → hand-off → rtl →
+  analysis) and passes when nothing is left open.
+- A flow that changed the RTL (`src/rtl/`, hashed before and after each flow: the fixes Sanity's loop or fpga's `ppa_optimize` had the rtl flow
+  make, a dv fix) makes the flows that check the RTL — those after the design flows (`pipeline.design_flows`) in the chain: dv, sanity, fpga —
+  and passed with the old RTL run again, in the chain's order. A Sanity fix → dv again; an fpga PPA fix → dv and Sanity again. spec and rtl run
+  once: the fixes went through rtl already.
+- A flow whose run completes with only **stale** steps left (a late step changed what earlier ones were built from) runs once more at once
+  (`chain.STALE_RERUNS`); a step that failed or waits still stops the chain.
+- Bounded: a flow runs at most `pipeline.chain_max_runs` times (default 3); a flow that does not pass stops the run (yours to look at). It
+  prints a table: each flow run, whether it changed the RTL, its cost.
+- A **tool failure** (a step's tool crashed, timed out, was missing or called wrongly: the step's `failure.kind == "tool"`, not the design) goes at
+  once to the LLM stage `tool_fix`, as it goes to the TUI's assistant (tui/failures.py), with the same facts: the error, the log's end, the tool's role,
+  the step's options, the machine's memory, the memory the same tool reported in its earlier runs (`Peak Memory…` of the logs Q3TUI kept), and the
+  options the flow's steps offer for a tool failure (`StepDef.tool_fix_options`, e.g. Sanity's `blackbox`). It may change the tool's role
+  (`timeout_s`, `env`, `modules`), a setting or such an option (`Ops.set_step_option`, saved to q3tui.yaml), or nothing (a crash on a busy machine);
+  it may read the RTL (e.g. to find the big memories), never change it, the spec or the tool's command. Then the flow runs again — at most two
+  tool fixes per flow run. What it cannot fix (a tool install, a bigger machine, a change to Q3TUI) it says, and the run stops with that.
+- A tool's leftovers: every tool runs in a process group of its own, and what it left running when it exits is stopped (`eda/base.run_command`; a
+  crashed VC Static shell left its 25 GB server running on rv32iv_sm).
+
+In the TUI it is a process of its own (`tui/runner.py`, log `.q3tui/tui/run.auto.log`); its flow runs are followed like any other run.
+
 ## The project's versions
 
 Each step that finishes (done or failed) records a version of the project when something changed, and each flow that passes (every step of it

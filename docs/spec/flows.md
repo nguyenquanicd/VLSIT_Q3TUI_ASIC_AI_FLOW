@@ -193,7 +193,16 @@ The tools file (`tools.json` / `tools.yaml` in the project's `config/`, or `tool
 
 Placeholders: `{top} {filelist} {files} {incdirs} {workdir} {project}` and whatever the step passes (a list expands to
 several arguments). `parse`: `vcs | dc | verilator | yosys | iverilog | vivado | verible | generic` or `{"error": [regex], "warning": [regex]}`.
-`supports: ["sva"]` declares a capability; a step that needs one the role lacks reports the check as **N/A**, never as
+`script`: the text of a script the command reads (`{script}`), written by Q3TUI with the same placeholders filled (other braces, e.g. Tcl's, stay; a list becomes
+words) — e.g. the dv triage's debug role `wave` ([dv-flow.md](dv-flow.md) "Evidence from a run"):
+
+```json
+"wave": {"cmd": "sh -c \"{workdir}/simv +TC={tc} -ucli -do {script} && vpd2vcd {dump} {vcd}\"", "parse": "vcs",
+         "script": "dump -file {dump} -type VPD\ndump -add {{scopes}} -depth {depth}\nrun {until}\nquit\n"}
+```
+
+(its placeholders: those of `run`, plus `{script} {dump} {vcd}` — the files of the debug run —, `{scopes}`, `{depth}`, `{until}` (`<n>ns`, or empty: to the end); the
+command must leave a VCD at `{vcd}`). `supports: ["sva"]` declares a capability; a step that needs one the role lacks reports the check as **N/A**, never as
 passed. `q3tui.eda.tools.run_role` runs a role (modules / setup script wrapped like the vendor adapters), keeps the log
 and returns normalised diagnostics; `describe_for_llm` tells a stage which roles exist. Stages that may run a tool
 themselves get only the allow-listed command through `Bash`; anything computable (lint, simulation, mutation) is

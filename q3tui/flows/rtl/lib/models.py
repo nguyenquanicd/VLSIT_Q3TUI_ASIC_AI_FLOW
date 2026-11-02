@@ -72,11 +72,13 @@ class SmokePlan(BaseModel):
 
 class Verdict(BaseModel):
     id: str = Field(description="the failing behaviour (or 'compile')")
-    verdict: Literal["rtl_bug", "tb_bug", "spec_issue", "unsure"]
+    verdict: Literal["rtl_bug", "tb_bug", "prepare_bug", "spec_issue", "unsure"]
     module: str = Field("", description="rtl_bug: the RTL module to change; tb_bug: `top` when the fix belongs in the testbench's shared top "
                                          "(tb_top.sv: its monitors, checkers, helper tasks every test uses), else empty (the test's own file)")
     summary: str
-    request: str = Field("", description="rtl_bug / tb_bug: what to change, concretely")
+    request: str = Field("", description="rtl_bug / tb_bug / prepare_bug: what to change, concretely")
+    evidence: str = Field("", description="rtl_bug / tb_bug / prepare_bug: what a run showed (the debug dump's id when you have the debug tools, e.g. D2): the signals, "
+                                          "the times and the values seen against the spec's, and the first point where they depart")
     decision: str = Field("", description="spec_issue / unsure: the open decision it waits for, the same short key for every failure that waits for it "
                                           "(an id the spec gives it, e.g. DEC-012, else a few words): they become one question")
     options: list[QuestionOption] = Field(default_factory=list, description=(

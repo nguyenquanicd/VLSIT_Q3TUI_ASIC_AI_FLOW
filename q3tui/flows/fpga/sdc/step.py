@@ -20,6 +20,7 @@ class Step(FpgaStep):
     name = "sdc"
     title = "SDC constraints"
     deps = ()
+    checks_version = 1  # (1: a single clock is written as its own asynchronous group — the SDC files are written again)
 
     def inputs(self, engine) -> list[Path]:
         p = engine.project
