@@ -1,113 +1,107 @@
 # Q3TUI
 
-**Q3 = Quality · Quick · Quorum.** A terminal UI and CLI that takes a hardware IP block from intent to
-verified, synthesizable RTL through a gated, agentic pipeline — built on the
-[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), with EDA tools (lint, synthesis, simulation)
-behind pluggable, vendor-agnostic role adapters.
+**Q3 = Quality · Quick · Quorum.** A terminal UI and CLI that takes a hardware IP block from an intent or a spec to
+checked, synthesizable RTL, a testbench, and CDC / PPA results — through gated, agentic flows built on the
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). EDA tools (lint, synthesis, simulation, …) sit behind
+pluggable, vendor-agnostic adapters.
 
-Product of **VLSI Technology**.
-
-## Overview
-
-Q3TUI runs the **spec flow** (`spec → parse (requirements) → config (parameters)`), and the **rtl flow** on top of it
-(rules, CSR, RTL, format, style lint, smoke test). Every phase that needs a human decision
-stops at a **gate**; everything else — naming-rule compliance, lint, formatting, the smoke simulation —
-is checked deterministically by code, not trusted to the model's word. The testbench, SVA, verification (simulation, mutation, sign-off) and document
-steps of the former VLSIT flow were removed. You can drive the
-whole thing from the **TUI** (`q3tui`), the **CLI** (`q3tui run`, `q3tui status`, …), or by chatting with the
-built-in assistant, which has a tool for every action a key or command has.
-
-See the **[User guide](docs/user_guide/)** for how to install, run, and work the flow day to day (English and
-Vietnamese), and `docs/spec/` for the underlying design and architecture reference.
-
-## The flow
-
-```mermaid
-flowchart LR
-    spec[spec] --> parse["parse<br/><b>Gate 1 · human</b>"]
-    parse --> config["config<br/>Gate 2 · auto"]
-
-    style parse fill:#f9c74f,color:#000
-```
-
-Yellow = a gate that stops for your review by default. The `rtl` flow continues from `config` (below).
-
-## Other flows
-
-`pipeline.flow` picks the flow (`q3tui flow list`). Besides `spec`:
-
-- **`rtl`** — RTL on its own, checked and ready for verification: `spec → parse → config → rules → csr → rtl → format → style_lint → smoke`. Your rules
-  (`config/rtl_rules.md`) over Q3TUI's defaults become **Verible** flags (checked for contradictions before any RTL is written); the software-visible
-  registers are **generated** by the [APB-CSR-Generator](https://github.com/nguyenquanicd/APB-CSR-Generator) from a register map drafted from the spec
-  (`q3tui act csr_tool_install`); the RTL is formatted, style-linted by an LLM judge whose fixes go back to `rtl`, and smoke-tested with a testbench
-  written from the spec alone. The chain and its fix loops run by themselves. LLM stages use markdown **skills** (`config/skills/<name>/SKILL.md`, yours
-  can replace or add). See [docs/spec/rtl-flow.md](docs/spec/rtl-flow.md).
-- `dv` — a testbench written from the spec alone (plain SystemVerilog, or UVM from an existing VIP with the RTL as the DUT): [docs/spec/dv-flow.md](docs/spec/dv-flow.md).
-- `fpga`, `asic`, `project` — synthesis / PPA estimation and the project settings ([docs/spec/flows.md](docs/spec/flows.md)).
-
-## The TUI
+Product of **VLSI Technology**. Status: **Beta** (0.1.0).
 
 ![Q3TUI stopped at Gate 1 on an APB slave: requirements to review](docs/images/tui-parse.svg)
 
-**Pipeline** (left): every step with its status icon, number and gate mode or what it is waiting for. **Step
-view** (top right): the selected step's result in tabs — here the requirements `parse` extracted, two flagged
-for your review, the highlighted one in detail. **Activity** (bottom right): the live log of the run.
-**Command / chat bar**: a `/command`, or plain text to the assistant. The footer lists the keys of what has
-focus.
+## What it does
 
-<table>
-<tr>
-<td width="50%"><a href="docs/images/tui-gate.svg"><img src="docs/images/tui-gate.svg" alt="The review dialog of a gate"></a></td>
-</tr>
-<tr>
-<td><b>Review dialog</b> (<code>a</code>): approve, answer the open questions, edit, or request changes.</td>
-</tr>
-</table>
+You give Q3TUI a spec (or a paragraph of intent). It works through a chain of **flows**, each a pipeline of steps:
 
-## Features
+```text
+spec ──► rtl ──► dv ──► sanity ──► fpga / asic
+```
 
-- **Gated pipeline, not a black box.** One human review gate by default (the requirements `parse` extracts);
-  the configuration signs itself when its checks pass. Every gate's mode
-  (`human` / `auto` / `auto_answer` / `none`) is switchable per project or per session.
-- **Updates, not re-runs.** Changing one requirement updates only the modules and tests it touches — the rest
-  of the design, and your review approvals, stay as they were.
-- **RTL rule enforcement, deterministically.** Naming conventions, prohibited constructs (delays, latches,
-  signed types, testbench-only system tasks, …), file/module-name consistency and more are checked by a
-  code-level linter against your project's rule file(s) — the LLM gets the same rules as text, but never has
-  the final word on compliance.
-- **Traceable requirements.** Every requirement has an ID (`REQ-NNN`); the RTL cites the ones it implements,
-  and the rtl flow's smoke test is written from the spec and the requirements alone, never from the RTL.
-- **Review what needs reviewing, nothing more.** Flagged requirements and changed parameters each
-  have their own pending-review tracking, separate from blocking questions — gates refuse to self-approve
-  until you've actually looked, unless you turn that off deliberately (`auto_confirm_reviews`).
-- **Chat like the rest of the team.** The in-TUI assistant can run steps, answer questions, change gate
-  modes, adjust settings, review requirements and parameters — anything a key or `/command` can do —
-  and replies in whichever language you write to it in.
-- **Language-aware chrome.** The TUI's own interface (status legend, result banners, dialogs) and the
-  pipeline's generated content (spec, RTL comments, questions, docs) follow one `tui.language` setting
-  (English / Vietnamese / Korean); the assistant conversation is the one exception, mirroring your own
-  language instead.
+| Flow | Result |
+|---|---|
+| `spec` (default) | A reviewed spec, numbered requirements (`REQ-NNN`), parameters and the module map. |
+| `rtl` | RTL checked against your coding rules, formatted, style-linted and smoke-tested; registers from a CSR generator. |
+| `dv` | A testbench written from the spec alone (plain SystemVerilog, or UVM from an existing VIP), run in your simulator. |
+| `sanity` | CDC / RDC analysis, every violation sorted into a waiver, an RTL fix or a question. |
+| `fpga`, `asic` | PPA estimation on an FPGA part; synthesis to a standard-cell netlist with an equivalence check. |
 
-See **[FEATURES.md](docs/FEATURES.md)** for the full feature inventory (pipeline engine, every step, gates and
-review in depth, RTL rule enforcement, the TUI, the CLI, the assistant, settings, and known beta
-limitations).
+How it behaves:
 
-## Version history
+- **Gated, not a black box.** A step that needs a human decision stops at a gate; each gate's mode is `human`, `auto`,
+  `auto_answer` or `none`, per project or per session.
+- **Deterministic first.** Parsing, rule checks, lint, formatting, simulation and synthesis are code and tools; the model gets
+  the results as facts and never has the final word on compliance.
+- **Updates, not re-runs.** Change one requirement and only what it touches is updated; your approvals stay.
+- **Independent verification.** The RTL never sees the testbench, and the testbench never sees the RTL (until the UVM
+  backend's last integration phase).
+- **One engine, three front ends.** The TUI, the CLI and the built-in chat assistant do the same things.
 
-| Version | Date | Status | Author(s) | Notes |
-|---|---|---|---|---|
-| 0.1.0 | 2026-10 | **Beta** | Ethanoctis, superdalink | spec flow (spec → parse → config) and rtl flow; TUI, CLI and assistant parity. |
+## Install
+
+You need [`uv`](https://docs.astral.sh/uv/) (the installer offers to install it; it also fetches Python ≥ 3.11 when yours is
+older) and access to Claude (a Claude Code login, `ANTHROPIC_API_KEY`, or a Bedrock / Vertex / gateway setup).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW/main/install.sh | bash
+q3tui --version
+```
+
+It installs the `q3tui` command into `~/.local/bin`. Run the same line again to update.
+
+Other ways:
+
+- **Pin a version:** `curl … | Q3TUI_REF=<tag|branch> bash`
+- **From a clone** (editable, `git pull` updates it): `./install.sh`
+- **Preview or remove:** `./install.sh --dry-run`, `./install.sh --uninstall`
+- **Without the script:** `uv tool install git+https://github.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW.git`
+
+**EDA tools are yours to bring.** Q3TUI installs none and does not require a particular set. Each flow asks for tool *roles*
+(a linter and formatter for the rtl flow, a simulator for the smoke test and the dv flow, lint / synthesis / CDC tools for the later
+flows) and you give every role the command of the tool your site uses, in the project's `config/tools.json`. `q3tui tools init`
+writes a **suggested reference set** to start from: use it as a reference, and adapt it or source your own tools (environment modules,
+`PATH` or a setup script). It is a starting point, not a requirement. `q3tui tools check` shows what the current flow needs. A role with
+no tool is reported **N/A**, never silently passed. Default model and tool modules for every project go in `~/.q3tui/q3tui.yaml`
+(start from `q3tui.example.yaml`: its tool entries are examples).
 
 ## Quick start
 
 ```bash
-uv sync                                   # Python >= 3.11
-mkdir -p ~/.q3tui && cp q3tui.example.yaml ~/.q3tui/q3tui.yaml   # EDA modules, default model
-
 mkdir my_block && cd my_block
-mkdir spec && echo "# My Block" > spec/my_block_spec.md   # or q3tui init for a template skeleton
-q3tui                                     # opens the TUI — press r to run, a to review, o for questions
+q3tui init            # writes spec/intent.md: describe the block you want (or put your own spec in spec/)
+q3tui                 # opens the TUI
 ```
 
-Full install options, the step-by-step flow, every setting and command: see the
-**[User guide](docs/user_guide/)**.
+In the TUI press **`r`** to run. The `spec` step drafts a spec from the intent; `parse` extracts the requirements and stops at
+**Gate 1**. Press **`a`** to review (approve, answer questions, edit, or ask for changes), **`o`** for open questions, **`?`** for
+every key. Then run the next flow:
+
+```bash
+q3tui --flow rtl run          # the same project, now writing and checking the RTL
+q3tui status                  # steps, gates, open questions
+q3tui auto                    # or: every flow of the chain, unattended
+```
+
+The repository's `examples/` (`apb_slave`: an intent for a small APB slave; `axi4_sram_ctrl`: the dv flow) are ready-made projects:
+copy one, `cd` into it and run `q3tui`.
+
+## Documentation
+
+- **[User guide](docs/user_guide.md)** — installing, running each flow, gates and review, RTL rules, settings, every command and
+  key, unattended runs, history and import, troubleshooting.
+- **[Design reference](docs/spec/README.md)** — architecture and one document per flow ([spec](docs/spec/spec-flow.md),
+  [rtl](docs/spec/rtl-flow.md), [dv](docs/spec/dv-flow.md), [sanity](docs/spec/sanity-flow.md), [fpga](docs/spec/fpga-flow.md),
+  [asic](docs/spec/asic-flow.md)), [flows as data](docs/spec/flows.md), [configuration](docs/spec/config.md).
+- **[Changelog](CHANGELOG.md)**.
+
+## Development
+
+```bash
+uv sync
+uv run pytest        # no live LLM and no EDA tools needed
+```
+
+See `CLAUDE.md` for the code layout and conventions.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

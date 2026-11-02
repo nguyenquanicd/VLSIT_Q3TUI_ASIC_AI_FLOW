@@ -67,7 +67,7 @@ class CheckStep(AnalysisStep):
         try:
             tools = self.tools(engine)
             if not toolmod.available(tools, role):
-                raise ToolUnavailable(f"the `{role}` tool was not found (VC Static: `vc_static_shell` on PATH, or the role's cmd in config/tools.json; `q3tui tools check`, docs/user_guide/tool-setup.md)")
+                raise ToolUnavailable(f"the `{role}` tool was not found (VC Static: `vc_static_shell` on PATH, or the role's cmd in config/tools.json; `q3tui tools check`, docs/user_guide.md#setting-up-the-eda-tools-for-your-site)")
         except ToolUnavailable as exc:
             raise StepFailed(f"{role.upper()} not run: {exc}") from exc
         work = self.workdir(engine)

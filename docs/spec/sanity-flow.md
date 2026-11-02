@@ -113,7 +113,7 @@ open and found counts and the cost of each round.
 
 ## Tools
 
-Roles `cdc` and `rdc` (`config/tools.json`; the template (`presets/flows/sanity.json`) runs `vc_static_shell` from PATH; a given install is the role's `cmd` (full path) and `env` (`VC_STATIC_HOME`): docs/user_guide/tool-setup.md. Do not load a VCS module for these roles when its own `vc_static_shell` needs libraries your machine lacks, or overrides `VC_STATIC_HOME`), used only when the
+Roles `cdc` and `rdc` (`config/tools.json`; the template (`presets/flows/sanity.json`) runs `vc_static_shell` from PATH; a given install is the role's `cmd` (full path) and `env` (`VC_STATIC_HOME`): docs/user_guide.md#setting-up-the-eda-tools-for-your-site. Do not load a VCS module for these roles when its own `vc_static_shell` needs libraries your machine lacks, or overrides `VC_STATIC_HOME`), used only when the
 project defines no such role. `build/sanity/<role>_setup.tcl` (after the examples of `doc/vcst/examples/CDC`, `RDC`):
 
 ```tcl

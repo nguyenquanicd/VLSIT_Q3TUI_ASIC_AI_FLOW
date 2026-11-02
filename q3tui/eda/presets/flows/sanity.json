@@ -1,5 +1,5 @@
 {
-  "_comment": "Tool roles of the Sanity flow (docs/spec/sanity-flow.md): Synopsys VC Static, `vc_static_shell` found on PATH (or set the role's cmd to its full path). Site setup: docs/user_guide/tool-setup.md.",
+  "_comment": "Tool roles of the Sanity flow (docs/spec/sanity-flow.md): Synopsys VC Static, `vc_static_shell` found on PATH (or set the role's cmd to its full path). Site setup: docs/user_guide.md#setting-up-the-eda-tools-for-your-site.",
   "roles": {
     "cdc": {
       "cmd": "vc_static_shell -f {script}",
