@@ -96,7 +96,7 @@ def lint_rules_from(path: Path | None) -> list[dict]:
     for line in path.read_text(errors="replace").splitlines():
         m = re.match(r"^#{2,3}\s+(.*\S)", line)
         if m and len(rules) < 200:
-            rules.append({"id": f"STYLE-{len(rules) + 1:03d}", "source": "rtl_rule.md", "rule": m.group(1).strip()})
+            rules.append({"id": f"STYLE-{len(rules) + 1:03d}", "source": path.name, "rule": m.group(1).strip()})
     return rules
 
 
