@@ -8,13 +8,14 @@ owns the RTL as change requests. The spec and rtl flows are untouched. GCA is no
 own role).
 
 ```
-sdc ─► cdc ─► cdc_waivers [gate: human] ─► cdc_check          (the two lanes are independent)
-   └─► rdc ─► rdc_waivers [gate: human] ─► rdc_check
+sdc ─► setup [gate: human] ─► cdc ─► cdc_waivers [gate: human] ─► cdc_check          (the two lanes are independent)
+                          └─► rdc ─► rdc_waivers [gate: human] ─► rdc_check
 ```
 
 | Step | Kind | Does | Writes |
 |---|---|---|---|
 | `sdc` | `sanity.sdc` | the SDC both flows share (below) | `constraints/sdc/*.tcl` (or nothing: yours) |
+| `setup` | `sanity.setup` | one read-only LLM stage decides the analysis environment both lanes use (below "The setup"); code checks the names and dry-runs the tool; the gate is your review | `schemas/sanity_setup.json`, `reports/sanity_setup.md` |
 | `cdc` / `rdc` | `sanity.cdc` / `sanity.rdc` | tool role `cdc` / `rdc` (`vc_static_shell -f`) runs the script Q3TUI writes; every fatal, error, warning is a violation | `build/sanity/<role>_setup.tcl`, `schemas/<role>_report.json`, the table `reports/<role>_report.md` / `.csv` |
 | `cdc_waivers` / `rdc_waivers` | `sanity.<role>_waivers` | one read-only LLM stage (`Read`, `Grep`, `Glob`; `tb/`, `sva/` denied) decides every violation; the gate is your review | `schemas/<role>_waivers.json`, the table again |
 | `cdc_check` / `rdc_check` | `sanity.<role>_check` | code only: the tool again with the waivers sourced; fails unless the open violations are exactly the ones not waived | `build/sanity/<role>_waive.tcl`, `schemas/<role>_check.json` |
@@ -132,3 +133,40 @@ The violations are read from that report (`lib/vcstatic.py`, both report formats
 the objects (`-from` / `-to`, or the convergence point): VC Static numbers violations per run, so a waiver by `-id` would hit the wrong ones. An RDC waiver is
 the tag plus the message. `<role>_check` counts and compares by that same signature: 111 violations with 110 waived end with 1 open, a different count, a
 waived violation still reported, an open one that disappeared, or a waiver that cannot be written fails the step (`schemas/<role>_check.json`).
+
+## A VC Static lock a crashed run left
+
+VC Static keeps `vcst_rtdb/session.lock` in the step's working folder while it runs and refuses to start while one names a session ("Another session
+is already running…"). A run that crashed leaves it (rv32iv_sm: the RDC check after a segfault, and every later run stopped there). Before the analysis
+and the check run the tool, the lock is read (`lib/vcstatic.clear_stale_lock`): when the process it names is not running on this host it is removed and
+the step's log says so; a live session, another host's, or a lock that cannot be read is left as it is.
+
+## Black boxes (`options.blackbox`)
+
+`options.blackbox` of the `cdc` / `rdc` step (module names) writes `set_blackbox -designs {…}` before `analyze`: those modules are black boxes, only
+their ports take part. For big memories (an array of flops with no reset, a RAM model): rv32iv_sm's 2 Mbit DMEM took RDC to a 48 GB peak on a 47 GB
+machine and crashed it. It is part of the step's staleness (the analysis, the waiver review and the check run again), and it is an option the tool
+fix may set (`tool_fix_options`: an unattended run's `tool_fix` and the TUI's assistant are told, with the memory the tool needed before).
+
+## The setup (`setup`)
+
+The quality of the setup decides the quality of the analysis: a missing reset or quasi-static signal gives false violations, a wrong one hides a
+real bug, and a memory analysed flop by flop can take the tool past the machine (rv32iv_sm: RDC peaked at 48 GB on its 2 Mbit DMEM). One read-only
+LLM stage (`sanity_setup`, the step's `md/skill.md`; `tb/`, `sva/` denied) decides, each with its evidence (a spec section, file:line of the RTL), from
+the facts code gives it — the top's ports (pyslang), the modules' unpacked arrays, the SDC's clocks and resets, the memory the tool needed in earlier
+runs (`tui/failures.memory_peaks`):
+
+| Decision | VC Static command (code writes it, lib/setup.py) | Where |
+|---|---|---|
+| resets: port, active low / high, async / sync | `create_reset -async\|-sync -sense low\|high <port>` (replaces the resets guessed from the SDC / RTL; `options.resets` wins) | after the SDC |
+| black boxes: memories with no reset, models | `set_blackbox -designs {…}` (with `options.blackbox`) | before `analyze` |
+| … and the clock of their pins (empty: the only clock) | `set_output_delay` / `set_input_delay -clock {…} 0 [get_pins {…}]` on every instance's data pins (code finds the instances and the pins, not the clocks / resets, with pyslang: `blackbox_pins`) — else every pin is `SETUP_BBOXPIN_UNCONSTRAINED` | after the SDC |
+| quasi-static signals: configuration written before start, then held | `create_static -name {u_inst/signal}` (`u_inst.signal` written with `/`) | after the SDC |
+| constants: test / mode inputs tied in operation | `set_case_analysis 0\|1 [get_ports {…}]` | after the SDC |
+| reset synchronizers of the design | `set_rdc_synchronizer -sync_cell {…} -min_depth n -max_depth n` | RDC only |
+
+Code checks every name (the RTL's modules, the top's inputs), then elaborates once with the commands, no check (`setup_dry.tcl`, the `cdc` role):
+the tool's own errors (`TCL_COMMAND_INVALID … design object not found`) go back to the same session, two fix rounds; what stays wrong is left out,
+never passed to the analysis. The setup is an input of `cdc` and `rdc` (a change runs both again), the starting point of its next run (it changes
+only what the RTL, spec or SDC changes since make wrong), and the waiver review is shown the lines it adds after the SDC. Reset ordering
+(`create_reset_scenario`) and CDC synchronizer cells (`set_sync_attribute`) are not in it yet.

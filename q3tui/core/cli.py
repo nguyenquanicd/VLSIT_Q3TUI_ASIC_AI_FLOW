@@ -273,6 +273,25 @@ def loop_cmd(c: Ctx, owner: str | None, max_rounds: int | None, max_cost: float 
     sys.exit(0 if result.ok else 1)
 
 
+@main.command("auto")
+@click.option("--flows", "chain", help="The flows, in order, comma-separated (default pipeline.chain: spec,rtl,dv,sanity,fpga).")
+@click.option("--max-runs", type=click.IntRange(1, 10), help="Most runs of one flow (default pipeline.chain_max_runs).")
+@pass_ctx
+def auto_cmd(c: Ctx, chain: str | None, max_runs: int | None) -> None:
+    """Full unattended run: every flow of the chain in order, without you, until each passed with the RTL as it is at the end.
+
+    A flow that changed the RTL (a Sanity fix, an fpga PPA fix) makes the flows that passed before it run again: a Sanity fix → dv again;
+    an fpga PPA fix → dv and Sanity again. A flow that does not pass stops it."""
+    from q3tui.core import chain as chain_mod
+
+    bus = EventBus()
+    bus.subscribe(print_event)
+    names = [x.strip() for x in chain.split(",") if x.strip()] if chain else None
+    result = anyio.run(lambda: chain_mod.run_chain(c.project, bus, names, max_runs))
+    console.print(chain_mod.summary(result), markup=False, highlight=False)
+    sys.exit(0 if result.ok else 1)
+
+
 def _status_table(views: list[StepView]) -> Table:
     t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
     for col in ("", "step", "status", "review", "questions", "notes"):

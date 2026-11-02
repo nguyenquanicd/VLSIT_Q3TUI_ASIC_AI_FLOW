@@ -6,6 +6,6 @@ from q3tui.flows.sanity.lib.analysis import AnalysisStep
 class Step(AnalysisStep):
     name = "cdc"
     title = "CDC analysis"
-    deps = ("sdc",)
+    deps = ("setup",)
     role = "cdc"
     tool_roles = ("cdc",)

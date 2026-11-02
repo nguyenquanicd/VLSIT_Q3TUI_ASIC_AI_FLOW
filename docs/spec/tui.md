@@ -141,7 +141,7 @@ died, it timed out, it is missing, or its command is wrong (`ToolBroken`, `ToolU
 assistant a message of its own (`Q3TUI` in the chat, with the step as the message's focus). The message carries the error, the last 40 lines
 of the log the error names, the tool's role from `config/tools.json`, the step's options, and this machine's memory. The assistant judges:
 
-- **It can fix it with its tools:** a step setting (`set_settings`), the tool role (`set_tool_role`: `timeout_s`, `env`, `modules`; a new
+- **It can fix it with its tools:** a step setting (`set_settings`), the tool role (`set_tool_role, set_step_option (an option a step offers for a tool failure, e.g. Sanity's `blackbox`)`: `timeout_s`, `env`, `modules`; a new
   `cmd` asks you first), or nothing needs fixing because the problem passed (a busy machine, a taken license). It says what it changed and why,
   and calls `rerun_failed_step` once. The step reruns in its own flow, from that step on: in the background, or here when it is this flow
   and runs are not in the background.
@@ -234,7 +234,7 @@ CLI, the assistant can do by prompting.** Both go through the same operations la
 | Gates and asking | `gates`, `set_gate_mode`, `ask_user` (the picker: up to 4 questions with options, answers come back as text) |
 | Flow | `set_step_setting` (view / pass / notes), `get_skill`, `set_skill`, `get_prompt`, `set_prompt` |
 | Spec flow | `review_parse_requirement`, `confirm_all_requirements`, `review_config_parameter`, `confirm_all_parameters` |
-| Pipeline | `run_steps` (start/stop/only/regenerate), `stop_run`, `approve`, `answer_question`, `request_change` (optionally for one section), `reset_step`, `import_file` (a file or a whole folder: spec documents and RTL; testbench, SVA and scripts are left out) |
+| Pipeline | `run_steps` (start/stop/only/regenerate), `stop_run`, `start_unattended` / `stop_unattended` (the full unattended run, confirmed), `approve`, `answer_question`, `request_change` (optionally for one section), `reset_step`, `import_file` (a file or a whole folder: spec documents and RTL; testbench, SVA and scripts are left out) |
 | Settings | `set_model`, `set_spec_review`, `set_auto_approve`, `set_auto_answer`, `set_auto_confirm_reviews`, `get_settings`, `set_settings`, `show_stats`, `reset_stats`, `reset_cost` |
 | History | `show_history`, `history_diff`, `show_file_version`, `restore_version` (confirmed) — docs/spec/history.md |
 | Files | `Read`/`Grep`/`Glob` over the project; `Edit`/`Write` only in `spec/`, `schemas/` and `src/` (like a user in an editor); never `.q3tui/` |
@@ -263,7 +263,7 @@ Slash commands complete as you type: the rest of the command or argument shows a
 `/change <step> <text>`, `/answer <id> <text>|all`, `/gate <step> [mode] [--session]`, `/gates`, `/flow [name]` (switch flow; key `F`; a running step is cancelled after you confirm), `/flowedit` (the step editor), `/skill`, `/prompts`,
 `/step <step> view|pass|notes [text]`, `/reset <step>|all [--only]`, `/model [id] [--save]` (no id: the settings' LLM tab),
 `/effort <level>`, `/specreview`, `/autoapprove`, `/autoanswer`, `/autoconfirm` (`on|off [--save]`),
-`/settings [tab]`, `/status`, `/open <file>`, `/cost [reset]`, `/stats [reset]`, `/history` (key `H`: the project's versions, docs/spec/history.md), `/newchat`, `/help`, `/quit`.
+`/settings [tab]`, `/status`, `/open <file>`, `/cost [reset]`, `/stats [reset]`, `/history` (key `H`: the project's versions, docs/spec/history.md), `/auto [stop]` (the full unattended run of every flow in the background, docs/spec/pipeline.md "Full unattended runs"), `/newchat`, `/help`, `/quit`.
 
 Assistant replies render as Markdown; `z` zooms the activity/chat to full height. A new message while the assistant is still answering is held (not sent) instead of cancelling the reply. **Esc** (or `x` / `/stop` when no pipeline step is running) stops the reply; the conversation continues from the last finished reply.
 

@@ -60,7 +60,7 @@ HELP = (
     "Commands: /run [from] [to] · /stop · /approve <step>|all [--force] · /change <step> <text> · /answer <id> <text> · /gate <step> <mode> · /gates · "
     "/model [id] [--save] · /effort <level> [--save] · /specreview on|off · /autoapprove on|off · /autoanswer on|off · "
     "/autoconfirm on|off · /tool <role> <field> <value> · "
-    "/settings [tab] · /stats [reset] · /history · "
+    "/settings [tab] · /stats [reset] · /history · /auto [stop] · "
     "/import <path> [kind] · /reset <step> [--only] · /status · /open <file> · /cost [reset] · /newchat · /help · /quit. Anything else goes to the assistant."
 )
 
@@ -661,6 +661,26 @@ class Q3TUIApp(App):
         summary = ", ".join(f"{n} {v.status}" + (" (review open)" if v.gate == "open" and v.status in ("done", "user") else "")
                             for n, v in views.items() if v.status != "unavailable")
         return f"run finished: {self._last_outcome or 'stopped'}; {summary}"
+
+    def start_auto(self) -> str:
+        """/auto: the full unattended run (core/chain.py) as a process of its own; this TUI follows its flow runs like any other run."""
+        if self.engine.read_only:
+            return "read-only: this TUI only looks (start it without --read-only to run)"
+        if self.runner.alive("auto"):
+            return f"the unattended run is already going on (pid {self.runner.pid('auto')}); /auto stop ends it"
+        busy = sorted({r["flow"] for r in self.engine.other_runs()} | ({self.engine.flow.name} if self._pipeline_worker and self._pipeline_worker.is_running else set()))
+        if busy:
+            return f"runs are going on ({', '.join(busy)}): stop them first (x), then /auto"
+        self.engine.save()
+        pid = self.runner.start_auto(self.project)
+        chain = " → ".join(self.project.cfg.pipeline.chain)
+        return (f"unattended run started in the background (pid {pid}): {chain}, until each passed with the RTL as it is at the end; "
+                f"switch flows (F) to watch each; /auto stop ends it; quitting the TUI ends it; its log: .q3tui/tui/run.auto.log")
+
+    def stop_auto(self) -> str:
+        if self.runner.stop("auto"):
+            return "stopping the unattended run (Ctrl-C sent: the step running is cancelled)"
+        return "no unattended run is going on"
 
     def stop_run(self) -> str:
         flow = self.engine.flow.name
@@ -1571,6 +1591,8 @@ class Q3TUIApp(App):
                     self.action_stats()
             elif cmd == "history":
                 self.action_history()
+            elif cmd == "auto":
+                self._log_line(self.stop_auto() if args and args[0] == "stop" else self.start_auto())
             elif cmd == "settings":
                 self.action_settings(args[0] if args else None)
             elif cmd == "newchat":
