@@ -1,11 +1,11 @@
 # The Pipeline Engine
 
 The engine (`pipeline/engine.py`) runs a **flow**: the steps of a flow file, by kind, in
-dependency order ([flows.md](flows.md)). The default flow is `vlsit`
-([vlsit-flow.md](vlsit-flow.md)):
+dependency order ([flows.md](flows.md)). The default flow is `spec`
+([spec-flow.md](spec-flow.md)); the `rtl` flow ([rtl-flow.md](rtl-flow.md)) reuses its steps:
 
 ```text
-spec ─► parse ─► config ─► rtl ‖ tb ─► sva ─► verify ─► doc
+spec ─► parse ─► config
 ```
 
 Everything below holds for every flow: the engine never hardcodes step names (it asks the
@@ -38,7 +38,7 @@ How every step follows it:
 5. **Decisions stay decisions.** Answers and accepted defaults of earlier steps are
    passed down as *settled decisions* (`engine.settled_questions`); later steps never ask
    them again (repeats are dropped by code, `drop_settled`). Only to steps allowed to see
-   where they came from: the flow file's `sees:` (VLSIT: `rtl` and `tb` get decisions of
+   where they came from: the flow file's `sees:` (rtl flow: `rtl` gets decisions of
    spec, parse and config only). A decision that belongs to an earlier step is handed to
    that step, which updates; the step that raised it follows (see "Questions go to the
    step they belong to").
@@ -52,7 +52,7 @@ How every step follows it:
 | Step | Update unit | Full regeneration only when |
 |---|---|---|
 | spec | sections (template edits by code; answers, change requests, **intent changes** → `spec_update`) | first draft, `--regenerate spec` |
-| VLSIT steps | parse: REQs of changed sections (stable ids); rtl / sva: modules whose inputs changed; tb: test cases ([vlsit-flow.md](vlsit-flow.md) "Update, not re-run") | first run, reset, `--regenerate` |
+| spec-flow and rtl steps | parse: REQs of changed sections (stable ids); rtl: modules whose inputs changed ([spec-flow.md](spec-flow.md) "Update, not re-run") | first run, reset, `--regenerate` |
 
 ## An interrupted step resumes
 
@@ -72,19 +72,17 @@ checkpoint. A step left `running` by a killed process is re-run.
 ## Who sees what
 
 Independence is enforced with `Stage.deny_dirs` / `write_dirs` / `write_files` (hook-level,
-not just by prompt), and settled decisions follow the flow's `sees:`. In the VLSIT flow:
+not just by prompt), and settled decisions follow the flow's `sees:`. In the spec and rtl flows:
 
 | Agent | Sees | Never sees |
 |---|---|---|
 | spec | intent, spec template, reference documents in `spec/` | — |
 | parse, config | spec (+ parse) | — |
-| rtl | spec, parse, config | **tb**, **sva** |
-| tb | spec, parse, config | **rtl**, **sva** (code compiles the TB against the RTL) |
-| sva, verify | the RTL and the artifacts they check | — |
+| rtl | spec, parse, config | `build/` (old tool output), the model folder |
+| smoke (rtl flow) | spec, parse, config (writes the testbench) | the RTL and the style-lint results; the RTL it is compiled with is read by code |
 
-In `session: flow` mode the one session has seen the RTL when it writes the testbench;
-the stages still cannot read what they are denied ([vlsit-flow.md](vlsit-flow.md) "One
-session"). `.q3tui/` is denied to every stage.
+In `session: flow` mode the one session may have seen what a later stage writes against;
+the stages still cannot read what they are denied. `.q3tui/` is denied to every stage.
 
 ---
 
@@ -95,8 +93,8 @@ Runs only when there is no spec document.
 | | |
 |---|---|
 | Input | `spec/intent.md` (free text, or the skeleton from `q3tui init`) or `q3tui run --intent "..."`; the **spec template** |
-| Stages | L draft (sectioned per template; replied as plain Markdown with section markers and a `- Q:` questions block — not JSON, where one bad escape costs a full rewrite; D parses it, one re-ask if the layout is off; file tools only when `spec/` has reference documents) → L self-review (returns only the sections it changes; `spec.self_review`, `--no-spec-review`, `/specreview off`) → D check against the template → L repair (once) → D normalise + render |
-| Output | `spec/spec.md` (the specification), `spec/questions.json` / `questions.md` |
+| Stages | L draft (sectioned per template; replied as plain Markdown with section markers and a `- Q:` questions block — not JSON, where one bad escape costs a full rewrite; D parses it, one re-ask if the layout is off; file tools only when `spec/` has reference documents) → L self-review (returns only the sections it changes; `spec.self_review`, `--no-spec-review`, `/specreview off`) → D check against the template → L repair (once) → D normalise + render. Every table and diagram carries a caption line below it (`*Table <section>-<n>: …*` / `*Figure <section>-<n>: …*`; asked of the writer, the reviewer and the updater, and a miss is flagged as a warning, not repaired). Diagrams follow conventions that code checks (`steps/spec/diagrams.py`, see "Spec diagrams" below): the problems found in the draft go to the self-review with the sections they are in, and what is left (or found in an update's sections) is a warning, never a failed step. A regenerated draft and its review get the user's earlier answers (with their questions) as settled decisions; answered question ids are never reused. `spec_update` patches go through the same normalisation; a required section a patch or hand edit left out is written as a `TBD` placeholder with a warning, and TBD fields become questions |
+| Output | `spec/spec.md` (the specification), `schemas/questions/spec.json` / `spec.md` (answers in `spec.answers.json`) |
 | Gate | **spec review**: the user edits `spec.md` or answers the questions, then approves |
 
 **Spec template** defines the document: an ordered list of sections, each with an `id`,
@@ -104,9 +102,12 @@ Runs only when there is no spec document.
 key facts that must be stated explicitly, such as clock frequency, throughput, latency,
 target technology, area and power. Lookup order: `<project>/spec/template.yaml` →
 `$Q3TUI_HOME/spec_template.yaml` → the built-in template the flow names
-(`options: {template: vlsit}` in the VLSIT flow: Overview, Key Features, Parameters,
-Interface, Functional Description, Microarchitecture, Timing and Constraints, Registers,
-Error Handling, Notes) or the built-in default (Overview, Features, Parameters, Clocks and
+(`options: {template: vlsit}` in the spec flow: the 21 sections of the VLSIT ASIC IP Design
+Specification — purpose and scope, references, requirements, features and configurations,
+architecture, interfaces and ports, clock/reset/power, parameters, data representation,
+functional behavior, registers (a pointer to the CSR workbook), errors, PPA, RTL contract,
+verification, DFT, physical design, security/safety, traceability, assumptions, glossary;
+a section that does not apply is written "N/A — reason") or the built-in default (Overview, Features, Parameters, Clocks and
 Resets, Interfaces, Functional Behaviour, Registers, Corner Cases, Performance,
 Implementation Constraints, Verification Notes, …). Users add, remove, reorder and toggle
 sections by editing the template, from the TUI's Sections view or with `q3tui init
@@ -140,23 +141,36 @@ The agent describes observable behaviour and does **not** decide microarchitectu
 
 ## The other steps
 
-The VLSIT steps (parse, config, rtl, tb, sva, verify, doc) are described in
-[vlsit-flow.md](vlsit-flow.md); the `example` flow's parse step is the same kind
+The spec flow's steps (parse, config) are described in
+[spec-flow.md](spec-flow.md) and the rtl flow's in [rtl-flow.md](rtl-flow.md); the `example` flow's parse step is the same kind
 (`vlsit_parse`).
 
 ## The fix loop
 
-A step that dispatched fixes to earlier steps (VLSIT `verify`: triage → scoped change
-requests on rtl / tb / sva) sets `step_meta[<step>]["loop"]`. `run` then continues by
+A step that dispatched fixes to earlier steps (rtl flow `style_lint` / `smoke`: findings → scoped change
+requests on `rtl`) sets `step_meta[<step>]["loop"]`. `run` then continues by
 itself: the steps with change requests update (only the named units), and the step runs
 again — until it passes, a review gate stops it, a blocking question waits for you,
 `pipeline.max_fix_iterations` rounds are used (a step may set its own bound, e.g.
 `options.max_fix_rounds`), or the same finding came back `pipeline.escalate_after_repeats`
-times — then it becomes a question for you.
+times — then it becomes a question for you. A step whose loop is marked has nothing to approve
+in that pass: its own review gate does not stop the run (the FPGA flow's `timing_util_report`, a human
+gate, hands a result that is not the design to `fpga_port`; the loop reruns the port, the synthesis and
+the report, whose gate then stops for you).
+
+**Fixes owned by another flow** (`Engine.hand_to_flow(step, flow)`): a step that handed fixes to
+another flow's step (the dv flow's `simulate`: an RTL bug → the rtl flow's `rtl`) and runs
+unattended (`Engine.unattended_run`: `pipeline.auto_approve` / `auto_answer` or `--yes`) marks its
+loop with that flow: the fix loop runs it within the same run (same process, lock and event log),
+then this flow again, whose steps that read its outputs are stale by then. A flow that does not
+finish stops the run with its outcome. The step itself decides when not to ask again (the dv
+triage: the RTL did not change, or the failures did not go down); otherwise it fails with the
+hand-off for you to run. While runs of other flows are going on, such a fix waits for its turn to change the design
+("Runs of several flows" below).
 
 **Scoped change requests** (`[step:unit] text`, `steps.common.scoped` / `split_feedback`):
 a step with units (modules, test cases) re-runs only the units named (`[rtl:<module>]`,
-`[sva:<module>]`, `[tb:<tc>]`); an unscoped change request still goes to every unit of the
+`[rtl:<module>]`); an unscoped change request still goes to every unit of the
 step.
 
 ## Questions and approval
@@ -187,7 +201,7 @@ Every step that can ask questions writes the conventional default into its outpu
   accepted as suggested and the fix loop goes on. Bounded: after
   `pipeline.max_fix_iterations` rounds of accepted proposals, the step waits for you. Use
   it for a first full build or a benchmark; review the documents afterwards.
-- **Reviewable items** (`StepDef.pending_reviews()`: VLSIT assertions, flagged
+- **Reviewable items** (`StepDef.pending_reviews()`: flagged
   requirements, parameters) must be confirmed before a human gate approves;
   `pipeline.auto_confirm_reviews` confirms them for you.
 
@@ -200,8 +214,8 @@ belongs; the TUI tags it (`→ spec`, `→ parse`, …) and the answer goes ther
 | Kind | Meaning | Owner step |
 |---|---|---|
 | `spec_gap` | the spec is silent, ambiguous or contradictory | `spec` (built in, `GAP_TARGETS`) |
-| `req_gap` | a requirement is missing or wrong | the flow's `gap_targets` (VLSIT: `parse`) |
-| `arch_gap` | a structural / configuration decision is wrong or makes the task impossible | the flow's `gap_targets` (VLSIT: `config`) |
+| `req_gap` | a requirement is missing or wrong | the flow's `gap_targets` (spec flow: `parse`) |
+| `arch_gap` | a structural / configuration decision is wrong or makes the task impossible | the flow's `gap_targets` (spec flow: `config`) |
 | `design_choice` | a decision this step makes itself | stays in the asking step |
 
 The answer becomes a `[decision]` change request on the owner step, which updates.
@@ -232,12 +246,72 @@ The answer becomes a `[decision]` change request on the owner step, which update
 - **Every question has options** in the picker: the ones its step proposed, else derived
   (`steps/common.py: derive_options`; [flows.md](flows.md)).
 
+## Runs of several flows
+
+`r` in the dv flow, then in the fpga flow, then in the sanity flow: the three run at the same time in the project folder, each as its own
+process (the TUI's background runs, one per flow; `q3tui --flow X run` the same). What makes that safe:
+
+- **One run per flow**, not per project: a lock per flow (`.q3tui/run.<flow>.lock`: pid, flow, when). A second run of the same flow is refused;
+  a TUI on a flow another process runs only watches it (it saves nothing meanwhile), as before. `Engine.other_run()` is the run of this
+  flow, `other_runs()` every other live run; a lock left by a killed process (or one that ended and was not reaped yet) counts for nothing.
+- **One state file, merged per step.** `pipeline.json` is written under a file lock (`.q3tui/pipeline.lock`): a save reads what is on disk
+  and writes over it only what this process changed since it last synced (`merge_states`: per step for records, gates, questions, step
+  meta; item by item for change requests — one run consumes its own, another adds; the cost adds up). Between steps a run reads the
+  others' changes in (`Engine.sync`).
+- **A step runs in one process at a time.** A running step records its process (`StepRecord.pid`); a run that reaches a step another run is
+  executing (a step two flows share) waits for it, then goes on (`WAIT_S`); if that process died, the step is interrupted and runs here.
+- **What a step read is what counts.** When another run was going on while a step ran, an input that changed meanwhile and is not one of
+  the step's own outputs keeps its hash from before the step: the result is for what it read, so it stays out of date (a warning says
+  which file).
+- **The design never changes under a step of another run.** The steps of the design flows (`pipeline.design_flows`, default `[rtl]`: spec …
+  RTL) change the design; every other step reads it. A design step — the dv triage's RTL bug, the PPA hand-off, a decision for the spec —
+  waits until no other run is in a step, then has the design to itself; a reading step waits while another run is changing the design
+  (a design step that waits goes first). Each run's lock says its phase (`running`, `step`, `fix_wait`, `fixing`); the turn is taken
+  under a file lock (`.q3tui/design.lock`, `Engine._take_design`). A run that changed the design keeps it until its next reading step,
+  so its own check sees the fix first. After waiting, a step that another run brought up to date meanwhile is not run again.
+
+## Full unattended runs
+
+`q3tui auto` (TUI `/auto`, `/auto stop`; assistant `start_unattended`, confirmed) runs every flow of `pipeline.chain` (default
+`[spec, rtl, dv, sanity, fpga]`) in order without you: gates approved, questions answered with their defaults (`core/chain.py`). It ends when each
+flow has passed with the RTL as it is at the end:
+
+- A flow passes when its run completes with every step done. Sanity runs through its fix loop (`q3tui loop`: analysis → hand-off → rtl →
+  analysis) and passes when nothing is left open.
+- A flow that changed the RTL (`src/rtl/`, hashed before and after each flow: the fixes Sanity's loop or fpga's `ppa_optimize` had the rtl flow
+  make, a dv fix) makes the flows that check the RTL — those after the design flows (`pipeline.design_flows`) in the chain: dv, sanity, fpga —
+  and passed with the old RTL run again, in the chain's order. A Sanity fix → dv again; an fpga PPA fix → dv and Sanity again. spec and rtl run
+  once: the fixes went through rtl already.
+- A flow whose run completes with only **stale** steps left (a late step changed what earlier ones were built from) runs once more at once
+  (`chain.STALE_RERUNS`); a step that failed or waits still stops the chain.
+- Bounded: a flow runs at most `pipeline.chain_max_runs` times (default 3); a flow that does not pass stops the run (yours to look at). It
+  prints a table: each flow run, whether it changed the RTL, its cost.
+- A **tool failure** (a step's tool crashed, timed out, was missing or called wrongly: the step's `failure.kind == "tool"`, not the design) goes at
+  once to the LLM stage `tool_fix`, as it goes to the TUI's assistant (tui/failures.py), with the same facts: the error, the log's end, the tool's role,
+  the step's options, the machine's memory, the memory the same tool reported in its earlier runs (`Peak Memory…` of the logs Q3TUI kept), and the
+  options the flow's steps offer for a tool failure (`StepDef.tool_fix_options`, e.g. Sanity's `blackbox`). It may change the tool's role
+  (`timeout_s`, `env`, `modules`), a setting or such an option (`Ops.set_step_option`, saved to q3tui.yaml), or nothing (a crash on a busy machine);
+  it may read the RTL (e.g. to find the big memories), never change it, the spec or the tool's command. Then the flow runs again — at most two
+  tool fixes per flow run. What it cannot fix (a tool install, a bigger machine, a change to Q3TUI) it says, and the run stops with that.
+- A tool's leftovers: every tool runs in a process group of its own, and what it left running when it exits is stopped (`eda/base.run_command`; a
+  crashed VC Static shell left its 25 GB server running on rv32iv_sm).
+
+In the TUI it is a process of its own (`tui/runner.py`, log `.q3tui/tui/run.auto.log`); its flow runs are followed like any other run.
+
+## The project's versions
+
+Each step that finishes (done or failed) records a version of the project when something changed, and each flow that passes (every step of it
+done and up to date at the end of a run, also a flow the fix loop ran) records `<flow> passed`, marked `passed/<flow>`
+(`Engine.record_version`, `core/history.py`; Q3TUI's own history in `.q3tui/history/`, never pushed, apart from your git). Steps read it by code:
+the dv triage is told what changed since a failing test last passed ([history.md](history.md)).
+
 ## Pipeline controls
 
 ```bash
 q3tui run [--intent TEXT | --intent-file F] [--spec F ...]
               [--from STEP] [--to STEP] [--only STEP] [--regenerate STEP] [--yes]   # --yes: approve all gates
               [--auto-approve] [--auto-answer] [--spec-review/--no-spec-review]
+q3tui import PATH [--kind all|spec|rtl]   # your own project folder / files (spec-flow.md "Importing")
 q3tui status                     # step states, staleness, open gates
 q3tui approve STEP|all [--force] # open questions → default accepted; blocking ones must be answered
 q3tui change STEP -m "..."       # request a change; the step re-runs with it
@@ -245,7 +319,6 @@ q3tui reset STEP|all [--only] [-y]   # delete generated outputs (+ downstream) t
 q3tui questions [--all]          # open questions from all steps
 q3tui answer [ID TEXT | all]     # answer one, all interactively, or `all`: every default
 q3tui gate STEP MODE             # human | auto | auto_answer | none
-q3tui confirm-properties | sign  # VLSIT: confirm assertions, sign requirements off
 q3tui flow list | check [FLOW]   # flows; validate one
 q3tui tools init | check         # tools by role
 q3tui team [status | reset [ROLE]]   # persistent LLM sessions

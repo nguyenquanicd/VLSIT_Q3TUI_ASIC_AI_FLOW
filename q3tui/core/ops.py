@@ -34,6 +34,29 @@ class Ops:
         if self.engine.running:
             raise EngineError(f"'{self.engine.running}' is running; stop it before you {what}")
 
+    # -- the flow's own actions (add-ons: q3tui/addons.py) ---------------------------------------------------
+
+    def actions(self) -> dict:
+        """name -> addons.Action of the current flow (empty for a flow without an add-on)."""
+        return self.engine.flow.actions
+
+    def run_action(self, name: str, **params: str) -> str:
+        """Run one of the flow's actions; the TUI's `/act`, `q3tui act` and the assistant all come here."""
+        act = self.actions().get(name)
+        if act is None:
+            raise EngineError(f"this flow has no action '{name}' (actions: {', '.join(self.actions()) or 'none'})")
+        missing = [p for p in act.params if p not in params and p not in act.optional]
+        if missing:
+            raise EngineError(f"action '{name}' needs {', '.join(missing)}")
+        unknown = [p for p in params if p not in act.params]
+        if unknown:
+            raise EngineError(f"action '{name}' has no parameter {', '.join(unknown)} (parameters: {', '.join(act.params) or 'none'})")
+        self._not_running(f"run '{name}'")
+        try:
+            return act.fn(self, **params)
+        except (ValueError, KeyError) as exc:
+            raise EngineError(str(exc)) from exc
+
     # -- spec template ---------------------------------------------------------------------
 
     def template(self) -> SpecTemplate:
@@ -214,6 +237,62 @@ class Ops:
         self.engine.import_spec([p])
         return self._log("spec", f"imported spec: {self.project.rel(p)}")
 
+    # -- history (Q3TUI's own record of the project: core/history.py) --------------------------------------------
+
+    def history(self, limit: int = 30, path: str | None = None) -> list:
+        """The versions of the project, newest first (the ones that changed `path` when given), with what each one changed."""
+        from q3tui.core import history
+
+        return history.versions(self.project, limit=limit, paths=[path] if path else None, files=True)
+
+    def history_text(self, limit: int = 30, path: str | None = None) -> str:
+        from q3tui.core import history
+
+        if not history.enabled(self.project):
+            return "the history is off (pipeline.history: false in q3tui.yaml), or git is not installed"
+        found = self.history(limit, path)
+        if not found:
+            return "no versions yet: one is recorded each time a step finishes, and when a flow passes"
+        return "\n".join(f"{v.short} {v.when} {v.title}" + (f" [{', '.join(v.marks)}]" if v.marks else "")
+                         + (f" — {', '.join(v.files[:6])}{' …' if len(v.files) > 6 else ''}" if v.files else "") for v in found)
+
+    def history_diff(self, ref: str, to: str | None = None, path: str | None = None, max_lines: int | None = 400) -> str:
+        """The changes from version `ref` to `to` (default: the last version); `to` = "own": what `ref` itself changed."""
+        from q3tui.core import history
+
+        try:
+            a = history.resolve(self.project, ref)
+            b = None if to == "own" else history.resolve(self.project, to) if to else history.MAIN
+            return history.diff(self.project, a, b, [path] if path else None, max_lines) or "(no change)"
+        except history.HistoryError as exc:
+            raise EngineError(str(exc)) from exc
+
+    def history_show(self, ref: str, path: str) -> str:
+        """A file as it was in a version."""
+        from q3tui.core import history
+
+        try:
+            return history.show(self.project, ref, path)
+        except history.HistoryError as exc:
+            raise EngineError(str(exc)) from exc
+
+    def restore_version(self, ref: str, paths: list[str]) -> str:
+        """Put files / folders (none: the whole project) back as they were in a version; what changes is backed up and recorded first."""
+        from q3tui.core import history
+
+        self._not_running("restore files")
+        others = self.engine.other_runs()
+        if others:
+            raise EngineError(f"a run of {', '.join(sorted({str(o.get('flow')) for o in others}))} is going on: restore when it has ended")
+        try:
+            rev, written, gone = history.restore(self.project, ref, paths)
+        except history.HistoryError as exc:
+            raise EngineError(str(exc)) from exc
+        what = ", ".join(paths) or "the whole project"
+        return self._log(None, f"restored {what} from version {rev[:8]}: {len(written)} file(s) written, {len(gone)} deleted"
+                               + (f" ({', '.join(gone[:6])}{' …' if len(gone) > 6 else ''})" if gone else "")
+                               + " — backup in .q3tui/bkp/; the steps that read them are out of date now")
+
     # -- settings -------------------------------------------------------------------------------
 
     def stats_text(self) -> str:
@@ -226,7 +305,30 @@ class Ops:
         """Current values of every user-facing setting (see q3tui/core/settings.py)."""
         from q3tui.core import settings
 
-        return settings.current(self.project.cfg)
+        vals = settings.current(self.project.cfg, self.settings_tabs())
+        for path in vals:
+            if settings.is_step_option(path):
+                vals[path] = self._step_option(path)
+        return vals
+
+    def _step_option(self, path: str):
+        """A step option as the live step has it (the flow file's value, q3tui.yaml's on top)."""
+        from q3tui.core import settings
+
+        _, _, step, key = path.rsplit(".", 3)
+        st = self.engine.by_name.get(step)
+        if st is not None:
+            return st.options.get(key)
+        # a step of another flow (a setting both flows share, made from this one): q3tui.yaml's value, else the setting's default
+        mine = (self.project.cfg.pipeline.step_options.get(step) or {}).get(key)
+        found = settings.find(path, self.engine.flow.settings)
+        return mine if mine is not None else (found.default if found else None)
+
+    def settings_tabs(self):
+        """The settings tabs of this flow: its steps' model rows, (vlsit) per-step tabs, the add-on's step options."""
+        from q3tui.core import settings
+
+        return settings.tabs_for([(s.name, s.name) for s in self.engine.pipeline_steps], self.engine.flow.settings)
 
     def apply_settings(self, changes: dict, save: bool = False) -> str:
         """Validate and apply {"llm.effort": "low", ...}; `save` also writes them to q3tui.yaml."""
@@ -238,7 +340,7 @@ class Ops:
         cfg = self.project.cfg
         values: dict = {}
         for path, raw in changes.items():
-            setting = settings.BY_PATH.get(path)
+            setting = settings.find(path, self.engine.flow.settings)
             if setting is None:
                 raise EngineError(f"unknown setting '{path}' (known: {', '.join(settings.BY_PATH)})")
             try:
@@ -247,7 +349,8 @@ class Ops:
                 raise EngineError(str(exc)) from None
         if str(values.get("llm.model", "")).startswith("claude-haiku-4") and "llm.effort" not in changes:
             values["llm.effort"] = None  # Haiku 4.5 has no effort setting
-        values = {p: v for p, v in values.items() if settings.get_value(cfg, p) != v}
+        values = {p: v for p, v in values.items()
+                  if (self._step_option(p) if settings.is_step_option(p) else settings.get_value(cfg, p)) != v}
         if not values:
             return "settings unchanged"
         try:  # validate against the real schema before touching the live config
@@ -259,6 +362,15 @@ class Ops:
                 f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors())) from None
         for path in values:
             section, leaf = path.rsplit(".", 1)
+            if settings.is_step_option(path):  # the live step, and q3tui.yaml's step_options for the next start
+                step = section.rsplit(".", 1)[1]
+                cfg.pipeline.step_options.setdefault(step, {})[leaf] = values[path]
+                if step in self.engine.by_name:  # (a step of another flow reads q3tui.yaml's value when that flow starts)
+                    self.engine.by_name[step].options[leaf] = values[path]
+                continue
+            if section.startswith("llm.steps.") and not hasattr(cfg.llm.steps, section.rsplit(".", 1)[1]):
+                setattr(cfg.llm.steps, section.rsplit(".", 1)[1], settings.get_value(checked, section))  # another flow's step
+                continue
             setattr(settings.get_value(cfg, section), leaf, settings.get_value(checked, path))
         shown = ", ".join(f"{p} = {'none' if v is None else v}" for p, v in values.items())
         msg = f"settings: {shown}"
@@ -321,27 +433,6 @@ class Ops:
             msg += f" (saved to {self.project.rel(self.project.save_config_values({'pipeline': {'auto_confirm_reviews': on}}))})"
         return self._log(None, msg)
 
-    def set_parallel_rtl_tb(self, on: bool, multi_agent: bool | None = None, save: bool = False) -> str:
-        """vlsit: run rtl (lint + synthesis) and tb (testbench generator) together instead of one after the
-        other — neither reads the other's output. multi_agent (only meaningful when on): tb gets its own
-        persistent LLM session instead of queuing behind rtl's on the flow's shared one (real concurrency
-        for the LLM calls too, not just their lint/synth/tool runs)."""
-        pc = self.project.cfg.pipeline
-        pc.parallel_rtl_tb = on
-        if multi_agent is not None:
-            pc.parallel_multi_agent = multi_agent and on
-        msg = f"parallel rtl/tb: {'on' if on else 'off'}"
-        if on:
-            msg += f" ({'separate agent for tb' if pc.parallel_multi_agent else 'shared session: tb queues behind rtl'})"
-        if save:
-            values = {"parallel_rtl_tb": pc.parallel_rtl_tb}
-            if multi_agent is not None:
-                values["parallel_multi_agent"] = pc.parallel_multi_agent
-            msg += f" (saved to {self.project.rel(self.project.save_config_values({'pipeline': values}))})"
-        return self._log(None, msg)
-
-    # -- questions, VLSIT review (steps/vlsit/review.py) ---------------------------------------------
-
     def answer(self, question_id: str, text: str) -> str:
         """Answer a question (the step, and the step it is handed to, update on the next run)."""
         return self.engine.answer(question_id, text)
@@ -350,48 +441,11 @@ class Ops:
         """Answer every open question with its default assumption."""
         return self._log(None, self.engine.answer_all())
 
-    def _review(self):
-        import importlib
-
-        try:
-            return importlib.import_module("q3tui.flows.vlsit.sva.review")
-        except ImportError as exc:  # no such module yet: a friendly message, never a traceback
-            raise EngineError(f"the VLSIT review module is not available ({exc})") from None
-
-    def properties(self) -> list[dict]:
-        """The SVA properties with their NL text, vacuity and your review status (VLSIT flow, step sva)."""
-        return self._review().load_properties(self.engine)
-
-    def review_property(self, label: str, status: str, note: str = "") -> str:
-        """Confirm / reject / reset an assertion (status confirmed | rejected | pending). Rejected → a change request to the sva step."""
-        if status not in ("confirmed", "rejected", "pending"):
-            raise EngineError(f"unknown review status '{status}' (confirmed, rejected, pending)")
-        self._review().review_property(self.engine, label, status, note)
-        return self._log("sva", f"assertion {label}: {status}" + (f" — {note}" if note else ""))
-
-    def confirm_properties(self, include_vacuous: bool = False) -> str:
-        """Confirm every pending assertion (vacuous ones only when asked) — "approve all" at Gate 3b."""
-        return self._log("sva", self._review().confirm_all(self.engine, include_vacuous))
-
-    def rtm(self) -> list[dict]:
-        """The requirements traceability matrix rows (six conditions per requirement)."""
-        return self._review().rtm_rows(self.engine)
-
-    def sign_req(self, req_id: str, signed: bool = True, note: str = "") -> str:
-        """Sign a requirement off in the RTM (you, never the LLM); refused unless its conditions 1–5 hold."""
-        msg = self._review().sign_req(self.engine, req_id, signed, note)
-        return self._log("verify", msg if isinstance(msg, str) and msg else f"{req_id}: {'signed off' if signed else 'sign-off withdrawn'}")
-
-    def sign_all_ready(self, note: str = "") -> str:
-        """Sign off every requirement whose conditions 1-5 already hold — "approve all" at Gate 5 (requirements that
-        are not ready are left alone; sign each one yourself once it is)."""
-        return self._log("verify", self._review().sign_all(self.engine, note))
-
     def _parse_review(self):
         import importlib
 
         try:
-            return importlib.import_module("q3tui.flows.vlsit.parse.review")
+            return importlib.import_module("q3tui.flows.spec.parse.review")
         except ImportError as exc:  # no such module yet: a friendly message, never a traceback
             raise EngineError(f"the VLSIT review module is not available ({exc})") from None
 
@@ -412,7 +466,7 @@ class Ops:
         import importlib
 
         try:
-            return importlib.import_module("q3tui.flows.vlsit.config.review")
+            return importlib.import_module("q3tui.flows.spec.config.review")
         except ImportError as exc:  # no such module yet: a friendly message, never a traceback
             raise EngineError(f"the VLSIT review module is not available ({exc})") from None
 
@@ -470,6 +524,68 @@ class Ops:
         if save:
             msg += f" (saved to {self.project.rel(self.project.save_config_values({'pipeline': {'step_flow': {step: {key: value}}}}))})"
         return self._log(None, msg)
+
+    TOOL_KEYS = ("timeout_s", "env", "modules", "cmd")
+
+    def tool_fix_options(self) -> dict[str, dict[str, str]]:
+        """step -> {option: what it does}: the options this flow's steps offer for a tool failure (`StepDef.tool_fix_options`)."""
+        return {s.name: dict(s.tool_fix_options) for s in self.engine.steps if getattr(s, "tool_fix_options", None)}
+
+    def set_step_option(self, step: str, key: str, value) -> str:
+        """Set an option a step offers for a tool failure (e.g. Sanity's `blackbox`) on the live step and in q3tui.yaml (pipeline.step_options)."""
+        import json
+
+        offered = self.tool_fix_options()
+        if key not in offered.get(step, {}):
+            raise EngineError(f"not an option offered for a tool failure: {', '.join(f'{s}.{k}' for s, ks in offered.items() for k in ks) or 'none'}")
+        self.project.cfg.pipeline.step_options.setdefault(step, {})[key] = value
+        self.engine.by_name[step].options[key] = value
+        saved = self.project.save_config_values({"pipeline": {"step_options": {step: {key: value}}}})
+        return self._log(None, f"{step}.{key} = {json.dumps(value)} (saved to {self.project.rel(saved)})")
+
+    def set_tool_role(self, role: str, key: str, value) -> str:
+        """Change one field of a tool role in the project's tools file (config/tools.json): `timeout_s` (seconds; empty: the default),
+        `env` ({VAR: value}, merged; a null value removes VAR), `modules` (the list, replaced) or `cmd`. The file is backed up first."""
+        import json
+
+        from q3tui.core.config import ToolRole
+        from q3tui.eda import tools as toolmod
+
+        if key not in self.TOOL_KEYS:
+            raise EngineError(f"unknown tool field '{key}' (one of {', '.join(self.TOOL_KEYS)})")
+        path = toolmod.tools_file(self.project.cfg, self.project.root)
+        if path is None or path.suffix != ".json" or path.parent != self.project.config_dir:
+            raise EngineError(f"the tools file is {path or 'missing'}: only the project's {self.project.rel(self.project.config_dir / 'tools.json')} is changed here")
+        data = toolmod.load_file(path)
+        roles = data.get("roles") or {}
+        if role not in roles:
+            raise EngineError(f"no tool role '{role}' in {self.project.rel(path)} (roles: {', '.join(sorted(roles)) or 'none'})")
+        new = dict(roles[role])
+        if key == "env":
+            if not isinstance(value, dict):
+                raise EngineError("env takes {VAR: value} (null removes VAR)")
+            env = dict(new.get("env") or {})
+            for k, v in value.items():
+                if v is None:
+                    env.pop(str(k), None)
+                else:
+                    env[str(k)] = str(v)
+            new["env"] = env
+        elif key == "modules":
+            new["modules"] = [str(m) for m in (value.split() if isinstance(value, str) else value or [])]
+        elif key == "timeout_s":
+            new["timeout_s"] = int(value) if value not in (None, "") else None
+        else:
+            new["cmd"] = str(value)
+        try:
+            ToolRole.model_validate(new)
+        except Exception as exc:  # noqa: BLE001 - said, nothing written
+            raise EngineError(f"{role}.{key}: {exc}") from exc
+        self.project.backup([path])
+        roles[role] = new
+        data["roles"] = roles
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        return self._log(None, f"tools: {role}.{key} = {json.dumps(new.get(key))} ({self.project.rel(path)}; the old one is backed up)")
 
     def save_flow_steps(self, steps: list[dict]) -> str:
         """Add / remove / reorder / rewire the flow's steps: `steps` = the new list (id, kind, deps, gate, title, label, options,

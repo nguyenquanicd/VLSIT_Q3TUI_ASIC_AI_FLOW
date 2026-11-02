@@ -286,8 +286,56 @@ async def test_command_history(app, llm):
         await pilot.press("down", "down")    # back to the draft
         assert cmd.value == "half-typed"
     # persisted for the next session
-    assert HistoryInput(history_file=app.project.state_dir / "tui" / "history.json").history[-2:] == ["/status", "/cost"]
+    assert HistoryInput(history_file=app.project.state_dir / "tui" / "history.json").entries[-2:] == ["/status", "/cost"]
 
+
+
+async def test_chat_box_multiline_and_large_paste(app, llm):
+    """Ctrl+J starts a new line (Enter sends); a large paste shows as `[+text N lines]` and is sent in full; history keeps the paste."""
+    from textual import events
+
+    from q3tui.tui.screens import HistoryInput
+
+    big = "\n".join(f"log line {i}" for i in range(40))
+    async with app.run_test(size=(140, 45)) as pilot:
+        box = app.query_one("#cmd", HistoryInput)
+        await pilot.press("i", "h", "i", "ctrl+j", "t", "h", "e", "r", "e")
+        assert box.value == "hi\nthere" and box.size.height == 2                 # two lines: the box grew
+        await pilot.press("up")                                                   # inside the text: the cursor moves, no history
+        assert box.value == "hi\nthere" and box.cursor_location[0] == 0
+        box.value = "see: "
+        app.post_message(events.Paste("short paste"))
+        await pilot.pause()
+        assert box.value == "see: short paste"                                    # small: pasted as it is
+        box.value = "see: "
+        app.post_message(events.Paste(big))
+        await pilot.pause()
+        assert box.value == "see: [+text 40 lines]"
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert llm.calls[-1].prompt.endswith("see: " + big)                       # the assistant gets the whole paste
+        chat = "\n".join(line.text for line in app.query_one("#activity").lines)
+        assert "[+text 40 lines]" in chat and "log line 39" not in chat           # the chat shows the placeholder
+        assert box.value == "" and not box.pastes
+        await pilot.press("up")                                                   # recalled with its paste
+        assert box.value == "see: [+text 40 lines]" and box.expanded() == "see: " + big
+        box.value = ""
+        app.post_message(events.Paste("a\r\nb"))                                # (the terminal's line ends)
+        await pilot.pause()
+        assert box.value == "a\nb"
+        box.value = ""
+        app.post_message(events.AppBlur())                                        # the terminal's menu: focus out, then the paste
+        await pilot.pause()
+        assert app.focused is None
+        app.post_message(events.Paste("x\ry"))
+        await pilot.pause()
+        assert app.focused is box and box.value == "x\ny"
+        box.value = ""
+        app.copy_to_clipboard(big)                                                # Ctrl+V: text copied in the TUI, as a paste
+        await pilot.press("ctrl+v")
+        assert box.value == "[+text 40 lines]" and box.expanded() == big
+    entry = HistoryInput(history_file=app.project.state_dir / "tui" / "history.json").entries[-1]
+    assert entry == {"text": "see: [+text 40 lines]", "pastes": {"[+text 40 lines]": big}}
 
 async def test_reset_restarts_assistant_conversation(app, llm):
     from q3tui.tui.screens import ConfirmScreen
@@ -373,12 +421,12 @@ async def test_settings_dialog(app, llm):
         screen = app.screen
         assert screen.query_one(TabbedContent).active == "set-tab-spec"   # opens on the selected step's tab
         screen.query_one("#set-spec-self_review", Switch).value = False
-        screen.query_one("#set-tb-max_turns", Input).value = "33"
+        screen.query_one("#set-rtl-max_turns", Input).value = "33"
         # saved to the project by default (no box to tick)
         await pilot.press("ctrl+s")
         await pilot.pause()
         assert not isinstance(app.screen, SettingsScreen)
-        assert app.project.cfg.spec.self_review is False and app.project.cfg.tb.max_turns == 33
+        assert app.project.cfg.spec.self_review is False and app.project.cfg.rtl.max_turns == 33
         assert "max_turns: 33" in (app.project.root / "q3tui.yaml").read_text()
 
         await pilot.press("comma")
@@ -591,7 +639,7 @@ async def test_flow_editor_saves_step_settings(app, tmp_path):
     from q3tui.tui.screens import FlowScreen
 
     async with app.run_test(size=(140, 45)) as pilot:
-        await pilot.press("F")
+        app.action_flow_editor()
         await pilot.pause()
         assert isinstance(app.screen, FlowScreen)
         app.screen.query_one("#flow-pass", TextArea).load_text("exists spec/spec.md")
@@ -609,7 +657,7 @@ async def test_flow_editor_adds_and_moves_steps_and_prompts_editor(app, tmp_path
     from q3tui.tui.screens import FlowScreen, PromptsScreen
 
     async with app.run_test(size=(140, 45)) as pilot:
-        await pilot.press("F")
+        app.action_flow_editor()
         await pilot.pause()
         scr = app.screen
         assert isinstance(scr, FlowScreen)
@@ -653,7 +701,7 @@ async def test_skill_editor_forks_the_builtin_flow_and_saves(tmp_path, monkeypat
     from q3tui.tui.app import Q3TUIApp
     from q3tui.tui.screens import SkillScreen
 
-    (tmp_path / "q3tui.yaml").write_text("llm: {model: claude-haiku-4-5}\npipeline: {flow: vlsit}\n")
+    (tmp_path / "q3tui.yaml").write_text("llm: {model: claude-haiku-4-5}\npipeline: {flow: spec}\n")
     app = Q3TUIApp(Project.open(tmp_path))
     async with app.run_test(size=(140, 45)) as pilot:
         await pilot.press("K")
@@ -664,7 +712,7 @@ async def test_skill_editor_forks_the_builtin_flow_and_saves(tmp_path, monkeypat
         await pilot.press("ctrl+s")
         await pilot.pause()
         step = app.screen.current
-        assert "Always answer briefly." in (tmp_path / "flows" / "vlsit" / step / "md" / "skill.md").read_text()
+        assert "Always answer briefly." in (tmp_path / "flows" / "spec" / step / "md" / "skill.md").read_text()
         assert app.engine.flow.spec(step).notes.endswith("Always answer briefly.")
 
 
@@ -769,3 +817,163 @@ def test_a_tree_without_a_code_fence_keeps_its_lines():
     fenced = "```text\n" + tree + "\n```"
     assert fence_diagrams(fenced) == fenced  # already fenced: untouched
     assert fence_diagrams("one line ├── x") == "one line ├── x"  # a single line is just text
+
+
+async def test_spec_section_feedback_box(app, llm):
+    from textual.widgets import DataTable, Static, TextArea
+
+    async with app.run_test(size=(150, 45)) as pilot:
+        await pilot.press("r")
+        await settle(app, pilot)
+        await pilot.press("l")
+        await pilot.pause()
+        await pilot.press("1")
+        await pilot.pause()
+        table = app.query_one("#spec-sections-table", DataTable)
+        box = app.query_one("#spec-feedback-text", TextArea)
+        ids = [table.coordinate_to_cell_key((i, 0)).row_key.value for i in range(table.row_count)]
+        table.focus()
+        table.move_cursor(row=ids.index("features"))
+        await pilot.pause()
+        assert "Features" in str(app.query_one("#spec-feedback-title", Static).render())
+
+        await pilot.press("w")                       # focus the box; letters are typed, not bound keys
+        await pilot.pause()
+        assert box.has_focus
+        await pilot.press(*"add F3 drain")
+        assert box.text == "add F3 drain"
+        table.move_cursor(row=ids.index("overview"))  # an unsent draft stays with its section
+        await pilot.pause()
+        assert box.text == ""
+        table.move_cursor(row=ids.index("features"))
+        await pilot.pause()
+        assert box.text == "add F3 drain"
+
+        box.focus()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        queued = app.engine.state.feedback["spec"]
+        assert queued[-1].startswith("In section 'Features':") and "add F3 drain" in queued[-1]
+        assert box.text == "" and table.has_focus
+        assert "queued (1)" in str(app.query_one("#spec-feedback-pending", Static).render())
+        assert {v.name: v.status for v in app.engine.status()}["spec"] == "stale"
+
+        await pilot.press("ctrl+s")                  # nothing written: nothing queued
+        await pilot.pause()
+        assert len(app.engine.state.feedback["spec"]) == 1
+
+
+def test_mermaid_blocks_are_drawn_as_terminal_art():
+    from q3tui.tui import mermaid
+    from q3tui.tui.views import MdCode, split_fences
+
+    src = "flowchart LR\n  IN[Input interface] --> CORE[Control and datapath]\n  CORE --> OUT[Output interface]"
+    art = mermaid.render(src)
+    assert art and "Input interface" in art and "─" in art and "-->" not in art
+    assert mermaid.render("sequenceDiagram\n  A->>B: hello") and "hello" in mermaid.render("sequenceDiagram\n  A->>B: hello")
+    assert mermaid.render("this is not a diagram at all (((") is None
+    # both fence styles of the spec template reach MdCode with their language; unusable source is shown as written
+    for fence in ("~~~", "```"):
+        parts = split_fences(f"text\n\n{fence}mermaid\n{src}\n{fence}\n\nmore")
+        assert [p[0] for p in parts] == ["md", "code", "md"] and parts[1][2] == "mermaid"
+        assert "Input interface" in MdCode.renderable(parts[1][1], "mermaid").plain and "-->" not in MdCode.renderable(parts[1][1], "mermaid").plain
+    assert MdCode.renderable("graph (((", "mermaid").plain == "graph ((("
+
+
+async def test_pipeline_column_can_be_hidden_and_stays_hidden(app, llm):
+    from q3tui.core.project import Project, read_json
+    from q3tui.tui.app import Q3TUIApp
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        right = app.query_one("#right").outer_size.width
+        await pilot.press("p")
+        await pilot.pause()
+        assert not app.query_one("#left").display and not app.query_one("#split-left").display
+        assert app.query_one("#right").outer_size.width > right             # the step views get the width
+        assert read_json(app.layout_file)["pipeline_hidden"] == 1
+        await pilot.press("2")                                              # steps are still selected by number
+        await pilot.pause()
+        assert app.selected_step == app.engine.pipeline_steps[1].name
+
+    again = Q3TUIApp(Project.open(app.project.root))
+    async with again.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        assert not again.query_one("#left").display                        # remembered
+        assert again.query_one("#show-pipeline").display                    # a clickable "▶ pipeline" takes its place
+        await pilot.click("#show-pipeline")
+        await pilot.pause()
+        assert again.query_one("#left").display and "pipeline_hidden" not in read_json(again.layout_file)
+        assert not again.query_one("#show-pipeline").display
+        await pilot.click("#hide-pipeline")                                 # and "◀ hide" hides it again
+        await pilot.pause()
+        assert not again.query_one("#left").display
+
+
+WIDE = "flowchart LR\n" + "\n".join(f"  A{i}[block_number_{i}] --> A{i + 1}[block_number_{i + 1}]" for i in range(12))
+
+
+async def test_wide_diagrams_scroll_and_open_full_screen(app, llm):
+    from q3tui.tui.screens import DiagramScreen
+    from q3tui.tui.views import MdCode
+
+    spec = app.project.spec_dir / "spec.md"
+    spec.write_text("# T\n\nTop module: `t`\n\n## 1. Overview\n\n```mermaid\n" + WIDE + "\n```\n\n*Figure 1-1: a long chain.*\n\n"
+                    "```wavedrom\n{signal: [{name: 'i_clk', wave: 'p.....'}]}\n```\n\n*Figure 1-2: the clock.*\n\n```sv\nmodule m; endmodule\n```\n")
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        panel = app.query_one("#view-spec")
+        panel.show_tab("files")
+        panel.query_one("FileViewer").show(spec)
+        await pilot.pause()
+        await pilot.pause()
+        blocks = list(panel.query_one("FileViewer").query(MdCode))
+        wide, wave, sv = blocks
+        assert wide.is_diagram and wave.is_diagram and not sv.is_diagram
+        assert wide.caption == "Figure 1-1: a long chain." and wide.max_scroll_x > 0     # scrolls sideways in place
+        wide.focus()
+        await pilot.press("right")
+        await pilot.pause()
+        assert wide.scroll_x > 0
+
+        await pilot.press("enter")                                          # full screen, from the focused diagram
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, DiagramScreen) and len(screen.blocks) == 2 and screen.index == 0
+        assert "Figure 1-1: a long chain." in str(screen.query_one("#dg-title").render())
+        await pilot.press("l")
+        await pilot.pause()
+        assert screen.query_one("#dg-scroll").scroll_x > 0
+        await pilot.press("n")
+        await pilot.pause()
+        assert screen.index == 1 and screen.query_one("#dg-scroll").scroll_x == 0
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, DiagramScreen)
+
+        app.query_one("#steps").focus()
+        await pilot.press("D")                                              # the app key: the visible view's diagrams
+        await pilot.pause()
+        assert isinstance(app.screen, DiagramScreen) and app.screen.index == 0
+        await pilot.press("q")
+        await pilot.pause()
+
+        sv.focus()
+        await pilot.press("enter")                                          # a code block is not a diagram: nothing opens
+        await pilot.pause()
+        assert not isinstance(app.screen, DiagramScreen)
+
+
+async def test_import_command(app, llm):
+    ref = app.project.root / "ref"
+    (ref / "rtl").mkdir(parents=True)
+    (ref / "README.md").write_text("# my block\n")
+    (ref / "rtl" / "blk.sv").write_text("module blk (input logic i_a); endmodule\n")
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.press("slash")
+        app.query_one("#cmd").value = "/import ref"
+        await pilot.press("enter")
+        await pilot.pause()
+        lines = "\n".join(str(line.text) for line in app.query_one("#activity").lines)
+        assert (app.project.root / "spec" / "ref" / "README.md").is_file()  # (a reference the spec step ports)
+        assert "1 spec documents" in lines and "no step of this flow takes rtl" in lines  # (the test flow's rtl takes none)

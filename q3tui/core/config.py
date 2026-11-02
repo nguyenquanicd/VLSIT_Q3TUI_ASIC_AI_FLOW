@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _Strict(BaseModel):
@@ -25,17 +25,21 @@ class StepLLM(_Strict):
 
 
 class StepModels(_Strict):
-    """Per-step overrides (llm.steps.<step>)."""
+    """Per-step overrides (llm.steps.<step>); the spec flow's steps and rtl are listed, any other flow's steps are extra keys."""
 
-    spec: StepLLM = Field(default_factory=StepLLM)
+    model_config = ConfigDict(extra="allow")
+    spec: StepLLM = Field(default_factory=lambda: StepLLM(effort="medium"))  # high: one 6-minute think, 400k+ tokens
     parse: StepLLM = Field(default_factory=StepLLM)
     config: StepLLM = Field(default_factory=StepLLM)
     rtl: StepLLM = Field(default_factory=StepLLM)
     tb: StepLLM = Field(default_factory=StepLLM)
-    sva: StepLLM = Field(default_factory=StepLLM)
-    verify: StepLLM = Field(default_factory=StepLLM)
-    doc: StepLLM = Field(default_factory=StepLLM)
     assistant: StepLLM = Field(default_factory=StepLLM)
+
+    @model_validator(mode="after")
+    def _extras(self):
+        for k, v in list((self.__pydantic_extra__ or {}).items()):
+            self.__pydantic_extra__[k] = v if isinstance(v, StepLLM) else StepLLM.model_validate(v)
+        return self
 
 
 STEP_LLM_KEYS = tuple(StepModels.model_fields)
@@ -69,8 +73,8 @@ class LLMConfig(_Strict):
     def for_stage(self, step: str | None, stage: str) -> "LLMConfig":
         """This config with the model / effort of the step that runs `stage`; the step's set value wins over the
         global llm.model / llm.effort."""
-        keys = [step] if step in STEP_LLM_KEYS else []
-        entries = [getattr(self.steps, k) for k in keys]
+        entry = getattr(self.steps, step, None) if step else None
+        entries = [entry] if isinstance(entry, StepLLM) else []
         model = next((e.model for e in entries if e.model), None) or self.model
         effort_set = next((e.effort for e in entries if e.effort != "default"), None)
         if effort_set is not None:
@@ -103,7 +107,7 @@ class ToolRole(_Strict):
     the step passes (docs/spec/flows.md "Tools")."""
 
     cmd: str
-    parse: str | dict = "generic"  # vcs | dc | verilator | yosys | iverilog | generic, or {"error": [regex], "warning": [regex]}
+    parse: str | dict = "generic"  # vcs | dc | verilator | yosys | iverilog | vivado | verible | generic, or {"error": [regex], "warning": [regex]}
     description: str = ""  # shown to the LLM stage that may run it
     cwd: str | None = None  # default: the step's working directory
     timeout_s: int | None = None  # default: tools.timeout_s
@@ -111,10 +115,13 @@ class ToolRole(_Strict):
     modules: list[str] = Field(default_factory=list)
     ok_returncodes: list[int] = Field(default_factory=lambda: [0])
     supports: list[str] = Field(default_factory=list)  # capabilities, e.g. ["sva"]; a missing one is reported as N/A
+    # the text of a script the command reads ({script} in cmd), written by Q3TUI with the same placeholders filled (other braces, e.g. Tcl's, stay):
+    # e.g. the `wave` role's simulator commands that dump the signals of a debug run
+    script: str = ""
 
 
 class ToolsConfig(_Strict):
-    file: str | None = None  # tools.json / tools.yaml (default: <project>/tools.json|yaml, then $Q3TUI_HOME/)
+    file: str | None = None  # tools.json / tools.yaml (default: <project>/config/tools.json|yaml, then $Q3TUI_HOME/)
     roles: dict[str, ToolRole] = Field(default_factory=dict)  # inline roles (override the file's)
     syntax: ToolBinding = ToolBinding(adapter="slang")
     simulator: ToolBinding = ToolBinding(adapter="vcs", bin="vcs")
@@ -127,18 +134,26 @@ class ToolsConfig(_Strict):
 
 
 class ProjectConfig(_Strict):
-    spec_dir: str = "spec"
+    """Folder names of a project (docs/spec/project-layout.md); all relative to the project root."""
+
+    spec_dir: str = "spec"  # your spec documents, intent.md, template.yaml, spec.md, ref/
+    config_dir: str = "config"  # tools.json, pdks.json, rtl_rules.md, skills/, sanity/<role>_knowledge.md
+    constraints_dir: str = "constraints"  # constraints/sdc/ (more kinds when a flow writes them)
+    schemas_dir: str = "schemas"  # generated JSON artifacts, questions/<step>.*
+    reviews_dir: str = "reviews"  # yours: reviews and sign-offs, kept on reset
+    reports_dir: str = "reports"  # readable results rendered by code
+    docs_dir: str = "docs"  # the final specification only
+    src_dir: str = "src"
+    rtl_dir: str = "src/rtl"
+    tb_dir: str = "src/tb"
+    fpga_src_dir: str = "src/fpga"  # the FPGA flow's own sources: memory initialization files (fpga_port makes them)
+    build_dir: str = "build"  # disposable tool output
+    syn_dir: str = "build/syn"  # build/syn/{fpga,asic}
+    sim_dir: str = "build/sim"
+    state_dir: str = ".q3tui"
     req_dir: str = "req"
     arch_dir: str = "arch"
     model_dir: str = "model"
-    rtl_dir: str = "rtl"
-    tb_dir: str = "tb"
-    sim_dir: str = "sim"
-    state_dir: str = ".q3tui"
-    # the VLSIT flow's layout (flows/vlsit/): JSON artifacts, src/{rtl,sva,tb}, generated documents
-    schemas_dir: str = "schemas"
-    src_dir: str = "src"
-    docs_dir: str = "docs"
 
 
 class PipelineConfig(_Strict):
@@ -151,27 +166,32 @@ class PipelineConfig(_Strict):
     escalate_after_repeats: int = Field(2, ge=1, le=10)
     # A flow name (built-in `vlsit`, or a file in <project>/flows/ or ~/.q3tui/flows/) or a path to a flow file
     # (docs/spec/flows.md).
-    flow: str = "vlsit"
+    flow: str = "spec"
+    # the flows whose steps make the design (spec … RTL): a run changes the design only while no run of another flow is in a step
+    # (docs/spec/pipeline.md "Runs of several flows")
+    design_flows: list[str] = Field(default_factory=lambda: ["rtl"])
     # LLM sessions: null = the flow's (`session:` in the flow file); "flow" = one persistent session for the whole flow
     # (like one Claude Code conversation), "fresh" = a session per stage
     session: Literal["flow", "fresh"] | None = None
-    # per-step options on top of the flow file's (`options:` of the step): {sva: {auto_confirm: true}, verify: {max_fix_rounds: 12}}
+    # per-step options on top of the flow file's (`options:` of the step): {parse: {auto_confirm: true}, rtl: {max_fix_rounds: 12}}
     step_options: dict[str, dict] = Field(default_factory=dict)
     # per-step overrides of the flow file's `view` / `pass` / `notes`: {rtl: {pass: ["exists rtl/*.sv"], notes: "..."}} (TUI: /step)
     step_flow: dict[str, dict] = Field(default_factory=dict)
     # per-step gate mode overrides: human | auto | auto_answer | none (flow files set the defaults; TUI: /gate)
     gate_modes: dict[str, Literal["human", "auto", "auto_answer", "none"]] = Field(default_factory=dict)
-    # vlsit flow: rtl (lint + synthesis) and tb (testbench generator) read only spec/parse/config, neither
-    # depends on the other's output — run them together instead of one after the other (TUI: /parallel, g)
-    parallel_rtl_tb: bool = False
-    # parallel_rtl_tb only: give tb its own persistent LLM session (role "verifier") instead of sharing the
-    # flow's one session with rtl — true concurrent agents, not one session forked while it is busy
-    parallel_multi_agent: bool = False
-    # confirm a step's own reviewable items (SVA assertions, flagged requirements, …) without asking — a human
+    # confirm a step's own reviewable items (flagged requirements, changed parameters, …) without asking — a human
     # gate still stops for Approve, but Approve itself no longer refuses for unconfirmed items (engine.approve,
     # StepDef.pending_reviews). Narrower than auto_approve/auto_answer (TUI Settings → General); a per-step
-    # `options: {sva: {auto_confirm: true}}` still overrides this one step.
+    # `options: {parse: {auto_confirm: true}}` still overrides this one step.
     auto_confirm_reviews: bool = False
+    # Q3TUI's own record of the project: a version when a step finishes and when a flow passes, in .q3tui/history/ (never pushed; your own
+    # git is not touched) — docs/spec/history.md
+    history: bool = True
+    # the full unattended run (`q3tui auto`, TUI /auto): these flows in order, until each passed with the RTL as it is at the end — a flow that
+    # changed the RTL makes the ones that passed before run again (docs/spec/pipeline.md "Full unattended runs"); a flow runs at most
+    # chain_max_runs times
+    chain: list[str] = Field(default_factory=lambda: ["spec", "rtl", "dv", "sanity", "fpga"])
+    chain_max_runs: int = Field(3, ge=1, le=10)
 
 
 class SpecConfig(_Strict):
@@ -180,15 +200,23 @@ class SpecConfig(_Strict):
 
 class RTLConfig(_Strict):
     max_fix_attempts: int = Field(3, ge=0, le=10)  # extra rounds when Q3TUI's own checks (lint, synthesis) still fail
-    parallel: int = Field(4, ge=1, le=16)  # modules (RTL, SVA) written at once
+    parallel: int = Field(4, ge=1, le=16)  # modules written at once
     max_turns: int = Field(60, ge=5, le=400)  # agent turns per module (write, compile, fix)
 
 
 class TBConfig(_Strict):
+    """The dv flow's `tb` step."""
+
     max_fix_attempts: int = Field(3, ge=0, le=10)  # extra rounds when the plan / TB checks still fail
     max_turns: int = Field(30, ge=5, le=400)  # agent turns per TB stage
     tests_per_agent: int = Field(6, ge=1, le=100)  # test cases per agent (agents run in parallel)
     parallel: int = Field(4, ge=1, le=32)  # test-case agents at once
+    sim_parallel: int | None = Field(None, ge=1, le=256)  # simulations at once (`simulate`); None = 80 % of the CPU cores (`sim_jobs`)
+
+    def sim_jobs(self) -> int:
+        import os
+
+        return self.sim_parallel or max(1, int((os.cpu_count() or 1) * 0.8))
 
 
 class TeamConfig(_Strict):
@@ -288,8 +316,9 @@ def _merge(base: dict, over: dict) -> dict:
     return out
 
 
-# settings of the removed `units` / `steps` flows: still in older config files, ignored
-_REMOVED = {None: ("requirements", "req", "arch", "model", "sim", "triage", "units"),
+# settings of the removed `units` / `steps` flows and of the tb step: still in older config files, ignored
+_REMOVED = {None: ("requirements", "req", "arch", "model", "sim", "triage", "units", "lanes"),
+            "pipeline": ("parallel_rtl_tb", "parallel_multi_agent"),
             "project": ("requirements_dir", "signoff_dir"),
             "rtl": ("rules", "review", "use_vcs", "language", "lint"),
             "tb": ("checks_per_agent", "stimulus_chars_per_agent", "session_max_turns", "use_vcs", "timeout_cycles", "seed")}
@@ -298,6 +327,9 @@ _REMOVED_STEP_MODELS = ("req", "arch", "model", "vplan", "tb_checker", "tb_stimu
 
 def _legacy(layer: dict) -> dict:
     """Older config files: the settings of the removed flows are dropped (the schema rejects unknown keys)."""
+    old_lanes = layer.get("lanes")  # (the lanes were removed: their design flows are pipeline.design_flows now)
+    if isinstance(old_lanes, dict) and old_lanes.get("design_flows") and isinstance(layer.get("pipeline") or {}, dict):
+        layer = {**layer, "pipeline": {"design_flows": old_lanes["design_flows"], **(layer.get("pipeline") or {})}}
     layer = {k: v for k, v in layer.items() if k not in _REMOVED[None]}
     for section, keys in _REMOVED.items():
         if section and isinstance(layer.get(section), dict):

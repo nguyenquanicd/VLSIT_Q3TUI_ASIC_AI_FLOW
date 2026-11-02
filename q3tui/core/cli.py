@@ -24,7 +24,7 @@ err_console = Console(stderr=True)
 
 ExistingFile = click.Path(exists=True, dir_okay=False, path_type=Path)
 # the default flow's steps (shell completion; a project's flow may have others)
-STEP_NAMES = ["spec", "parse", "config", "rtl", "tb", "sva", "verify", "doc"]
+STEP_NAMES = ["spec", "parse", "config", "rtl"]
 
 
 class StepParam(click.ParamType):
@@ -242,6 +242,49 @@ def run(c: Ctx, intent, intent_file, specs, start, stop, only, regenerate, yes, 
     sys.exit(0 if outcome in ("complete", "gate", "unavailable") else 1)
 
 
+@main.command("loop")
+@click.option("--owner", help="The flow that owns the RTL and the spec (default: the waiver steps' handoff_flow, rtl).")
+@click.option("--max-rounds", type=click.IntRange(1, 20), help="Most rounds (default pipeline.max_fix_iterations).")
+@click.option("--max-cost", type=float, help="Stop when this many dollars were spent by the loop.")
+@click.option("--restore-best", is_flag=True, help="Put the RTL of the best round of the last loop back (the files count as your edits).")
+@pass_ctx
+def loop_cmd(c: Ctx, owner: str | None, max_rounds: int | None, max_cost: float | None, restore_best: bool) -> None:
+    """Fix loop of the Sanity flow: analyse → hand the fixes to the owner flow → it updates the RTL → analyse again.
+
+    Stops when nothing is open, when a round is not better than the best one (the best RTL is kept), when nothing can be handed off,
+    when a flow fails, or at the spend limit. Run it with `--flow sanity`."""
+    from q3tui.core import loop
+
+    if restore_best:
+        console.print(loop.restore_best(c.project))
+        return
+    c.project.cfg.pipeline.auto_answer = True  # (unattended: that is what a loop is)
+    bus = EventBus()
+    bus.subscribe(print_event)
+    result = anyio.run(lambda: loop.fix_loop(c.project, bus, c.project.flow_ref(), owner, max_rounds, max_cost))
+    console.print(loop.summary(result), markup=False, highlight=False)
+    sys.exit(0 if result.ok else 1)
+
+
+@main.command("auto")
+@click.option("--flows", "chain", help="The flows, in order, comma-separated (default pipeline.chain: spec,rtl,dv,sanity,fpga).")
+@click.option("--max-runs", type=click.IntRange(1, 10), help="Most runs of one flow (default pipeline.chain_max_runs).")
+@pass_ctx
+def auto_cmd(c: Ctx, chain: str | None, max_runs: int | None) -> None:
+    """Full unattended run: every flow of the chain in order, without you, until each passed with the RTL as it is at the end.
+
+    A flow that changed the RTL (a Sanity fix, an fpga PPA fix) makes the flows that passed before it run again: a Sanity fix → dv again;
+    an fpga PPA fix → dv and Sanity again. A flow that does not pass stops it."""
+    from q3tui.core import chain as chain_mod
+
+    bus = EventBus()
+    bus.subscribe(print_event)
+    names = [x.strip() for x in chain.split(",") if x.strip()] if chain else None
+    result = anyio.run(lambda: chain_mod.run_chain(c.project, bus, names, max_runs))
+    console.print(chain_mod.summary(result), markup=False, highlight=False)
+    sys.exit(0 if result.ok else 1)
+
+
 def _status_table(views: list[StepView]) -> Table:
     t = Table(box=None, pad_edge=False, show_header=True, header_style="dim")
     for col in ("", "step", "status", "review", "questions", "notes"):
@@ -266,7 +309,7 @@ def init(c: Ctx, with_template: bool, force: bool) -> None:
     from q3tui.steps.spec.template import ensure_project_template, intent_skeleton, load_template
 
     project = c.project
-    flow_template = c.engine().spec_template()  # (the flow's: vlsit → the VLSIT layout)
+    flow_template = c.engine().spec_template()  # (the flow's: spec → the VLSIT template)
     template, source = load_template(project.spec_dir, flow_template)
     intent = project.spec_dir / "intent.md"
     if intent.exists() and not force:
@@ -279,6 +322,10 @@ def init(c: Ctx, with_template: bool, force: bool) -> None:
         console.print(f"[green]✔[/green] {project.rel(ensure_project_template(project.spec_dir, flow_template))} — add/remove/reorder sections here")
     else:
         console.print(f"[dim]spec sections come from {source} (`q3tui init --template` to customise per project)[/dim]")
+    ignore = project.root / ".gitignore"
+    if not ignore.exists():  # (the disposable folders: tool output and Q3TUI's internal state)
+        ignore.write_text(f"{project.cfg.project.build_dir}/\n{project.cfg.project.state_dir}/\n")
+        console.print(f"[green]✔[/green] wrote {project.rel(ignore)} ({project.cfg.project.build_dir}/ and {project.cfg.project.state_dir}/ are not for version control)")
     console.print("next: edit the intent, then `q3tui run` (or `q3tui` for the TUI)")
 
 
@@ -341,9 +388,68 @@ def cost(c: Ctx, do_reset: bool) -> None:
     summary = engine.cost_summary()
     console.print(f"[bold]${summary['total_usd']:.2f}[/bold] total LLM cost for this project")
     for name, usd in summary["steps"].items():
-        console.print(f"  {name:8} ${usd:.2f}  [dim](last run)[/dim]")
+        console.print(f"  {name:8} ${usd:.2f}  [dim](all its runs)[/dim]")
     for r in summary["resets"]:
         console.print(f"  [dim]reset {r['at']}: ${r['amount_usd']:.2f} cleared[/dim]")
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+def history(click_ctx: click.Context) -> None:
+    """Q3TUI's own record of the project: a version each time a step finishes and when a flow passes (passed/<flow>); kept in
+    .q3tui/history/, never pushed, your own git is not touched (docs/spec/history.md)."""
+    if click_ctx.invoked_subcommand is None:
+        click_ctx.invoke(history_log)
+
+
+@history.command("log")
+@click.option("-n", "limit", default=30, show_default=True, help="How many versions.")
+@click.argument("path", required=False)
+@pass_ctx
+def history_log(c: Ctx, limit: int, path: str | None) -> None:
+    """The versions, newest first (the ones that changed PATH when given), with what each one changed."""
+    from q3tui.core.ops import Ops
+
+    console.print(Ops(c.engine()).history_text(limit, path), markup=False, highlight=False)
+
+
+@history.command("diff")
+@click.argument("version")
+@click.argument("to", required=False)
+@click.option("--path", help="Only this file or folder.")
+@click.option("--own", is_flag=True, help="What VERSION itself changed (against the version before it).")
+@pass_ctx
+def history_diff(c: Ctx, version: str, to: str | None, path: str | None, own: bool) -> None:
+    """The changes from VERSION (an id, passed/<flow>, HEAD~n) to TO (default: the last version)."""
+    from q3tui.core.ops import Ops
+
+    console.print(Ops(c.engine()).history_diff(version, "own" if own else to, path, max_lines=None), markup=False, highlight=False)
+
+
+@history.command("show")
+@click.argument("version")
+@click.argument("path")
+@pass_ctx
+def history_show(c: Ctx, version: str, path: str) -> None:
+    """A file as it was in VERSION."""
+    from q3tui.core.ops import Ops
+
+    click.echo(Ops(c.engine()).history_show(version, path), nl=False)
+
+
+@history.command("restore")
+@click.argument("version")
+@click.argument("paths", nargs=-1)
+@click.option("--yes", "-y", is_flag=True, help="Do not ask.")
+@pass_ctx
+def history_restore(c: Ctx, version: str, paths: tuple[str, ...], yes: bool) -> None:
+    """Put PATHS (files or folders; none: the whole project) back as they were in VERSION. What changes is backed up (.q3tui/bkp/) and the
+    versions before and after are recorded."""
+    from q3tui.core.ops import Ops
+
+    if not yes and not click.confirm(f"Restore {', '.join(paths) or 'the whole project'} from version {version}?", default=False):
+        return
+    console.print(Ops(c.engine()).restore_version(version, list(paths)), markup=False, highlight=False)
 
 
 @main.command()
@@ -411,7 +517,18 @@ def tui(c: Ctx, read_only: bool) -> None:
     """Open the terminal UI (it watches, read-only, while another process runs the pipeline)."""
     from q3tui.tui.app import Q3TUIApp
 
-    Q3TUIApp(c.project, read_only=read_only).run()
+    from q3tui.tui import runner
+
+    try:
+        while True:
+            result = Q3TUIApp(c.project, read_only=read_only, background=True).run()
+            if not (isinstance(result, tuple) and result[0] == "flow"):
+                return
+            # the TUI's flow switch (saved to q3tui.yaml): open the project again on that flow; its background run goes on
+            c.overrides = {**(c.overrides or {}), "pipeline": {**((c.overrides or {}).get("pipeline") or {}), "flow": result[1]}}
+            c._project = None
+    finally:
+        runner.get().shutdown()  # the TUI is over: so is the run it started
 
 
 # -- flows -------------------------------------------------------------------------------------
@@ -420,6 +537,30 @@ def tui(c: Ctx, read_only: bool) -> None:
 @main.group("flow")
 def flow_group() -> None:
     """Flows: which steps run, in which order, with which gates (docs/spec/flows.md)."""
+
+
+@main.command("act")
+@click.argument("name", required=False)
+@click.argument("params", nargs=-1)
+@pass_ctx
+def act(c: Ctx, name: str | None, params: tuple[str, ...]) -> None:
+    """Run an action of the flow's add-on (`q3tui act` lists them): `q3tui act NAME key=value …`."""
+    from q3tui.core.ops import Ops
+
+    ops = Ops(c.engine())
+    if name is None:
+        for a in ops.actions().values():
+            console.print(f"[bold]{a.name}[/bold] {' '.join(k + ('=?' if k in a.optional else '=…') for k in a.params)}\n  {a.help}")
+        if not ops.actions():
+            console.print("[dim]this flow has no actions[/dim]")
+        return
+    kv = {}
+    for p in params:
+        k, sep, v = p.partition("=")
+        if not sep:
+            raise click.UsageError(f"'{p}': parameters are key=value")
+        kv[k] = v
+    console.print(ops.run_action(name, **kv))
 
 
 @flow_group.command("list")
@@ -464,7 +605,7 @@ def flow_check(c: Ctx, flow: str | None) -> None:
 
     needed = roles_needed(fl)
     if needed:
-        console.print(f"tools needed: {', '.join(needed)}  (tools.json / tools.roles in q3tui.yaml)", markup=False)
+        console.print(f"tools needed: {', '.join(needed)}  (config/tools.json / tools.roles in q3tui.yaml)", markup=False)
     console.print("[green]✔[/green] flow is valid")
 
 
@@ -482,7 +623,7 @@ def tools_init(c: Ctx, preset: str, force: bool) -> None:
     from q3tui.eda import tools as T
 
     try:
-        dest = T.write_preset(c.project.root, preset, force)
+        dest = T.write_preset(c.project.config_dir, preset, force)
     except T.ToolUnavailable as exc:
         raise click.ClickException(str(exc))
     console.print(f"[green]✔[/green] wrote {c.project.rel(dest)} — set `modules` / the Design Compiler library for your site")
@@ -513,45 +654,6 @@ def tools_check(c: Ctx) -> None:
             console.print(f"[green]✔[/green] {role}: {T.binary_of(ts.roles[role])}")
     if bad:
         console.print("[dim]`q3tui tools init` writes a tools.json to start from[/dim]")
-        raise SystemExit(1)
-
-
-@main.command("confirm-properties")
-@click.option("--include-vacuous", is_flag=True, help="Also confirm assertions that never fired in the smoke run.")
-@pass_ctx
-def confirm_properties_cmd(c: Ctx, include_vacuous: bool) -> None:
-    """VLSIT flow: confirm every pending SVA assertion at once (the review of Gate 3b, in bulk)."""
-    from q3tui.core.ops import Ops
-
-    console.print(Ops(c.engine()).confirm_properties(include_vacuous))
-
-
-@main.command("sign")
-@click.argument("reqs", nargs=-1)
-@click.option("--all-ready", is_flag=True, help="Sign every requirement whose conditions 1–5 hold (what the RTM calls `pending`).")
-@click.option("--withdraw", is_flag=True, help="Withdraw the sign-off instead.")
-@click.option("-m", "--note", default="", help="A note recorded with each sign-off.")
-@pass_ctx
-def sign_cmd(c: Ctx, reqs: tuple[str, ...], all_ready: bool, withdraw: bool, note: str) -> None:
-    """VLSIT flow: sign requirements off in the RTM (a human action — typing this command is the signature).
-
-    `q3tui sign REQ-001 REQ-002`, or `q3tui sign --all-ready`. A requirement that is not ready is refused with its reasons."""
-    from q3tui.core.ops import Ops
-
-    ops = Ops(c.engine())
-    names = list(reqs)
-    if all_ready:
-        names += [r["req_id"] for r in ops.rtm() if r["status"] == "pending"]
-    if not names:
-        raise click.UsageError("name requirements (REQ-001 …) or use --all-ready (none is ready right now)" if all_ready else "name requirements (REQ-001 …) or use --all-ready")
-    failed = 0
-    for rid in names:
-        try:
-            console.print(ops.sign_req(rid, not withdraw, note))
-        except Exception as exc:  # noqa: BLE001 - one refused requirement must not hide the others
-            failed += 1
-            err_console.print(f"[red]✖[/red] {rid}: {exc}")
-    if failed:
         raise SystemExit(1)
 
 

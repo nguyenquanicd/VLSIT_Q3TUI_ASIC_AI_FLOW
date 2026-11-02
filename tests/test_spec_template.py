@@ -236,7 +236,7 @@ def test_everything_that_shows_the_sections_uses_the_flows_template(tmp_path):
     from q3tui.core.project import Project
     from q3tui.steps.spec.sections import section_states
 
-    (tmp_path / "q3tui.yaml").write_text("pipeline:\n  flow: vlsit\n")
+    (tmp_path / "q3tui.yaml").write_text("pipeline:\n  flow: spec\n")
     (tmp_path / "spec").mkdir()
     (tmp_path / "spec" / "spec.md").write_text("# T\n\n<!-- section: overview -->\n## 1. Overview\ntext\n\n<!-- section: interface -->\n## 2. Interface\ni_clk\n")
     eng = Engine(Project.open(tmp_path))

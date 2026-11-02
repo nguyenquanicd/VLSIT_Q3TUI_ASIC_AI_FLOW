@@ -38,6 +38,7 @@ class ToolResult:
     diagnostics: list[ToolDiagnostic] = field(default_factory=list)
     timed_out: bool = False
     summary: str = ""
+    stopped: bool = False  # killed on the caller's request (`stop`), not judged
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -118,32 +119,134 @@ def run_command(
     timeout_s: int,
     tool_env: ToolEnv | None = None,
     env: dict[str, str] | None = None,
+    stop=None,
 ) -> tuple[int | None, str, float, bool]:
-    """Run a tool, tee combined output to log_path. Returns (rc, output, seconds, timed_out)."""
+    """Run a tool, combined output streamed to log_path (repeated lines and the middle of a huge output left out,
+    with a note saying so). Returns (rc, output = the log, seconds, timed_out); a timeout kills the whole process tree, and so
+    does `stop` (a threading.Event) once it is set: rc None, not timed out."""
+    import collections
+    import signal
+    import threading
+
     workdir.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     argv = tool_env.wrap(cmd) if tool_env else cmd
     start = time.monotonic()
-    try:
-        proc = subprocess.run(
-            argv,
-            cwd=workdir,
-            env={**os.environ, **(env or {})},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            timeout=timeout_s,
-        )
-        rc, out, timed_out = proc.returncode, proc.stdout, False
-    except subprocess.TimeoutExpired as exc:
-        out = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace")
-        rc, timed_out = None, True
-    except FileNotFoundError as exc:
-        rc, out, timed_out = 127, f"command not found: {exc.filename}\n", False
+    with open(log_path, "wb") as log:
+        log.write(f"$ {shlex.join(cmd)}\n".encode())
+        try:
+            proc = subprocess.Popen(argv, cwd=workdir, env={**os.environ, **(env or {})}, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+        except FileNotFoundError as exc:
+            log.write(f"command not found: {exc.filename}\n".encode())
+            rc, timed_out = 127, False
+        else:
+            seen: dict[bytes, int] = {}
+            tail: collections.deque[bytes] = collections.deque()
+            st = {"written": 0, "tail": 0, "omitted": 0, "repeats": 0}
+
+            def pump() -> None:
+                for line in iter(proc.stdout.readline, b""):
+                    key = line[:512]
+                    n = seen.get(key, 0)
+                    if n or len(seen) < _LOG_DISTINCT:
+                        seen[key] = n + 1
+                    if n >= LOG_REPEAT_KEEP:
+                        st["repeats"] += 1
+                    elif st["written"] < LOG_HEAD_BYTES:
+                        log.write(line)
+                        st["written"] += len(line)
+                    else:
+                        tail.append(line)
+                        st["tail"] += len(line)
+                        while st["tail"] > LOG_TAIL_BYTES:
+                            st["tail"] -= len(dropped := tail.popleft())
+                            st["omitted"] += len(dropped)
+
+            reader = threading.Thread(target=pump, daemon=True)
+            reader.start()
+            stopped = False
+            try:
+                rc, timed_out = _wait(proc, timeout_s, stop), False
+            except (subprocess.TimeoutExpired, _Stopped) as why:
+                rc, timed_out, stopped = None, isinstance(why, subprocess.TimeoutExpired), isinstance(why, _Stopped)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait()
+            left = _reap_group(proc.pid)  # (what the tool started and left running: a server whose client crashed, a background job)
+            reader.join(timeout=30)
+            if st["omitted"]:
+                log.write(f"\n[q3tui: {st['omitted']} bytes of output left out here]\n".encode())
+            log.writelines(tail)
+            if st["repeats"]:
+                top = sorted(((k, v) for k, v in seen.items() if v > LOG_REPEAT_KEEP), key=lambda kv: -kv[1])[:5]
+                log.write(f"\n[q3tui: {st['repeats']} repeated line(s) left out after {LOG_REPEAT_KEEP} copies each: ".encode()
+                          + b"; ".join(k.rstrip(b"\n")[:120] + f" x{v}".encode() for k, v in top) + b"]\n")
+            if timed_out:
+                log.write(f"\n[q3tui: killed after {timeout_s} s (timeout)]\n".encode())
+            if stopped:
+                log.write(b"\n[q3tui: stopped (the run no longer needed it)]\n")
+            if left:
+                log.write(f"\n[q3tui: {left} process(es) the tool left running were stopped]\n".encode())
     elapsed = time.monotonic() - start
     log_path.write_text(f"$ {shlex.join(cmd)}\n{out}")
     return rc, out, elapsed, timed_out
+
+
+def _reap_group(pgid: int, grace_s: float = 3.0) -> int:
+    """Stop what is left of a tool's process group once the tool is done (it runs in a session of its own): VC Static's server kept 25 GB after its shell crashed (rv32iv_sm). Gently first, then for sure. Returns how many were left."""
+    import signal
+
+    def alive() -> list[int]:
+        out = []
+        for d in Path("/proc").iterdir() if Path("/proc").is_dir() else []:
+            if d.name.isdigit():
+                try:
+                    if os.getpgid(int(d.name)) == pgid:
+                        out.append(int(d.name))
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+        return out
+
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return 0
+    left = len(alive()) or 1
+    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 1.0)):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return left
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError):
+                return left
+            time.sleep(0.1)
+    return left
+
+
+class _Stopped(Exception):
+    pass
+
+
+def _wait(proc, timeout_s: int, stop) -> int:
+    """proc.wait(timeout_s), and _Stopped as soon as `stop` is set."""
+    if stop is None:
+        return proc.wait(timeout=timeout_s)
+    end = time.monotonic() + timeout_s
+    while True:
+        try:
+            return proc.wait(timeout=max(0.0, min(0.5, end - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= end:
+                raise
+            if stop.is_set():
+                raise _Stopped from None
 
 
 def compile_settled(tool, request, workdir: Path):

@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from textual.suggester import Suggester
-
 
 @dataclass(frozen=True)
 class Command:
@@ -22,16 +20,20 @@ ON_OFF = (("on", "off"), ("--save",))
 COMMANDS: dict[str, Command] = {
     "run": Command("[from] [to]", "run the pipeline (optionally a range of steps)", ("step", "step")),
     "stop": Command("", "stop the running step, else the assistant's reply (Esc also stops the reply)"),
+    "auto": Command("[stop]", "full unattended run in the background: spec → rtl → dv → sanity → fpga (pipeline.chain) until each passed with the "
+                    "RTL as it is at the end — a flow that changed the RTL makes the ones before run again", (("stop",),)),
     "approve": Command("<step>|all [--force]", "approve a review gate, or every gate waiting for review", ("gate", ("--force",))),
     "change": Command("<step> <text>", "queue a change request for a step", ("step",)),
     "answer": Command("<id> <text> | all", "answer an open question, or `all`: every open question takes its default", ("question",)),
     "gate": Command("<step> [mode] [--session]", "gate mode of a step: human | auto | auto_answer | none (no mode: pick one)",
                     ("gate", ("human", "auto", "auto_answer", "none"), ("--session",))),
-    "flow": Command("", "flow editor: add / remove / move steps; deps, gate, view, pass conditions, notes (key F)"),
+    "flow": Command("[name]", "switch to another flow of this project (no name: pick one; key F)", ("flow",)),
+    "flowedit": Command("", "flow editor: add / remove / move steps; deps, gate, view, pass conditions, notes"),
     "skill": Command("", "skill editor: read and edit a step's skill.md — settings, notes, stage system prompts (key K)"),
     "prompts": Command("", "prompt editor: read the built-in system prompt of a step / stage, add or replace it (key P)"),
     "step": Command("<step> view|pass|notes [text] [--session]", "customise a step: files to show, pass conditions (a ;; b), notes for its LLM tasks",
                     ("step", ("view", "pass", "notes"), ("--session",))),
+    "act": Command("<action> [key=value …]", "run an action of the flow's add-on (e.g. fpga: sdc_set key=clock.i_clk.freq_mhz value=200)", ("action",)),
     "gates": Command("", "every review gate with its mode and state"),
     "reset": Command("<step>|all [--only]", "clear a step's outputs (and the steps after it), or everything", ("step_all", ("--only",))),
     "model": Command("[id] [--save]", "switch the LLM model (no id: the settings' LLM tab)", ("model", ("--save",))),
@@ -39,18 +41,18 @@ COMMANDS: dict[str, Command] = {
     "specreview": Command("on|off [--save]", "spec self-review after drafting", ON_OFF),
     "autoapprove": Command("on|off [--save]", "approve review gates automatically (blocking questions still stop)", ON_OFF),
     "autoanswer": Command("on|off [--save]", "unattended: approve gates, answer questions with defaults, accept proposals", ON_OFF),
-    "autoconfirm": Command("on|off [--save]", "confirm a step's own reviewable items (SVA assertions, flagged requirements) without "
+    "autoconfirm": Command("on|off [--save]", "confirm a step's own reviewable items (flagged requirements, parameters) without "
                            "asking; gates still stop for Approve", ON_OFF),
-    "parallel": Command("on|off [--multi-agent|--shared] [--save]",
-                        "vlsit: run rtl (lint+synth) and tb together instead of in sequence; --multi-agent: tb gets its own LLM session",
-                        (("on", "off"), ("--multi-agent", "--shared", "--save"), ("--save",))),
     "status": Command("", "print every step's status"),
     "open": Command("<file>", "show a file in the step view", ("file",)),
     "cost": Command("[reset]", "show (or clear) the LLM cost", (("reset",),)),
+    "tool": Command("<role> timeout_s|env|modules|cmd <value>", "change a tool role in config/tools.json (value: JSON or text)",
+                    (None, ("timeout_s", "env", "modules", "cmd"))),
     "settings": Command("[tab]", "settings dialog: general, gates, llm, models (per step), spec, rtl, tb",
                         (("general", "gates", "llm", "models", "spec", "rtl", "tb"),)),
     "stats": Command("[reset]", "usage statistics: tokens per model / step / stage, cost, time (reset: start over)",
                      (("reset",),)),
+    "history": Command("", "the project's versions (one per finished step, and per flow that passed): what each changed, restore (key H)"),
     "newchat": Command("", "start a new assistant conversation"),
     "help": Command("", "keys and commands"),
     "quit": Command("", "leave the TUI"),
@@ -110,13 +112,3 @@ def hint(value: str, source: Source) -> str:
     found = candidates(value, source)
     return f"{usage}   ▸ {' · '.join(found[:12])}{' …' if len(found) > 12 else ''}" if found else usage
 
-
-class CommandSuggester(Suggester):
-    """Ghost-text completion for slash commands; accept with Tab or →."""
-
-    def __init__(self, source: Source) -> None:
-        super().__init__(use_cache=False, case_sensitive=True)
-        self.source = source
-
-    async def get_suggestion(self, value: str) -> str | None:
-        return complete(value, self.source)

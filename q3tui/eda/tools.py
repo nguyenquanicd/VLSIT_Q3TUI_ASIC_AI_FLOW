@@ -1,7 +1,7 @@
 """Tools by role, described in a file (docs/spec/flows.md "Tools").
 
-`tools.json` / `tools.yaml` (project root, or `tools.file`, or `$Q3TUI_HOME/`) — or `tools.roles:` in q3tui.yaml —
-names the tools a flow uses: a role (`lint`, `synth`, `sim`, `mutate`, …) → the command line with placeholders and
+The project's `config/tools.json` (or `tools.yaml`; `tools.file` points elsewhere) — or `tools.roles:` in q3tui.yaml — is the one
+place that names the tools every flow uses (users write it; `q3tui tools init` starts it from the presets): a role (`lint`, `synth`, `sim`, `mutate`, …) → the command line with placeholders and
 how to read its log. Steps run a role with `run_role` (command and log parsing are code; the LLM gets the diagnostics
 as ground truth) and stages that may run a tool themselves get `describe_for_llm`.
 
@@ -32,7 +32,7 @@ def tools_file(cfg: Config, project_root: Path) -> Path | None:
             raise ToolUnavailable(f"tools file '{cfg.tools.file}' not found")
         return p
     home = Path(os.environ.get("Q3TUI_HOME") or "~/.q3tui").expanduser()
-    for base in (project_root, home):
+    for base in (project_root / cfg.project.config_dir, home):
         for name in FILE_NAMES:
             if (base / name).is_file():
                 return base / name
@@ -64,25 +64,23 @@ class ToolSet:
 
     def role(self, name: str) -> ToolRole:
         if name not in self.roles:
-            raise ToolUnavailable(f"no tool for role '{name}': describe it in tools.json (roles: {{{name}: {{cmd: …}}}}) "
-                                  f"or tools.roles in q3tui.yaml; known roles: {', '.join(self.roles) or 'none'}")
+            raise ToolUnavailable(f"no tool for role '{name}': describe it in config/tools.json (roles: {{{name}: {{cmd: …}}}}; "
+                                  f"`q3tui tools init` writes one to start from) or tools.roles in q3tui.yaml; known roles: {', '.join(self.roles) or 'none'}")
         return self.roles[name]
 
 
 def load_tools(cfg: Config, project_root: Path) -> ToolSet:
-    """The roles of the tools file overlaid by the inline `tools.roles`."""
+    """The roles of the tools file overlaid by the inline `tools.roles`: a project's roles are exactly its own, whatever flows are
+    installed (a role nothing configures is reported as not configured, never filled in)."""
     roles: dict[str, ToolRole] = {}
     source = "q3tui.yaml"
     setup, modules, init, timeout = cfg.tools.setup_script, list(cfg.tools.modules), cfg.tools.modules_init, cfg.tools.timeout_s
     path = tools_file(cfg, project_root)
     if path is None and not cfg.tools.roles:
-        # nothing configured anywhere (no tools.json in the project or ~/.q3tui, no tools.roles): the Synopsys preset — the
-        # flows then run on a Synopsys site without a setup step; `q3tui tools init` copies it to edit, another tool set needs
-        # its own tools.json
-        path = PRESET_DIR / "synopsys.json"
+        source = "nothing (no config/tools.json: `q3tui tools init` writes one to start from)"
     if path is not None:
         data = load_file(path)
-        source = str(path) if path.parent != PRESET_DIR else "built-in synopsys preset (no tools.json found; `q3tui tools init` copies it)"
+        source = str(path)
         try:
             roles = {n: ToolRole.model_validate(r) for n, r in (data.get("roles") or {}).items()}
         except Exception as exc:  # noqa: BLE001
@@ -103,15 +101,29 @@ def presets() -> list[str]:
     return sorted(p.stem for p in PRESET_DIR.glob("*.json"))
 
 
-def write_preset(project_root: Path, preset: str = "synopsys", force: bool = False) -> Path:
-    """`tools.json` for a tool set (docs/spec/flows.md "Tools"): the project's copy to edit (modules, library paths)."""
+def preset_data(preset: str = "synopsys") -> dict:
+    """What `tools init` writes: the preset (lint / synth / sim / run), plus the roles the flows use that it does not have (`presets/flows/*.json`:
+    Verible, CSR generator, Vivado / Yosys / nextpnr, Design Compiler / Formality, VC Static, the dv flow's UVM roles)."""
     src = PRESET_DIR / f"{preset}.json"
     if not src.is_file():
         raise ToolUnavailable(f"no tools preset '{preset}' (presets: {', '.join(presets()) or 'none'})")
-    dest = project_root / "tools.json"
+    data = json.loads(src.read_text())
+    data.pop("_comment", None)
+    roles = data.setdefault("roles", {})
+    for f in sorted((PRESET_DIR / "flows").glob("*.json")):
+        for name, role in (json.loads(f.read_text()).get("roles") or {}).items():
+            roles.setdefault(name, role)
+    return data
+
+
+def write_preset(config_dir: Path, preset: str = "synopsys", force: bool = False) -> Path:
+    """`config/tools.json` for a tool set (docs/spec/flows.md "Tools"): the project's copy to edit (modules, library paths); every flow reads only this."""
+    data = preset_data(preset)
+    dest = config_dir / "tools.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and not force:
         raise ToolUnavailable(f"{dest.name} exists (use --force to overwrite)")
-    dest.write_text(src.read_text())
+    dest.write_text(json.dumps(data, indent=2) + "\n")
     return dest
 
 
@@ -167,22 +179,25 @@ def available(tools: ToolSet, name: str) -> bool:
     binary = binary_of(role)
     if "{" in binary:  # built by an earlier step (e.g. `{workdir}/simv` from the compile): it cannot be looked up now
         return True
-    return tools.env.which(binary) is not None or Path(binary).is_file()
+    env = ToolEnv(tools.env.setup_script, tuple(dict.fromkeys([*tools.env.modules, *role.modules])), tools.env.modules_init)  # as run_role
+    return env.which(binary) is not None or Path(binary).is_file()
 
 
-def run_role(tools: ToolSet, name: str, workdir: Path, variables: dict[str, object], log_name: str | None = None) -> ToolResult:
-    """Run the tool of a role: command from the tools file, log kept in `workdir`, diagnostics parsed by code."""
+def run_role(tools: ToolSet, name: str, workdir: Path, variables: dict[str, object], log_name: str | None = None, stop=None) -> ToolResult:
+    """Run the tool of a role: command from the tools file, log kept in `workdir`, diagnostics parsed by code. `stop` (a threading.Event):
+    set, it kills the tool (`stopped` in the result)."""
     role = tools.role(name)
     argv = render(role, variables)
     cwd = Path(role.cwd.format(**{k: v for k, v in variables.items() if isinstance(v, (str, Path))})) if role.cwd else workdir
     env = ToolEnv(tools.env.setup_script, tuple(dict.fromkeys([*tools.env.modules, *role.modules])), tools.env.modules_init)
     log = workdir / (log_name or f"{name}.log")
-    rc, out, secs, timed_out = run_command(argv, cwd, log, role.timeout_s or tools.timeout_s, env, role.env)
+    rc, out, secs, timed_out = run_command(argv, cwd, log, role.timeout_s or tools.timeout_s, env, role.env, stop=stop)
+    stopped = rc is None and not timed_out and stop is not None and stop.is_set()
     diags = parse_log(role.parse, out)
     ok = (rc in role.ok_returncodes) and not timed_out and not any(d.severity == "error" for d in diags)
     n_err, n_warn = sum(d.severity == "error" for d in diags), sum(d.severity == "warning" for d in diags)
     return ToolResult(name, binary_of(role), ok, argv, rc, secs, str(log), diags, timed_out,
-                      f"{name}: rc={rc}, {n_err} error(s), {n_warn} warning(s)")
+                      f"{name}: rc={rc}, {n_err} error(s), {n_warn} warning(s)", stopped)
 
 
 class ToolBroken(StepFailed):
@@ -230,6 +245,28 @@ def describe_for_llm(tools: ToolSet, names: list[str] | None = None) -> str:
     return "\n".join(lines)
 
 
+def status_text(tools: ToolSet, names: list[str] | None = None) -> str:
+    """Which tool roles exist and whether each is found, for an LLM stage (and the TUI): a role nothing configures, or whose binary is missing,
+    is said so, and when none can run the answer says that no tool is available (never an empty list a stage could read as 'nothing needed')."""
+    names = list(names or tools.roles)
+    ok, lines = [], []
+    for n in names:
+        r = tools.roles.get(n)
+        if r is None:
+            lines.append(f"- {n}: NOT AVAILABLE (not configured in config/tools.json)")
+            continue
+        try:
+            found = available(tools, n)
+        except Exception:  # noqa: BLE001 - a role that cannot be checked is not found
+            found = False
+        if found:
+            ok.append(n)
+        extra = f" (supports: {', '.join(r.supports)})" if r.supports else ""
+        lines.append(f"- {n}{extra}: " + (f"available: `{r.cmd}`" + (f" — {r.description}" if r.description else "") if found else f"NOT AVAILABLE (`{binary_of(r)}` not found)"))
+    head = "" if ok else "No tools are available" + (f" for: {', '.join(names)}" if names else "") + ". Do not guess results a tool would give; say so in your answer.\n"
+    return head + "\n".join(lines)
+
+
 # -- log parsers -----------------------------------------------------------------------------------
 
 _LOC = r"(?P<file>[^\s:]+\.\w+):(?P<line>\d+)(?::\d+)?"
@@ -241,14 +278,18 @@ _SIM_FAIL = re.compile(r"(?:^|\s)(?P<sev>ERROR|FATAL|FAIL(?:ED)?)\b[:\s]*(?P<msg
 
 
 def _sev(word: str) -> str:
-    return "error" if word.lower() in ("error", "fatal", "sorry", "fail", "failed") else "warning"
+    # (Icarus' "sorry: … not currently supported (…)" is a note: it goes on, and counts its real errors on their own lines)
+    return "error" if word.lower() in ("error", "fatal", "fail", "failed") else "warning"
+
+
+_VERILATOR_SUMMARY = re.compile(r"^%Error: Exiting due to \d+ (?:warning|error)\(s\)")
 
 
 def parse_verilator(text: str) -> list[ToolDiagnostic]:
     out = []
     for line in text.splitlines():
         m = _VERILATOR.match(line)
-        if m:
+        if m and not _VERILATOR_SUMMARY.match(line):  # (the count of the findings above, in no file: not a finding of its own)
             out.append(ToolDiagnostic(_sev(m["sev"]), m["code"] or m["sev"].upper(), m["msg"][:500], m["file"], int(m["line"]) if m["line"] else None))
     return out
 
@@ -284,6 +325,21 @@ def parse_dc(text: str) -> list[ToolDiagnostic]:
     return out
 
 
+_VIVADO = re.compile(r"^(?P<sev>ERROR|CRITICAL WARNING|WARNING):\s*\[(?P<code>[\w -]+)\]\s*(?P<msg>.*)$")
+
+
+def parse_vivado(text: str) -> list[ToolDiagnostic]:
+    """Vivado: `ERROR: [Synth 8-439] …`, `CRITICAL WARNING: [Constraints 18-4427] …`, `WARNING: [Synth 8-3331] …`.
+    The code of a critical warning is "CRITICAL WARNING" (a warning, but one a report can list apart)."""
+    out = []
+    for line in text.splitlines():
+        m = _VIVADO.match(line)
+        if m:
+            out.append(ToolDiagnostic("error" if m["sev"] == "ERROR" else "warning",
+                                      m["sev"] if m["sev"] == "CRITICAL WARNING" else m["code"], m["msg"][:500]))
+    return out
+
+
 def parse_vcs(text: str) -> list[ToolDiagnostic]:
     from q3tui.eda.synopsys import parse_vcs_log
 
@@ -302,7 +358,37 @@ def parse_generic(text: str, patterns: dict | None = None) -> list[ToolDiagnosti
     return out
 
 
-PARSERS = {"vcs": parse_vcs, "dc": parse_dc, "verilator": parse_verilator, "iverilog": parse_iverilog, "yosys": parse_yosys}
+_VERIBLE = re.compile(rf"^(?:\S+\.\w+:\s+)?(?P<file>[^\s:]+\.\w+):(?P<line>\d+):(?P<col>\d+)(?:-\d+)?:\s*(?P<msg>.*?)\s*$")  # (the formatter prefixes `file: `)
+_VERIBLE_TOOL = re.compile(r"^(?:ERROR:|[EF]\d{4}\s+\S+\s+\d+\s+\S+\]\s)\s*(?P<msg>.*)$")
+_VERIBLE_RULE = re.compile(r"\s*\[(?P<rule>[a-z][a-z0-9]*(?:-[a-z0-9]+)*)\]\s*$")
+
+
+def parse_verible(text: str) -> list[ToolDiagnostic]:
+    """verible-verilog-lint / -format: `file:line:col: message [Style: section] [rule-name]`. A finding that names a rule is a
+    warning (code = the rule); a syntax error (no rule) is an error with its file; a refusal of the tool itself (`ERROR: Illegal value …`,
+    `Fatal error: …`) is an error with code TOOL and no file. (Seen with a real Verible: lint exits 1 on findings, 2 on a fatal config error;
+    the formatter exits 0 on a syntax error and only prints it.)"""
+    out = []
+    for line in text.splitlines():
+        t = _VERIBLE_TOOL.match(line)
+        if t:  # the tool itself refused (an unknown flag, a parameter out of range): no file, nothing about the design
+            out.append(ToolDiagnostic("error", "TOOL", t["msg"][:500]))
+            continue
+        m = _VERIBLE.match(line)
+        if not m:
+            continue
+        msg = m["msg"]
+        rule = _VERIBLE_RULE.search(msg)
+        if rule:
+            text = re.sub(r"\s*\[Style:[^\]]*\]", "", _VERIBLE_RULE.sub("", msg))  # (the `[Style: section]` tag is the rule's doc section)
+            out.append(ToolDiagnostic("warning", rule["rule"], text[:500], m["file"], int(m["line"])))
+        elif "syntax error" in msg.lower() or msg.lower().startswith(("error", "lex")):
+            out.append(ToolDiagnostic("error", "SYNTAX", msg[:500], m["file"], int(m["line"])))
+    return out
+
+
+PARSERS = {"vcs": parse_vcs, "dc": parse_dc, "verilator": parse_verilator, "iverilog": parse_iverilog, "yosys": parse_yosys, "vivado": parse_vivado,
+           "verible": parse_verible}
 
 
 def parse_log(parse: str | dict, text: str) -> list[ToolDiagnostic]:
@@ -312,4 +398,4 @@ def parse_log(parse: str | dict, text: str) -> list[ToolDiagnostic]:
         return PARSERS[parse](text)
     if parse in ("generic", "", None):
         return parse_generic(text)
-    raise ToolUnavailable(f"unknown log parser '{parse}' (vcs, dc, verilator, yosys, iverilog, generic, or {{error: [...], warning: [...]}})")
+    raise ToolUnavailable(f"unknown log parser '{parse}' (vcs, dc, verilator, yosys, iverilog, vivado, verible, generic, or {{error: [...], warning: [...]}})")

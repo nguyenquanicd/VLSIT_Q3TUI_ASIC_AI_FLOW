@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static
+from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.message import Message
+from textual.widgets import Button, Input, Label, Static, TextArea
 
+from q3tui.tui.dialog import Dialog
 from q3tui.tui.picker import Choice, ChoiceResult, ChoiceScreen  # noqa: F401 - re-exported with the other screens
 
 
@@ -39,7 +41,7 @@ class GateScreen(ChoiceScreen):
         self.dismiss(result.value if result is not None and result.value else "later")
 
 
-class TextPromptScreen(ModalScreen[str | None]):
+class TextPromptScreen(Dialog[str | None]):
     """Text input: an answer, a change request, guidance (multi-line: Enter = new line, ctrl+s
     submits) or a short value like a title (one line: Enter submits). The body (e.g. the
     question) is shown in full, line breaks kept, scrollable."""
@@ -102,7 +104,7 @@ from q3tui.core.settings import EFFORTS, MODELS  # noqa: E402 - one list for the
 _NONE = "__none__"
 
 
-class SettingsScreen(ModalScreen[dict | None]):
+class SettingsScreen(Dialog[dict | None]):
     """Settings in tabs (General, LLM, one per step), built from q3tui/core/settings.py."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("ctrl+s", "apply", "Apply")]
@@ -118,9 +120,9 @@ class SettingsScreen(ModalScreen[dict | None]):
     SettingsScreen #settings-error { color: $error; height: auto; }
     """
 
-    def __init__(self, values: dict, initial_tab: str | None = None, gates: list[tuple[str, str, str]] | None = None):
+    def __init__(self, values: dict, initial_tab: str | None = None, gates: list[tuple[str, str, str]] | None = None, tabs=None):
         super().__init__()
-        self.values, self.initial_tab = values, initial_tab
+        self.values, self.initial_tab, self.tabs = values, initial_tab, tabs
         self.gates = gates or []  # (step, title, mode) of the flow's steps: the Gates tab
 
     def compose(self) -> ComposeResult:
@@ -132,7 +134,7 @@ class SettingsScreen(ModalScreen[dict | None]):
         with Vertical(id="settings-box", classes="modal-box"):
             yield Label("Settings", classes="modal-title")
             with TabbedContent(initial=f"set-tab-{self.initial_tab}" if self.initial_tab else ""):
-                for tab in TABS:
+                for tab in self.tabs or TABS:
                     with TabPane(tab.title, id=f"set-tab-{tab.id}"):
                         with VerticalScroll():
                             for st in tab.settings:
@@ -203,13 +205,18 @@ class SettingsScreen(ModalScreen[dict | None]):
         return Input(value="" if value is None else str(value), type=kind, id=wid,
                      placeholder="empty = none" if st.nullable else "")
 
+    def _by_path(self) -> dict:
+        from q3tui.core.settings import TABS
+
+        return {s.path: s for t in (self.tabs or TABS) for s in t.settings}
+
     def _read(self) -> dict:
         from textual.widgets import Select, SelectionList, Switch
 
-        from q3tui.core.settings import BY_PATH
+        from q3tui.core.settings import TABS
 
         out = {}
-        for path, st in BY_PATH.items():
+        for path, st in self._by_path().items():
             if st.hidden:
                 out[path] = self.values.get(path)
                 continue
@@ -229,11 +236,14 @@ class SettingsScreen(ModalScreen[dict | None]):
     def action_apply(self) -> None:
         from textual.widgets import Checkbox
 
-        from q3tui.core.settings import BY_PATH, coerce
+        from q3tui.core.settings import coerce
 
         raw = self._read()
         try:
-            values = {p: coerce(BY_PATH[p], v) for p, v in raw.items()}
+            by_path = self._by_path()
+            # a field left empty that had no value is unchanged (an option whose default lives elsewhere), not a missing value
+            values = {p: None if self.values.get(p) is None and (v is None or (isinstance(v, str) and not v.strip()))
+                      else coerce(by_path[p], v) for p, v in raw.items()}
         except ValueError as exc:
             self.query_one("#settings-error", Static).update(str(exc))
             return
@@ -254,7 +264,7 @@ class SettingsScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class ModelScreen(ModalScreen[dict | None]):
+class ModelScreen(Dialog[dict | None]):
     """Pick LLM model + effort; optionally remember in the project's q3tui.yaml."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -343,10 +353,74 @@ class ResetScreen(ChoiceScreen):
         self.dismiss(v if v in ("step", "all") else None)
 
 
-class EditScreen(ModalScreen[dict | None]):
+class PickToolsScreen(Dialog[list[int] | None]):
+    """Add tools: every tool found at a path as a checkbox row (all checked); the highlighted one shows its command and what code doubts about it.
+
+    `items`: [(label, detail)]. ctrl+s dismisses with the indexes checked, Esc with None. Space toggles, `a` checks / unchecks all."""
+
+    BINDINGS = [Binding("ctrl+s", "add", "Add"), Binding("escape", "cancel", "Cancel"), Binding("a", "toggle_all", "All / none")]
+    DEFAULT_CSS = """
+    PickToolsScreen { align: center middle; }
+    PickToolsScreen .modal-box { width: 120; max-height: 90%; }
+    PickToolsScreen SelectionList { height: auto; max-height: 16; }
+    PickToolsScreen #pick-detail { margin-top: 1; height: auto; max-height: 10; color: $text-muted; }
+    """
+
+    def __init__(self, title: str, items: list[tuple[str, str]], hint: str = ""):
+        super().__init__()
+        self.title_text, self.items, self.hint = title, items, hint
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import SelectionList
+
+        with Vertical(classes="modal-box"):
+            yield Label(self.title_text, classes="modal-title")
+            yield SelectionList(*[(label, i, True) for i, (label, _d) in enumerate(self.items)], id="pick-list")
+            yield Static("", id="pick-detail", markup=False)
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Add checked (ctrl+s)", id="add", variant="success")
+                yield Button("Cancel (esc)", id="cancel")
+            yield Static(self.hint or "space checks / unchecks · a all / none · ctrl+s adds the checked · Esc cancels", classes="modal-hint")
+
+    def on_mount(self) -> None:
+        from textual.widgets import SelectionList
+
+        sel = self.query_one(SelectionList)
+        sel.focus()
+        self._show(0)
+
+    def _show(self, i: int | None) -> None:
+        self.query_one("#pick-detail", Static).update(self.items[i][1] if i is not None and 0 <= i < len(self.items) else "")
+
+    def on_selection_list_selection_highlighted(self, event) -> None:
+        self._show(event.selection_index)
+
+    def action_toggle_all(self) -> None:
+        from textual.widgets import SelectionList
+
+        sel = self.query_one(SelectionList)
+        (sel.deselect_all if len(sel.selected) == len(self.items) else sel.select_all)()
+
+    def action_add(self) -> None:
+        from textual.widgets import SelectionList
+
+        self.dismiss(sorted(self.query_one(SelectionList).selected))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.action_add() if event.button.id == "add" else self.action_cancel()
+
+
+class EditScreen(Dialog[dict | None]):
     """Small form: fields are (key, label, value, kind[, options]) with kind line | text | choice.
 
-    ctrl+s saves, Esc cancels. Returns {key: value} for all fields.
+    ctrl+s saves, Esc cancels. Returns {key: value} for all fields. `buttons`: [(id, label, fn(screen))] extra buttons next to Save (a flow's
+    helper that works while the form is open: an estimate, a lookup); `fn` may call `screen.set_status(text)` (also from a worker) to answer in the form.
+    `on_change`: {field key: fn(screen, value)} called when a choice field changes — a field that depends on another (a technology, then its
+    corners) answers with `screen.set_choices(key, options, value)`.
     """
 
     BINDINGS = [Binding("ctrl+s", "save", "Save"), Binding("escape", "cancel", "Cancel")]
@@ -358,9 +432,10 @@ class EditScreen(ModalScreen[dict | None]):
     EditScreen .field-label { color: $text-muted; margin-top: 1; }
     """
 
-    def __init__(self, title: str, fields: list[tuple], hint: str = ""):
+    def __init__(self, title: str, fields: list[tuple], hint: str = "", buttons: list[tuple] | tuple = (), on_change: dict | None = None):
         super().__init__()
-        self.title_text, self.fields, self.hint = title, fields, hint
+        self.title_text, self.fields, self.hint, self.buttons = title, fields, hint, list(buttons)
+        self.on_change = dict(on_change or {})
 
     def compose(self) -> ComposeResult:
         from textual.containers import VerticalScroll
@@ -382,6 +457,10 @@ class EditScreen(ModalScreen[dict | None]):
             with Horizontal(classes="modal-buttons"):
                 yield Button("Save (ctrl+s)", id="save", variant="success")
                 yield Button("Cancel (esc)", id="cancel")
+                for bid, label, _fn in self.buttons:
+                    yield Button(label, id=bid)
+            if self.buttons:
+                yield Static("", id="edit-status", markup=False)
             yield Static(self.hint or "ctrl+s to save · Esc to cancel", classes="modal-hint")
 
     def on_mount(self) -> None:
@@ -398,7 +477,41 @@ class EditScreen(ModalScreen[dict | None]):
             out[key] = w.text if isinstance(w, TextArea) else (w.value if isinstance(w, (Input, Select)) else None)
         return out
 
+    def set_value(self, key: str, value: str) -> None:
+        """Put a text into an Input / TextArea field (a helper button fills the form: a scan names the technology)."""
+        from textual.widgets import TextArea
+
+        w = self.query_one(f"#f-{key}")
+        if isinstance(w, TextArea):
+            w.text = value
+        elif isinstance(w, Input):
+            w.value = value
+
+    def set_choices(self, key: str, options: list[str], value: str | None = None) -> None:
+        """Replace the options of a choice field (and pick `value`, else the first)."""
+        from textual.widgets import Select
+
+        sel = self.query_one(f"#f-{key}", Select)
+        sel.set_options([(o, o) for o in options])
+        sel.value = value if value in options else options[0]
+
+    def on_select_changed(self, event) -> None:
+        fn = self.on_change.get((event.select.id or "")[2:])
+        if fn is not None and event.value is not None and event.value != getattr(event.select, "_last_notified", None):
+            event.select._last_notified = event.value  # (a repopulated field changes too: a callback runs once per value)
+            fn(self, str(event.value))
+
+    def set_status(self, text: str) -> None:
+        """Answer in the form (the status line under the buttons); a no-op once the form is closed."""
+        if self.is_attached:
+            self.query_one("#edit-status", Static).update(text)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        extra = next((fn for bid, _l, fn in self.buttons if bid == event.button.id), None)
+        if extra is not None:
+            event.stop()
+            extra(self)
+            return
         self.dismiss(self._values() if event.button.id == "save" else None)
 
     def action_save(self) -> None:
@@ -408,60 +521,171 @@ class EditScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class HistoryInput(Input):
-    """Command line with shell-like history: ↑/↓ recall earlier entries (persisted per project)."""
+class HistoryInput(TextArea):
+    """Command line / chat box: Enter sends, Ctrl+J (or Shift+Enter) starts a new line, the box grows with its text. A large paste
+    shows as `[+text N lines]` and is sent in full. Shell-like history: ↑ on the first line / ↓ on the last recall earlier entries
+    (persisted per project); Tab or → accepts a slash-command completion."""
 
     BINDINGS = [Binding("up", "history(-1)", "Previous", show=False), Binding("down", "history(1)", "Next", show=False),
-                Binding("tab", "complete", "Complete", show=False)]
+                Binding("tab", "complete", "Complete", show=False), Binding("ctrl+j,shift+enter", "newline", "New line", show=False)]
     MAX = 200
+    MAX_PASTED = 20          # entries whose pastes the history keeps (older ones are dropped: a paste can be long)
+    PASTE_LINES, PASTE_CHARS = 5, 1000   # a paste above either is shown as a placeholder
 
-    def __init__(self, history_file=None, **kw):
+    class Submitted(Message):
+        """Enter: `value` is the text to act on (pastes in full), `shown` what the box showed, `pastes` its placeholders' texts."""
+
+        def __init__(self, box: HistoryInput, value: str, shown: str, pastes: dict[str, str]) -> None:
+            super().__init__()
+            self.input, self.value, self.shown, self.pastes = box, value, shown, pastes
+
+        @property
+        def control(self) -> HistoryInput:
+            return self.input
+
+    def __init__(self, history_file=None, completions=None, **kw):
+        kw.setdefault("soft_wrap", True)
+        kw.setdefault("highlight_cursor_line", False)
         super().__init__(**kw)
-        self.history_file = history_file
-        self.history: list[str] = self._load()
-        self._pos = len(self.history)  # len(history) = the current draft
-        self._draft = ""
+        self.entries_file = history_file
+        self.completions = completions  # (kind) -> candidates: slash-command completion, as the hint line under the views
+        self.pastes: dict[str, str] = {}  # placeholder -> the pasted text
+        self.entries: list[str | dict] = self._load()  # (not `history`: TextArea's undo)
+        self._pos = len(self.entries)  # len(entries) = the current draft
+        self._draft: tuple[str, dict[str, str]] = ("", {})
 
-    def _load(self) -> list[str]:
+    @property
+    def value(self) -> str:
+        return self.text
+
+    @value.setter
+    def value(self, text: str) -> None:
+        """Replace the text (cursor at its end); pastes whose placeholder is gone are forgotten."""
+        self.pastes = {k: v for k, v in self.pastes.items() if k in text}
+        self.load_text(text)
+        self.move_cursor(self.document.end)
+
+    def expanded(self, text: str | None = None) -> str:
+        """The text with each placeholder replaced by its paste."""
+        text = self.text if text is None else text
+        for token, pasted in self.pastes.items():
+            text = text.replace(token, pasted)
+        return text
+
+    def _load(self) -> list[str | dict]:
         import json
 
         try:
-            data = json.loads(self.history_file.read_text()) if self.history_file and self.history_file.is_file() else []
-            return [str(x) for x in data][-self.MAX:]
+            data = json.loads(self.entries_file.read_text()) if self.entries_file and self.entries_file.is_file() else []
+            return [x if isinstance(x, dict) else str(x) for x in data if isinstance(x, (str, dict))][-self.MAX:]
         except (OSError, ValueError):
             return []
 
-    def remember(self, text: str) -> None:
+    def remember(self, text: str, pastes: dict[str, str] | None = None) -> None:
         import json
 
         text = text.strip()
-        if text and (not self.history or self.history[-1] != text):
-            self.history.append(text)
-            self.history = self.history[-self.MAX:]
-            if self.history_file:
-                self.history_file.parent.mkdir(parents=True, exist_ok=True)
-                self.history_file.write_text(json.dumps(self.history, indent=0))
-        self._pos, self._draft = len(self.history), ""
+        entry: str | dict = {"text": text, "pastes": pastes} if pastes else text
+        if text and (not self.entries or self.entries[-1] != entry):
+            self.entries.append(entry)
+            self.entries = self.entries[-self.MAX:]
+            pasted = [i for i, e in enumerate(self.entries) if isinstance(e, dict)]
+            drop = set(pasted[:-self.MAX_PASTED])
+            self.entries = [e for i, e in enumerate(self.entries) if i not in drop]
+            if self.entries_file:
+                self.entries_file.parent.mkdir(parents=True, exist_ok=True)
+                self.entries_file.write_text(json.dumps(self.entries, indent=0))
+        self._pos, self._draft = len(self.entries), ("", {})
+
+    def action_submit(self) -> None:
+        shown = self.text
+        used = {k: v for k, v in self.pastes.items() if k in shown}
+        self.post_message(self.Submitted(self, self.expanded(shown), shown, used))
+
+    def action_newline(self) -> None:
+        self.insert("\n")
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":  # (TextArea would insert a line break: here Enter sends)
+            event.stop()
+            event.prevent_default()
+            self.action_submit()
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        """The terminal's paste (Ctrl+Shift+V, right click, middle click: bracketed paste)."""
+        event.prevent_default()
+        self.paste(event.text)
+        self.focus()
+
+    def action_paste(self) -> None:
+        """Ctrl+V: the terminal sends it as a key, so only text copied in Q3TUI is there to paste."""
+        if self.app.clipboard:
+            self.paste(self.app.clipboard)
+        else:
+            self.notify("Ctrl+V pastes only text copied in Q3TUI: paste from elsewhere with your terminal's paste (Ctrl+Shift+V)",
+                        severity="warning")
+
+    def paste(self, text: str) -> None:
+        """Insert pasted text at the cursor (terminal line ends made \\n); a large one as a `[+text N lines]` placeholder."""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = text.count("\n") + 1
+        if self.read_only or not text:
+            return
+        if lines > self.PASTE_LINES or len(text) > self.PASTE_CHARS:
+            label = f"{lines} lines" if lines > 1 else f"{len(text)} chars"
+            token, n = f"[+text {label}]", 1
+            while token in self.pastes or token in self.text:
+                n += 1
+                token = f"[+text {label} #{n}]"
+            self.pastes[token] = text
+            text = token
+        self.move_cursor(self.replace(text, *self.selection, maintain_selection_offset=False).end_location)
+
+    def update_suggestion(self) -> None:
+        """Ghost-text completion of a slash command, shown at the end of a one-line text."""
+        from q3tui.tui.commands import complete
+
+        text, suggestion = self.text, ""
+        if self.completions and text.startswith("/") and "\n" not in text and self.selection.is_empty and self.cursor_location == self.document.end:
+            full = complete(text, self.completions) or ""
+            suggestion = full[len(text):] if full.startswith(text) else ""
+        self.suggestion = suggestion
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        self.update_suggestion()
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        self.update_suggestion()
 
     def action_complete(self) -> None:
         """Tab accepts the completion (like →); without one it moves focus as usual."""
-        if self._suggestion and self.cursor_at_end:
-            self.value = self._suggestion
-            self.cursor_position = len(self.value)
+        if self.suggestion:
+            self.insert(self.suggestion)
         else:
             self.screen.focus_next()
 
     def action_history(self, step: int) -> None:
-        if not self.history:
+        row = self.cursor_location[0]
+        if (step < 0 and row > 0) or (step > 0 and row < self.document.line_count - 1):  # inside a multi-line text: move the cursor
+            (self.action_cursor_up if step < 0 else self.action_cursor_down)()
             return
-        if self._pos == len(self.history):
-            self._draft = self.value  # keep what was being typed
-        self._pos = max(0, min(len(self.history), self._pos + step))
-        self.value = self._draft if self._pos == len(self.history) else self.history[self._pos]
-        self.cursor_position = len(self.value)
+        if not self.entries:
+            return
+        if self._pos == len(self.entries):
+            self._draft = (self.text, dict(self.pastes))  # keep what was being typed
+        self._pos = max(0, min(len(self.entries), self._pos + step))
+        entry = self._draft if self._pos == len(self.entries) else self.entries[self._pos]
+        if isinstance(entry, tuple):
+            text, pastes = entry
+        elif isinstance(entry, dict):
+            text, pastes = str(entry.get("text", "")), dict(entry.get("pastes") or {})
+        else:
+            text, pastes = entry, {}
+        self.pastes = pastes
+        self.value = text
 
 
-class StatsScreen(ModalScreen[None]):
+class StatsScreen(Dialog[None]):
     """Usage statistics: tokens per model / step / stage, cost, LLM time, step wall time."""
 
     BINDINGS = [Binding("escape,q", "close", "Close"), Binding("t", "toggle_scope", "All time / this session"),
@@ -574,7 +798,7 @@ class StatsScreen(ModalScreen[None]):
               for r in s.recent])
 
 
-class FlowScreen(ModalScreen[dict | None]):
+class FlowScreen(Dialog[dict | None]):
     """Flow editor: add / remove / reorder steps, and edit each step's dependencies, gate, view globs, pass conditions and notes.
 
     rows: [{step, title (shown), kind, deps, gate (mode | None), view, pass, notes, + whatever the app keeps (label, options…)}].
@@ -771,7 +995,7 @@ class FlowScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class PromptsScreen(ModalScreen[None]):
+class PromptsScreen(Dialog[None]):
     """Prompt editor: pick a step (all its stages) or a stage, read its built-in system prompt, edit your override.
 
     The override is appended to the built-in prompt (mode append) or replaces it (mode replace); empty removes it.
@@ -843,7 +1067,7 @@ class PromptsScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
-class SkillScreen(ModalScreen[None]):
+class SkillScreen(Dialog[None]):
     """Skill editor: pick a step, edit its skill.md — front matter (kind, deps, gate, options, view, pass), notes for its LLM
     tasks, and the `<!-- NAME -->` sections that are its stage system prompts. `get(step) -> {text, file}`, `put(step, text)`."""
 
@@ -908,6 +1132,201 @@ class SkillScreen(ModalScreen[None]):
             self.action_save()
         else:
             self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class DiagramScreen(Dialog[None]):
+    """Diagrams full screen: the whole terminal, scrolled both ways (arrows / h j k l, shift+←/→ a page sideways,
+    Home / End), n / p for the next / previous diagram of the same view."""
+
+    BINDINGS = [
+        Binding("escape,q", "close", "Close"),
+        Binding("n", "move(1)", "Next"),
+        Binding("p", "move(-1)", "Previous"),
+        Binding("h", "pan(-8, 0)", "Left", show=False),
+        Binding("l", "pan(8, 0)", "Right", show=False),
+        Binding("k", "pan(0, -3)", "Up", show=False),
+        Binding("j", "pan(0, 3)", "Down", show=False),
+        Binding("shift+left", "page(-1)", "Page left", show=False),
+        Binding("shift+right", "page(1)", "Page right", show=False),
+    ]
+    DEFAULT_CSS = """
+    DiagramScreen { align: center middle; }
+    DiagramScreen > #dg-box { width: 100%; height: 100%; border: round $accent; background: $surface; padding: 0 1; }
+    DiagramScreen #dg-title { text-style: bold; height: auto; }
+    DiagramScreen #dg-scroll { height: 1fr; overflow: auto auto; background: $boost; }
+    DiagramScreen #dg-scroll > Static { width: auto; height: auto; padding: 0 1; }
+    DiagramScreen #dg-hint { color: $text-muted; height: 1; }
+    """
+
+    def __init__(self, blocks: list[tuple[str, str, str]], index: int = 0):
+        """`blocks`: (code, lang, caption) of every diagram of the view; `index`: the one to show first."""
+        super().__init__()
+        self.blocks, self.index = blocks, max(0, min(index, len(blocks) - 1))
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dg-box"):
+            yield Label("", id="dg-title")
+            with ScrollableContainer(id="dg-scroll"):
+                yield Static("", id="dg-art")
+            yield Static("←/→/↑/↓ or h/l/k/j scroll · shift+←/→ page · Home/End · n/p next/previous diagram · Esc close",
+                         id="dg-hint")
+
+    def on_mount(self) -> None:
+        self._show()
+        self.query_one("#dg-scroll").focus()
+
+    def _show(self) -> None:
+        from q3tui.tui.views import MdCode
+
+        code, lang, caption = self.blocks[self.index]
+        title = f"Diagram {self.index + 1}/{len(self.blocks)}" + (f" — {caption}" if caption else f" ({lang})")
+        self.query_one("#dg-title", Label).update(title)
+        self.query_one("#dg-art", Static).update(MdCode.renderable(code, lang))
+        self.query_one("#dg-scroll").scroll_home(animate=False)
+
+    def action_move(self, step: int) -> None:
+        if len(self.blocks) > 1:
+            self.index = (self.index + step) % len(self.blocks)
+            self._show()
+
+    def action_pan(self, dx: int, dy: int) -> None:
+        sc = self.query_one("#dg-scroll")
+        sc.scroll_to(x=sc.scroll_x + dx, y=sc.scroll_y + dy, animate=False)
+
+    def action_page(self, direction: int) -> None:
+        sc = self.query_one("#dg-scroll")
+        sc.scroll_to(x=sc.scroll_x + direction * max(8, sc.size.width - 8), animate=False)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class HistoryScreen(Dialog[None]):
+    """Q3TUI's own record of the project (core/history.py): the versions, newest first, and the highlighted one: what it changed, or (d)
+    everything since it; r puts files back as they were in it (asks which, then to confirm)."""
+
+    BINDINGS = [Binding("escape,q", "close", "Close"), Binding("d", "toggle_since", "Its changes / since then"), Binding("r", "restore", "Restore")]
+    DEFAULT_CSS = """
+    HistoryScreen #hist-box { width: 95%; height: 90%; }
+    HistoryScreen #hist-main { height: 1fr; }
+    HistoryScreen #hist-list { width: 72; height: 1fr; border: none; padding: 0; background: transparent; }
+    HistoryScreen #hist-detail { width: 1fr; height: 1fr; padding: 0 1; border-left: solid $panel-lighten-2; }
+    """
+    DIFF_LINES = 800
+
+    def __init__(self, ops, restored=None):
+        """`ops`: core.ops.Ops; `restored`: called after files were restored (the app refreshes)."""
+        super().__init__()
+        self.ops, self.restored = ops, restored
+        self.since = False
+        self.versions: list = []
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import VerticalScroll
+        from textual.widgets import OptionList
+
+        with Vertical(id="hist-box", classes="modal-box"):
+            yield Label("History of the project", classes="modal-title")
+            with Horizontal(id="hist-main"):
+                yield OptionList(id="hist-list")
+                with VerticalScroll(id="hist-detail"):
+                    yield Static("", id="hist-text", markup=False)
+            yield Static("↑/↓ a version · d: what it changed / everything since it · r: restore files from it · Esc: close", classes="modal-hint")
+
+    def on_mount(self) -> None:
+        self._load()
+
+    def _load(self) -> None:
+        from rich.text import Text
+        from textual.widgets import OptionList
+        from textual.widgets.option_list import Option
+
+        lst = self.query_one("#hist-list", OptionList)
+        lst.clear_options()
+        self.versions = self.ops.history(limit=300)
+        if not self.versions:
+            self.query_one("#hist-text", Static).update(self.ops.history_text())
+            return
+        for i, v in enumerate(self.versions):
+            t = Text()
+            t.append(f"{v.short} ", "grey50")
+            t.append(f"{v.when[5:]} ", "grey62")
+            t.append(v.title, "bold green" if v.marks else "")
+            if v.marks:
+                t.append(f" [{', '.join(v.marks)}]", "green")
+            lst.add_option(Option(t, id=f"v-{i}"))
+        lst.highlighted = 0
+        lst.focus()
+        self._show(0)
+
+    def on_option_list_option_highlighted(self, event) -> None:
+        event.stop()
+        self._show(event.option_index)
+
+    def _show(self, i: int | None) -> None:
+        from rich.console import Group
+        from rich.syntax import Syntax
+        from rich.text import Text
+
+        if i is None or not 0 <= i < len(self.versions):
+            return
+        v = self.versions[i]
+        head = Text()
+        head.append(f"{v.short}  {v.when}  {v.title}", "bold")
+        if v.marks:
+            head.append(f"  [{', '.join(v.marks)}]", "green")
+        if v.body:
+            head.append("\n" + v.body, "grey62")
+        if v.files:
+            head.append(f"\nchanged: {', '.join(v.files[:20])}{' …' if len(v.files) > 20 else ''}", "grey62")
+        try:
+            d = self.ops.history_diff(v.rev, None if self.since else "own", max_lines=self.DIFF_LINES)
+        except Exception as exc:  # noqa: BLE001 - shown, never a traceback
+            d = str(exc)
+        what = Text("\neverything since this version (→ the last one):" if self.since else "\nwhat this version changed:", "italic grey62")
+        self.query_one("#hist-text", Static).update(Group(head, what, Syntax(d, "diff", theme="ansi_dark", word_wrap=True)))
+
+    def action_toggle_since(self) -> None:
+        from textual.widgets import OptionList
+
+        self.since = not self.since
+        self._show(self.query_one("#hist-list", OptionList).highlighted)
+
+    def action_restore(self) -> None:
+        from textual.widgets import OptionList
+
+        i = self.query_one("#hist-list", OptionList).highlighted
+        if i is None or not 0 <= i < len(self.versions):
+            return
+        v = self.versions[i]
+
+        def got(text: str | None) -> None:
+            if not text:
+                return
+            paths = text.split()
+
+            def go(ok: bool | None) -> None:
+                if not ok:
+                    return
+                try:
+                    self.app.notify(self.ops.restore_version(v.rev, [p for p in paths if p != "."]))
+                except Exception as exc:  # noqa: BLE001 - friendly message, never a traceback
+                    self.app.notify(str(exc), severity="error")
+                    return
+                if self.restored:
+                    self.restored()
+                self._load()
+
+            what = "the whole project" if paths == ["."] else ", ".join(paths)
+            self.app.push_screen(ConfirmScreen(f"Restore {what} from version {v.short}?",
+                                               "The files are written back as they were then; what changes is backed up to .q3tui/bkp/."), go)
+
+        self.app.push_screen(TextPromptScreen(f"Restore from version {v.short} ({v.when} {v.title})",
+                                              "Files or folders, space-separated (e.g. src/rtl/m_lane_mul.sv src/tb); `.` for the whole project.",
+                                              multiline=False), got)
 
     def action_close(self) -> None:
         self.dismiss(None)

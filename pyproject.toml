@@ -14,6 +14,8 @@ dependencies = [
     "pyslang>=9.0",
     "rich>=13.0",
     "textual>=8.2.8",
+    "openpyxl>=3.1.5",
+    "termaid>=0.9",
 ]
 
 [project.scripts]
@@ -35,3 +37,4 @@ packages = ["q3tui"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["vcs: needs real Synopsys VCS (set Q3TUI_VCS_MODULE); skipped otherwise"]

@@ -1,0 +1,33 @@
+{
+  "_comment": "Tool roles of the Sanity flow (docs/spec/sanity-flow.md): Synopsys VC Static, `vc_static_shell` found on PATH (or set the role's cmd to its full path). Site setup: docs/user_guide.md#setting-up-the-eda-tools-for-your-site.",
+  "roles": {
+    "cdc": {
+      "cmd": "vc_static_shell -f {script}",
+      "modules": [],
+      "timeout_s": 3600,
+      "parse": {
+        "error": [
+          "^\\s*(Fatal|Error)-\\[",
+          "^\\s*\\[Fatal\\]",
+          "Error in script"
+        ],
+        "warning": []
+      },
+      "description": "static clock domain crossing analysis (VC Static: check_cdc, report_violations -app CDC)"
+    },
+    "rdc": {
+      "cmd": "vc_static_shell -f {script}",
+      "modules": [],
+      "timeout_s": 3600,
+      "parse": {
+        "error": [
+          "^\\s*(Fatal|Error)-\\[",
+          "^\\s*\\[Fatal\\]",
+          "Error in script"
+        ],
+        "warning": []
+      },
+      "description": "static reset domain crossing analysis (VC Static: check_rdc, report_rdc)"
+    }
+  }
+}

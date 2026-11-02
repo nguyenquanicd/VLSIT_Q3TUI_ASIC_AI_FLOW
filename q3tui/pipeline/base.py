@@ -70,13 +70,17 @@ class StepContext:
         from q3tui.llm import roles
 
         if self.engine.session_mode() == "flow":  # the flow's one session (flows/*.yaml `session: flow`), like one conversation
-            # pipeline.parallel_rtl_tb + parallel_multi_agent: tb runs alongside rtl in its own session instead
-            # (engine._run_parallel sets this for the duration of that parallel run only)
-            role = self.engine._step_role_override.get(self.emit.step, "flow")
+            # reviewers and the flow file's `fresh_steps` (their prompts carry all they need) run fresh
+            fresh = roles.FLOW_FRESH.search(stage.name) or self.emit.step in self.engine.flow.fresh_steps
+            role = None if fresh else "flow"
         else:
             role = roles.role_of(stage.name) if self.cfg.team.enabled else None
             if role and self.cfg.team.unit_sessions == "own" and roles.unit_level(stage.name):
                 role = None  # its own small session (see roles.UNIT_LEVEL)
+            lacks = [t for t in stage.builtin_tools if role and t not in roles.ROLE_BUILTINS[role]]
+            if lacks:  # a task that needs a tool its role's session is not offered (its list is fixed: the cache) runs in its own session
+                self.emit("log", message=f"{stage.name}: runs in a session of its own (it needs {', '.join(lacks)}, the {role}'s session has not)")
+                role = None
         try:
             if role:  # M10: the task goes to its role's persistent session
                 result = await roles.team(self.project).run(stage, role, self.cfg, self.emit)
@@ -152,6 +156,11 @@ class StepDef:
     # bumped when Q3TUI's checks on this step's result change: done results go stale and are re-checked (a
     # result that passes is kept without the LLM; one that fails is repaired, not regenerated)
     checks_version: int = 0
+    # the options that change this step's result (a template, a library, a target): their values are part of the step's staleness, wherever
+    # they come from (the flow file, `pipeline.step_options` of q3tui.yaml, Settings). Others (a round limit, a goal) do not rerun it.
+    hashed_options: tuple[str, ...] = ()
+    # options an unattended run's tool fix (core/chain.py) may set when the step's tool failed, with what each one does (its prompt lists them)
+    tool_fix_options: dict[str, str] = {}
 
     def inputs(self, engine: "Engine") -> list[Path]:
         """Files whose content determines this step's result (for staleness)."""
@@ -193,6 +202,18 @@ class StepDef:
     def on_approve(self, engine: "Engine") -> None:
         """Called when this step's review gate was approved (before downstream steps run): a step whose artifact records
         the gate (VLSIT: `gate_status`, `gate_2_approved`, …) writes it here. Its outputs are re-hashed afterwards."""
+
+    def follow_up(self, engine: "Engine") -> dict | None:
+        """What to offer the user right after they approved this step's gate (the TUI asks before it carries on):
+        `{"title", "detail", "action": a flow action to run on yes, "switch": a flow to move to afterwards (optional)}`; None: nothing."""
+        return None
+
+    async def unattended(self, engine: "Engine") -> bool:
+        """An unattended run (`pipeline.auto_answer` or this gate's mode `auto_answer`) finished this step and its gate passed: do the
+        follow-up that a person would do next (fpga: hand the RTL fixes to the owner flow and run its rtl step). True: run the flow
+        again from the start (what changed makes the earlier steps stale); False: carry on. Must be idempotent — it is called on
+        every pass over a finished step."""
+        return False
 
     tool_roles: tuple[str, ...] = ()  # tool roles (tools.json) this kind runs: `q3tui flow check` lists them
 

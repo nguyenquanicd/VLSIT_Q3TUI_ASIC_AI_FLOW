@@ -1,0 +1,96 @@
+# Spec layout of the VLSIT flow (spec_writer.md's spec.md): what spec_parser (step `parse`) reads to extract requirements,
+# parameters and the module mapping. Used when a flow gives the spec step `options: {template: vlsit}`;
+# <project>/spec/template.yaml still wins.
+
+allow_extra_sections: true
+
+sections:
+  - id: overview
+    title: Overview
+    required: true
+    guidance: >
+      1.1 Purpose and scope: the problem this IP solves, intended users/system context, observable behavior and
+      architectural boundary; "Included:" (functions, interfaces, configurations, deliverables) and "Excluded:"
+      (unsupported functions, responsibilities owned by other blocks). 1.2 Deployment assumptions, a table: target
+      SoC / product class, technology / library assumptions, operating modes and workload, security / privilege context,
+      external dependencies (memory, endpoint, firmware, clock/reset controller). 1.3 Feature summary, a table:
+      Feature ID (FEAT-001, ...), feature, application, required / optional, configuration condition, requirement ids.
+      The application says what the feature is used for in the system: the use case or scenario it serves, who uses it
+      (software, another block, the SoC) and why it is needed (e.g. "burst writes: DMA fills a frame buffer at full bus
+      rate"); never a restatement of the feature. Features are externally observable; this is the checklist the rest of
+      the spec elaborates.
+    fields:
+      - {name: IP name, guidance: "the IP's name"}
+      - {name: Version, guidance: 'document version, e.g. "0.1"'}
+      - {name: Status, guidance: 'e.g. "Draft"'}
+
+  - id: features
+    title: Key Features
+    required: true
+    guidance: >
+      Numbered feature list F01, F02, ... one line each, externally observable. Mark each feature
+      mandatory (built always) or optional (enabled by a parameter, name it). This is the checklist the
+      requirements are extracted from.
+
+  - id: parameters
+    title: Parameters
+    required: true
+    guidance: >
+      Table of top-level parameters named PR_<NAME> (SystemVerilog type, default, legal range, meaning, the
+      features they affect, whether locked), then the elaboration constraints as numbered rules C1, C2, ...
+      each written as a checkable expression (e.g. "PR_BOOT_ADDR[1:0] == 2'b00", "PR_IRQ_EN == 1 -> PR_CSR_EN == 1").
+
+  - id: interface
+    title: Interface
+    required: true
+    guidance: >
+      Clock and reset (names, edge / polarity, synchronous or asynchronous), then every input and output port:
+      name, direction, width, clock domain, reset value, meaning; bus protocol rules numbered B1, B2, ...
+    fields:
+      - {name: Top module, guidance: "snake_case module name"}
+      - {name: Clock, guidance: "name, frequency if known"}
+      - {name: Reset, guidance: "name, polarity, sync / async"}
+
+  - id: functional
+    title: Functional Description
+    required: true
+    guidance: >
+      10.1 Modes and state transitions, a table (mode/state, entry condition, behavior, exit condition, outputs/side
+      effects). 10.2 Operations: for each operation (OP-001, ...) its application first (the use case it serves, who
+      triggers it and why, and the feature ids FEAT-NNN it implements), then the inputs, preconditions, acceptance point,
+      exact function, result, completion, latency, ordering and exceptions. 10.3 Cycle-level behavior: timing diagrams / cycle
+      tables, the active edge and when values are sampled/observed. 10.4 Arbitration, buffering and throughput: tie-breaking,
+      fairness/starvation, FIFO depths, simultaneous enqueue/dequeue, backpressure, outstanding limits, cross-port ordering,
+      acceptance-to-result latency, initiation interval, sustained throughput. 10.5 Memories and storage, a table (storage
+      id MEM-001, kind, depth x width, ports, read latency, write mask, reset/init, ECC/parity, inferred or macro) with
+      collisions, read-during-write, initialization/validity, invalid addresses. Use "shall"; state every reset value and
+      every cycle-exact behavior observable at the ports.
+
+  - id: microarchitecture
+    title: Microarchitecture
+    required: true
+    guidance: >
+      Module list with one line per module (name, function) and the hierarchy as a tree of module names,
+      top first. The user's structure is a decision: copy it exactly.
+
+  - id: timing
+    title: Timing and Constraints
+    required: false
+    guidance: >
+      Latencies, penalties, throughput, clock-domain and synthesis constraints (cycles, not nanoseconds,
+      unless the intent gives them).
+
+  - id: registers
+    title: Register Map
+    required: false
+    guidance: Address, name, access, reset value and meaning of every register. Omit if there are none.
+
+  - id: errors
+    title: Error Handling
+    required: false
+    guidance: Illegal inputs, error responses and what state the block is left in.
+
+  - id: notes
+    title: Notes and Open Items
+    required: false
+    guidance: Out-of-scope items (they get no requirement), rationale, TBDs.

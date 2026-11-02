@@ -10,15 +10,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 MODELS = [
-    ("claude-opus-5-5", "Opus 5.5 — best quality (default)"),
-    ("claude-sonnet-5-5", "Sonnet 5.5 — faster, cheaper"),
+    ("claude-opus-5-5", "Opus 5.5 — best quality"),
+    ("claude-sonnet-5-5", "Sonnet 5.5 — fast, cheaper (default)"),
+    ("claude-haiku-5-5", "Haiku 5.5 — cheap and fast; thinks at length before it answers"),
     ("claude-haiku-4-5", "Haiku 4.5 — cheapest, for trying the flow (no effort setting)"),
     ("claude-fable-5-1", "Fable 5.1 — most capable, most expensive"),
 ]
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
-GATES = ["spec", "parse", "config", "rtl", "tb", "sva", "verify", "doc"]
-STEP_LABELS = (("spec", "Spec"), ("parse", "Parse"), ("config", "Config"), ("rtl", "RTL"), ("tb", "TB"), ("sva", "SVA"),
-               ("verify", "Verify"), ("doc", "Doc"), ("assistant", "Assistant"))
+GATES = ["spec", "parse", "config", "rtl", "tb"]
+STEP_LABELS = (("spec", "Spec"), ("parse", "Parse"), ("config", "Config"), ("rtl", "RTL"), ("tb", "TB"), ("assistant", "Assistant"))
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ class Setting:
     nullable: bool = False  # empty / "none" = null
     none_label: str = "none"  # how null is shown in the dialog (e.g. "default")
     hidden: bool = False  # not in the dialog (the assistant and ops still have it)
+    default: Any = None  # a step option of a step this flow does not have (another flow's): what it is when q3tui.yaml sets nothing
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,15 @@ class Tab:
     id: str
     title: str
     settings: tuple[Setting, ...] = field(default_factory=tuple)
+
+
+def step_model_settings(key: str, label: str) -> tuple[Setting, Setting]:
+    return (Setting(f"llm.steps.{key}.model", f"{label}: model", "choice",
+                    "" if key != "spec" else "Unset = the model of the LLM tab. Each step can use its own model, e.g. Sonnet "
+                    "where precision matters, Haiku for mechanical work.",
+                    tuple(MODELS), nullable=True, none_label="default (LLM tab)"),
+            Setting(f"llm.steps.{key}.effort", f"{label}: effort", "choice", "",
+                    (("default", "default"), ("none", "none (Haiku)"), *((e, e) for e in EFFORTS))))
 
 
 TABS: tuple[Tab, ...] = (
@@ -55,16 +65,9 @@ TABS: tuple[Tab, ...] = (
         Setting("pipeline.escalate_after_repeats", "Escalate after", "int",
                 "A bug classified the same way this many times is handed to you instead of fixed again."),
         Setting("pipeline.auto_confirm_reviews", "Auto-confirm reviews", "bool",
-                "Confirm a step's own reviewable items (SVA assertions, flagged requirements, …) without asking. "
+                "Confirm a step's own reviewable items (flagged requirements, changed parameters, …) without asking. "
                 "A human gate still stops for Approve; Approve itself no longer refuses for unconfirmed items. "
                 "Narrower than Auto-approve / Auto-answer above — gates still stop, only per-item review is skipped."),
-        Setting("pipeline.parallel_rtl_tb", "Run rtl ‖ tb in parallel", "bool",
-                "vlsit flow: rtl (lint + synthesis) and tb (testbench generator) both read only spec/parse/config — "
-                "run them together instead of rtl then tb."),
-        Setting("pipeline.parallel_multi_agent", "  ↳ tb: separate agent session", "bool",
-                "Only with the setting above. Off: tb shares the flow's one session and its LLM calls queue behind "
-                "rtl's (their tool runs still overlap). On: tb gets its own persistent session (role \"verifier\") "
-                "so both run their LLM calls at the same time too."),
         Setting("tui.icons", "Icons", "choice",
                 "Status icons: unicode (✔ ⚑ ◐ …), nerd (for a \"… Nerd Font Mono\" font), ascii (any font).",
                 (("unicode", "unicode  ✔ ⚑ ◐ ★"), ("nerd", "nerd font  \uf00c \uf024 \uf110 \uf005"), ("ascii", "ascii  + # ~ *"))),
@@ -88,12 +91,35 @@ TABS: tuple[Tab, ...] = (
                 nullable=True, none_label="no limit"),
         Setting("llm.fallback_model", "Fallback model", "text", "Used when the model is overloaded (empty = none).", nullable=True),
     )),
+    Tab("team", "Team", (
+        Setting("team.enabled", "Team mode", "bool",
+                "Each role (architect: spec · designer: RTL · verifier: testbench) keeps one Claude session across tasks, "
+                "runs and restarts: it reads the project once (then from the prompt cache) and remembers why it wrote "
+                "what it wrote. Off = every LLM task starts a fresh session with only its own prompt. Reviewers always "
+                "run fresh. `q3tui team status` / `team reset` to see or restart the sessions."),
+        Setting("team.unit_sessions", "Unit sessions", "choice",
+                "Unit-level work (one module's RTL, one group of tests). own = its own small session, resumed for that "
+                "unit's fixes; role = all in the role's one session (grows to hundreds of k tokens on a large design).",
+                (("own", "own — a small session per unit (recommended)"), ("role", "role — the role's one session"))),
+        Setting("team.fork", "Fork for parallel tasks", "bool",
+                "Parallel tasks of a role fork its session at its last idle point; off = they queue for it (one at a time)."),
+        Setting("team.max_context", "Compact at (tokens)", "int",
+                "A role session compacts itself after the task that passes this many tokens (empty = Claude's own "
+                "auto-compaction when the context fills up).", nullable=True, none_label="auto"),
+        Setting("team.dedupe_chars", "Dedupe sections over (chars)", "int",
+                "Markdown sections at least this long are sent once per session, then referenced (0 = never)."),
+        Setting("pipeline.session", "Flow session", "choice",
+                "fresh = a session per stage (team mode applies); flow = one session for the whole flow (team mode does "
+                "not apply; reviewers still run fresh). Unset = what the flow file says.",
+                (("fresh", "fresh — per stage"), ("flow", "flow — one session for the whole flow")),
+                nullable=True, none_label="the flow's"),
+    )),
     Tab("spec", "Spec", (
         Setting("spec.self_review", "Self-review", "bool",
                 "A second pass that checks the draft for ambiguities and returns only its changes. Off = faster drafts."),
     )),
     Tab("rtl", "RTL", (
-        Setting("rtl.parallel", "Modules in parallel", "int", "Modules (RTL, SVA) written at once."),
+        Setting("rtl.parallel", "Modules in parallel", "int", "Modules written at once."),
         Setting("rtl.max_fix_attempts", "Fix rounds", "int", "Extra rounds when lint or synthesis still fail."),
         Setting("rtl.max_turns", "Turns per module", "int", "Agent turns for one module (write, compile, fix)."),
     )),
@@ -102,17 +128,51 @@ TABS: tuple[Tab, ...] = (
         Setting("tb.parallel", "Agents at once", "int", "How many test-case agents run in parallel."),
         Setting("tb.max_fix_attempts", "Fix rounds", "int", "Extra rounds when the plan or TB checks still fail."),
         Setting("tb.max_turns", "Turns per stage", "int", "Agent turns for one TB stage."),
+        Setting("tb.sim_parallel", "Simulations at once", "int", "How many test simulations run in parallel. "
+                "Empty = 80 % of the CPU cores.", nullable=True, none_label="80% of cores"),
     )),
     Tab("models", "Models per step", tuple(
-        s for key, label in STEP_LABELS for s in (
-            Setting(f"llm.steps.{key}.model", f"{label}: model", "choice",
-                    "" if key != "spec" else "Unset = the model of the LLM tab. Each step can use its own model, e.g. Sonnet "
-                    "where precision matters, Haiku for mechanical work.",
-                    tuple(MODELS), nullable=True, none_label="default (LLM tab)"),
-            Setting(f"llm.steps.{key}.effort", f"{label}: effort", "choice", "",
-                    (("default", "default"), ("none", "none (Haiku)"), *((e, e) for e in EFFORTS))),
-        ))),
+        s for key, label in STEP_LABELS for s in step_model_settings(key, label))),
 )
+
+_STEP_TABS = ("spec", "rtl", "tb")  # per-step settings tabs (config sections), shown when the flow has that step
+
+
+STEP_OPTIONS = "pipeline.step_options."  # + <step>.<key>: a step's option, shown by a flow's add-on (addons.AddonAPI.setting)
+
+
+def is_step_option(path: str) -> bool:
+    return path.startswith(STEP_OPTIONS) and path.count(".") == 3
+
+
+def tabs_for(steps: list[tuple[str, str]] | None = None, extra=()) -> tuple[Tab, ...]:
+    """The dialog's tabs for a flow whose steps are `(id, label)`; None = the spec flow's steps. `extra`: the flow's step options."""
+    rows = list(steps) if steps is not None else [(k, l) for k, l in STEP_LABELS if k != "assistant"]
+    have = {k for k, _ in rows}
+    keep = [t for t in TABS if t.id != "models" and (t.id not in _STEP_TABS or t.id in have)]
+    for step in dict.fromkeys(x.path.split(".")[2] for x in extra):  # a flow's step options: the step's own tab
+        opts = tuple(x for x in extra if x.path.split(".")[2] == step)
+        at = next((i for i, t in enumerate(keep) if t.id == step), None)  # a step with a config tab too (rtl, tb): one tab
+        if at is None:
+            keep.append(Tab(step, step, opts))
+        else:
+            keep[at] = Tab(step, keep[at].title, keep[at].settings + opts)
+    models = Tab("models", "Models per step", tuple(x for k, l in [*rows, ("assistant", "Assistant")] for x in step_model_settings(k, l)))
+    return (*keep, models)
+
+
+def find(path: str, extra=()) -> Setting | None:
+    """The setting at `path`; llm.steps.<any step>.model|effort exist for every step of every flow; `extra`: the flow's step options."""
+    if path in BY_PATH:
+        return BY_PATH[path]
+    for x in extra:
+        if x.path == path:
+            return x
+    parts = path.split(".")
+    if len(parts) == 4 and parts[:2] == ["llm", "steps"] and parts[3] in ("model", "effort"):
+        return step_model_settings(parts[2], parts[2])[0 if parts[3] == "model" else 1]
+    return None
+
 
 BY_PATH = {s.path: s for t in TABS for s in t.settings}
 GATE_MODES = (("human", "human — stops for your review"), ("auto", "auto — approves itself (blocking questions still stop it)"),
@@ -122,12 +182,20 @@ GATE_MODES = (("human", "human — stops for your review"), ("auto", "auto — a
 def get_value(cfg, path: str) -> Any:
     obj = cfg
     for part in path.split("."):
+        if isinstance(obj, dict) or obj is None:  # pipeline.step_options.<step>.<key>: absent = the flow file's value (see Ops.settings)
+            obj = None if obj is None else obj.get(part)
+            continue
+        if not hasattr(obj, part) and path.startswith("llm.steps."):  # a step of another flow, no override set yet
+            from q3tui.core.config import StepLLM
+
+            obj = StepLLM()
+            continue
         obj = getattr(obj, part)
     return obj
 
 
-def current(cfg) -> dict[str, Any]:
-    return {path: get_value(cfg, path) for path in BY_PATH}
+def current(cfg, tabs: tuple[Tab, ...] | None = None) -> dict[str, Any]:
+    return {s.path: get_value(cfg, s.path) for t in (tabs or TABS) for s in t.settings}
 
 
 def coerce(setting: Setting, raw: Any) -> Any:
@@ -161,6 +229,10 @@ def coerce(setting: Setting, raw: Any) -> Any:
         if bad:
             raise ValueError(f"{setting.label}: unknown {', '.join(bad)} (allowed: {', '.join(allowed)})")
         return [v for v in allowed if v in items]
+    if setting.kind == "choice" and setting.choices and is_step_option(setting.path):  # (a flow's option has a fixed set; model names are free)
+        allowed = [v for v, _ in setting.choices]
+        if str(raw).strip() not in allowed:
+            raise ValueError(f"{setting.label}: {raw!r} is not one of {', '.join(allowed)}")
     return str(raw).strip()
 
 

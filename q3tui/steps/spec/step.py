@@ -24,8 +24,8 @@ class SpecStep(StepDef):
     # -- files ----------------------------------------------------------------------------
 
     def _paths(self, engine) -> tuple[Path, Path, Path, Path, Path]:
-        d = engine.project.spec_dir
-        return d / "intent.md", d / "spec.md", d / "questions.json", d / "questions.md", d / "answers.json"
+        d, q = engine.project.spec_dir, engine.project.schemas_dir / "questions"  # (questions and answers: like every step's)
+        return d / "intent.md", d / "spec.md", q / "spec.json", q / "spec.md", q / "spec.answers.json"
 
     def inputs(self, engine) -> list[Path]:
         intent, _, _, _, answers = self._paths(engine)
@@ -53,8 +53,9 @@ class SpecStep(StepDef):
         return bool(self._user_documents(engine))
 
     def missing_input(self, engine) -> str | None:
-        intent = self._paths(engine)[0]
-        if not intent.is_file():
+        intent, spec = self._paths(engine)[:2]
+        # (the intent only seeds the first spec: with a spec, a missing intent is fine)
+        if not intent.is_file() and not spec.is_file() and not self.references(engine):
             return f"no spec and no intent: write {engine.project.rel(intent)}, pass --intent \"...\", or provide --spec FILE"
         return None
 
@@ -99,8 +100,12 @@ class SpecStep(StepDef):
     def _record_meta(self, engine, template_path: Path, applied: list[str], template=None) -> None:
         intent_path = self._paths(engine)[0]
         meta = self._meta(engine)
-        meta["intent"] = sha256_file(intent_path) if intent_path.is_file() else None
-        meta["intent_text"] = intent_path.read_text() if intent_path.is_file() else None  # to diff the next intent change
+        if intent_path.is_file():  # (no intent file: keep what was recorded, so one that comes back is diffed, not a rewrite)
+            meta["intent"] = sha256_file(intent_path)
+            meta["intent_text"] = intent_path.read_text()  # to diff the next intent change
+        else:  # (still marks the bookkeeping as present: the legacy baseline in run() must not reset the recorded refs)
+            meta.setdefault("intent", None)
+            meta.setdefault("intent_text", None)
         meta["template"] = sha256_file(template_path)
         meta["applied_answers"] = sorted(set(meta.get("applied_answers", [])) | set(applied))
         if template is not None:  # snapshot, so the next run knows exactly which sections changed
@@ -153,11 +158,24 @@ class SpecStep(StepDef):
         new_answers = {k: v for k, v in answers.items() if k not in set(meta.get("applied_answers", []))}
         intent_same = meta.get("intent") is not None and meta.get("intent") == (sha256_file(intent_path) if intent_path.is_file() else None)
         old_intent = meta.get("intent_text")
-        if spec_path.is_file() and not ctx.regenerate and (intent_same or (old_intent is not None and intent_path.is_file())):
+        refs = self.references(engine)
+        ported = meta.get("refs") is not None  # the spec was ported from your documents
+        if not intent_path.is_file() and ported:
+            intent_same = True  # (no intent: the documents are what it was written from)
+        no_intent = spec_path.is_file() and not intent_path.is_file()  # a spec without its intent (a copied project): nothing to compare with
+        if spec_path.is_file() and not ctx.regenerate and (intent_same or no_intent or (old_intent is not None and intent_path.is_file())):
             # the spec exists: update only what changed (an intent change revises the sections it affects)
             changes = self._template_changes(engine, template, spec_path.read_text())
-            intent_change = None if intent_same else (old_intent, intent_path.read_text())
-            await self._apply_updates(ctx, template, template_path, new_answers, changes, intent_change)
+            intent_change = None if intent_same or no_intent else (old_intent, intent_path.read_text())
+            extra = []
+            now = (engine.import_record("spec") or {}).get("files") if refs else None
+            if now != meta.get("refs") and refs:  # re-imported documents: the sections they affect follow them
+                block, _ = self._references_block(engine)
+                changed = sorted(k for k in set(now or {}) | set(meta.get("refs") or {}) if (now or {}).get(k) != (meta.get("refs") or {}).get(k))
+                extra.append("The user's own specification documents changed (" + ", ".join(changed) + "): update the sections "
+                             "they affect so the spec states what they state (they are the source of truth); keep module and "
+                             "port names as they give them.\n<user_documents>\n" + block + "\n</user_documents>")
+            await self._apply_updates(ctx, template, template_path, new_answers, changes, intent_change, extra)
         else:
             await self._write_full(ctx, template, template_path, answers)
 
@@ -194,8 +212,10 @@ class SpecStep(StepDef):
                   + (f" Fields: {', '.join(f.name for f in tmpl[sid].fields)}." if tmpl[sid].fields else "")
                   for sid in changes["revised"]]
         patch: SpecPatch | None = None
-        if items or ctx.feedback or add or revise or intent_change:
-            ctx.emit("log", message=f"updating the affected sections: {len(items)} answer(s), {len(ctx.feedback)} change request(s), "
+        touched: list[str] = []
+        feedback = [*ctx.feedback, *(extra or [])]
+        if items or feedback or add or revise or intent_change:
+            ctx.emit("log", message=f"updating the affected sections: {len(items)} answer(s), {len(feedback)} change request(s), "
                                     f"{len(add)} new section(s), {len(revise)} revised section(s)"
                                     + (", intent changed" if intent_change else ""))
             stage = Stage(name="spec_update", system_prompt=prompts.UPDATER, cwd=engine.project.root, builtin_tools=[],
@@ -249,8 +269,9 @@ class SpecStep(StepDef):
                          output_model=output, resume=resume)
 
         if existing is None:
-            ctx.emit("log", message="drafting specification from intent")
-            prompt = prompts.draft_prompt(intent=intent, template=tdesc, feedback=ctx.feedback)
+            ctx.emit("log", message=f"porting {', '.join(engine.project.rel(p) for p in refs)} into the template's sections"
+                                    if refs else "drafting specification from intent")
+            prompt = prompts.draft_prompt(intent=intent, template=tdesc, feedback=ctx.feedback, questions=previous, answers=answers)
         else:
             ctx.emit("log", message="revising the specification (the intent changed)")
             prompt = prompts.revise_prompt(intent=intent, template=tdesc, spec=existing, questions=previous, answers=answers, feedback=ctx.feedback)

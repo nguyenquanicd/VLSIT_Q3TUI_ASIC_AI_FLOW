@@ -14,10 +14,11 @@ from rich.console import Group, RenderableType
 from rich.markdown import Markdown as RichMarkdown
 from rich.padding import Padding
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import ContentSwitcher, Footer, Input, Label, ListItem, ListView, RichLog, Static
+from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView, RichLog, Static, TextArea
 from textual.css.query import NoMatches
 from textual.worker import Worker
 
@@ -29,10 +30,11 @@ from q3tui.core.events import Event, EventBus
 from q3tui.pipeline.engine import Engine, EngineError, StepView
 from q3tui.core.project import Project, read_json, write_json
 from q3tui.tui.splitter import Splitter
-from q3tui.tui.commands import CommandSuggester, hint as command_hint
+from q3tui.tui.commands import hint as command_hint
 from q3tui.tui.picker import Choice, ChoiceScreen, choices_from
 from q3tui.tui.screens import EFFORTS, MODELS, ConfirmScreen, ResetScreen, SettingsScreen, StatsScreen, GateScreen, HistoryInput, ModelScreen, TextPromptScreen
-from q3tui.tui.panels import StepLines, make_panel, safe_id
+from q3tui import addons
+from q3tui.tui.panels import PANEL_ERRORS, StepLines, make_panel, safe_id
 from q3tui.tui.views import fence_diagrams, SectionsPanel, SpecPanel, StepPanel
 
 from q3tui.core.icons import icon as I
@@ -53,13 +55,13 @@ def legend_text() -> str:
             f"[grey50]{I('pending')}[/] {t('legend.no_result')}  [grey42]{I('planned')}[/] {t('legend.planned')}\n"
             f"[grey62]{I('edited')}[/] {t('legend.edited')}")
 HELP = (
-    "Keys: r run · x stop · a review · A approve all · g gate mode · , settings · s stats · e edit · C comment on selected text · o questions · f files · m model · R reset (step or all) · z zoom chat · drag the bars or ctrl+arrows to resize panes · 1-9 select step · "
+    "Keys: r run · x stop · a review · A approve all · g gate mode · , settings · s stats · H history (the project's versions) · e edit · C comment on selected text · o questions · f files · m model · R reset (step or all) · z zoom chat · p hide/show the pipeline · D diagrams full screen (or Enter / double-click on one) · drag the bars or ctrl+arrows to resize panes · 1-9 select step · "
     "i chat · / command (Tab or → completes) · Esc stops the assistant's reply, else back to the pipeline · ctrl+q quit.\n"
     "Commands: /run [from] [to] · /stop · /approve <step>|all [--force] · /change <step> <text> · /answer <id> <text> · /gate <step> <mode> · /gates · "
     "/model [id] [--save] · /effort <level> [--save] · /specreview on|off · /autoapprove on|off · /autoanswer on|off · "
-    "/autoconfirm on|off · "
-    "/parallel on|off [--multi-agent|--shared] [--save] · /settings [tab] · /stats [reset] · "
-    "/reset <step> [--only] · /status · /open <file> · /cost [reset] · /newchat · /help · /quit. Anything else goes to the assistant."
+    "/autoconfirm on|off · /tool <role> <field> <value> · "
+    "/settings [tab] · /stats [reset] · /history · /auto [stop] · "
+    "/import <path> [kind] · /reset <step> [--only] · /status · /open <file> · /cost [reset] · /newchat · /help · /quit. Anything else goes to the assistant."
 )
 
 
@@ -88,10 +90,11 @@ class Q3TUIApp(App):
         Binding("f", "show_tab('files')", "Files", show=False),
         Binding("m", "pick_model", "Model"),
         Binding("comma", "settings", "Settings"),
-        Binding("F", "flow_editor", "Flow"),
+        Binding("F", "switch_flow", "Flow"),
         Binding("K", "skill_editor", "Skills"),
         Binding("P", "prompt_editor", "Prompts"),
         Binding("s", "stats", "Stats"),
+        Binding("H", "history", "History", show=False),
         Binding("ctrl+left", "resize('split-left', -4)", "Narrower pipeline", show=False),
         Binding("ctrl+right", "resize('split-left', 4)", "Wider pipeline", show=False),
         Binding("ctrl+up", "resize('split-activity', -2)", "Shorter step view", show=False),
@@ -106,8 +109,14 @@ class Q3TUIApp(App):
         *[Binding(str(i + 1), f"select_step({i})", show=False) for i in range(9)],
     ]
 
-    def __init__(self, project: Project, read_only: bool = False):
+    def __init__(self, project: Project, read_only: bool = False, background: bool = False, runner=None):
         super().__init__()
+        from q3tui.tui import runner as runner_mod
+
+        # background: a run is a process of its own (tui/runner.py): it goes on while you switch flows, `q3tui tui` stops it at the end
+        self.background = background
+        self.runner = runner or runner_mod.get()
+        self._bg_alive, self._bg_key = False, ""
         self.project = project
         self.bus = EventBus()
         self.engine = Engine(project, self.bus)
@@ -128,6 +137,10 @@ class Q3TUIApp(App):
         self.step_log: dict[str, StepLines] = {}  # per step: what it did (the default panel's Log tab)
         self._pipeline_worker: Worker | None = None
         self._assistant_worker: Worker | None = None
+        self._failures_mtime = 0.0  # pipeline.json as last scanned for failed steps (tui/failures.py)
+        self._failures_seen: set[tuple[str, str]] = set()  # (step, at) already said
+        self._failed_now: list[str] = []  # the header's "failed: …"
+        self._triage: list[tuple[object, int]] = []  # tool failures waiting for the assistant (it answers one message at a time)
         self._last_outcome: str | None = None
         self._chat_focus: str | None = None
         self._refresh_pending = False
@@ -151,17 +164,26 @@ class Q3TUIApp(App):
             with Vertical(id="right"):
                 yield Label("", classes="panel-title", id="view-title")
                 with ContentSwitcher(id="views", initial=f"view-{safe_id(self.engine.pipeline_steps[0].name)}"):
+                    try:
+                        addons.load_panels(self.engine.flow)  # the flow's own panels (panels.py of its folder), if it has any
+                    except Exception as exc:  # noqa: BLE001 - a broken panels.py: the default panels, said once mounted (see make_panel)
+                        PANEL_ERRORS.append(f"{self.engine.flow.name} flow panels.py: {type(exc).__name__}: {exc}")
                     for step in self.engine.steps:
                         yield make_panel(step)
                 yield Splitter(vertical=False, id="split-activity", min_size=3)
                 yield Label("ACTIVITY", classes="panel-title", id="activity-title")
                 yield RichLog(id="activity", wrap=True, markup=False, highlight=False, max_lines=3000)
                 yield Static(id="cmd-hint", markup=False)
-        yield HistoryInput(history_file=self.project.state_dir / "tui" / "history.json",
-                           placeholder="Ask the assistant, or /help for commands (↑/↓ history, Tab completes)", id="cmd",
-                           suggester=CommandSuggester(self._completions),
-                           select_on_focus=False)  # else "/" from the shortcut is selected and the next key replaces it
+        yield HistoryInput(history_file=self.project.state_dir / "tui" / "history.json", completions=self._completions, id="cmd",
+                           placeholder="Ask the assistant, or /help for commands (↑/↓ history, Tab completes, Ctrl+J new line)")
         yield Footer()
+
+    async def on_event(self, event: events.Event) -> None:
+        # a paste from the terminal's menu comes while the window is blurred, and Textual takes the focus away on blur (it gives it back on
+        # a key or a click, not on a paste): give it back first, else the paste goes to no widget
+        if isinstance(event, events.Paste) and not event.is_forwarded and not self.app_focus:
+            self.app_focus = True
+        await super().on_event(event)
 
     def on_mount(self) -> None:
         self.bus.subscribe(self._on_event)
@@ -175,14 +197,40 @@ class Q3TUIApp(App):
         if self._watching:
             self._follow_run()
         self._w("#steps").focus()
+        if PANEL_ERRORS:  # (the plain panels stand in for these: a TUI restart loads the code they need)
+            self.notify("panel(s) not built, the plain ones are shown — restart the TUI:\n" + "\n".join(PANEL_ERRORS[:4]), severity="error", timeout=30)
+            PANEL_ERRORS.clear()
+        if "pipeline_hidden" in self.layout_sizes:
+            self.action_toggle_pipeline(show=False)
+        self._check_failures(first=True)
         # no review popup at startup: it opens when a run reaches a gate; a waiting review is
         # in the summary line above ("next: review X (a)") and in the step's banner
 
     # -- rendering ---------------------------------------------------------------------------
 
     def refresh_all(self) -> None:
-        """Update header, pipeline list and the visible step view (others update when shown)."""
+        """Update header, pipeline list and the visible step view (others update when shown). A refresh that fails (a file read while another
+        process writes it, a bad file) is a line in the log, never the end of the TUI and so of its runs: the next refresh tries again."""
         self._refresh_pending = False
+        try:
+            self._refresh_all()
+        except Exception as exc:  # noqa: BLE001 - see above
+            self._refresh_failed(exc)
+
+    def _refresh_failed(self, exc: Exception) -> None:
+        """One red line for a refresh that failed (the same error at most once a minute: refreshes come with every event)."""
+        msg = f"refresh failed: {type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+        seen = self.__dict__.setdefault("_refresh_errors", {})
+        now = time.monotonic()
+        if now - seen.get(msg, -60.0) < 60:
+            return
+        seen[msg] = now
+        try:
+            self._log_line(Text(f"{msg} — the view may be out of date until the next change", "red"))
+        except Exception:  # noqa: BLE001 - (the log is not mounted yet)
+            pass
+
+    def _refresh_all(self) -> None:
         if self.project.cfg.tui.icons != self._icons or self.project.cfg.tui.language != self._language:  # changed in settings
             self._icons = self.project.cfg.tui.icons
             self._language = self.project.cfg.tui.language
@@ -209,6 +257,9 @@ class Q3TUIApp(App):
                 self._panel(step).refresh_view()
             except NoMatches:  # still mounting; stays dirty for the next refresh
                 self._dirty_panels.add(pid)
+            except Exception as exc:  # noqa: BLE001 - (as refresh_all: said, stays dirty for the next refresh)
+                self._dirty_panels.add(pid)
+                self._refresh_failed(exc)
 
     def _panel(self, step: str) -> StepPanel:
         if not hasattr(self, "_panels"):
@@ -234,8 +285,10 @@ class Q3TUIApp(App):
                     f" · {elapsed // 60}:{elapsed % 60:02d}{tok}[/]")
         self._w("#header").update(
             f"[b]Q3TUI[/b] · [b]{top}[/b] · [grey50]flow {self.engine.flow.name} · {self.project.root}[/]{live}"
-            + (f"   [black on cyan] WATCHING a run in another process (pid {self._watching['pid']}) [/]"
-               if getattr(self, "_watching", None) else "")
+            + (f"   [black on cyan] {'RUNNING in the background' if self._watching['pid'] == self.runner.pid(self.engine.flow.name) else 'WATCHING a run in another process'}"
+               f" (pid {self._watching['pid']}) [/]" if getattr(self, "_watching", None) else "")
+            + (f"   [black on blue] also running: {', '.join(self._others)} [/]" if getattr(self, "_others", None) else "")
+            + (f"   [white on red] ✖ failed: {', '.join(self._failed_now)} [/]" if getattr(self, "_failed_now", None) else "")
             + ("   [black on cyan] READ-ONLY [/]" if self.engine.read_only else "")
             + ("   [black on red] AUTO-ANSWER [/]" if self.project.cfg.pipeline.auto_answer else
                "   [black on yellow] AUTO-APPROVE [/]" if self.project.cfg.pipeline.auto_approve else "")
@@ -247,8 +300,26 @@ class Q3TUIApp(App):
         if self._live:
             self._spin += 1
             self._render_header()
+        if self._bg_alive and not self.runner.alive(self._bg_key):  # the background run is over: where things stand now
+            self._bg_alive = False
+            self._watching = None
+            self.engine.reload()
+            self._follow_run()
+            self.refresh_all()
+            self.notify(f"background run ended (exit code {self.runner.returncode(self._bg_key)})")
+            self._log_summary()
+            return
         # watching a run another process makes: follow its state every 2 s (this TUI saves nothing meanwhile)
         self._watch_tick = getattr(self, "_watch_tick", 0) + 1
+        if self._watch_tick % 2 == 0:
+            self._check_failures()
+        if self._triage and not (self._assistant_worker and self._assistant_worker.is_running):
+            self._ask_about_failure(*self._triage.pop(0))
+        if self._watch_tick % 2 == 0:
+            others = sorted({r["flow"] for r in self.engine.other_runs() if r["flow"] != self.engine.flow.name})  # (runs of the other flows)
+            if others != getattr(self, "_others", []):
+                self._others = others
+                self._render_header()
         if self._watch_tick % 2 == 0 and not self._live:
             other = self.engine.other_run()
             if other or getattr(self, "_watching", None) or self.engine.read_only:
@@ -259,6 +330,67 @@ class Q3TUIApp(App):
                 self.refresh_all()
                 if was and not other:  # the other run ended: where things stand now
                     self._log_summary()
+
+    # -- failed steps (tui/failures.py): said, whichever flow's run it was; a failed tool goes to the assistant ----------------------
+
+    def _check_failures(self, first: bool = False) -> None:
+        """pipeline.json changed (a run here, in the background or of another flow): say every new failure; give a tool failure to the
+        assistant. `first` (TUI start): what failed before is not said again; a recent tool failure no TUI handled yet is."""
+        from q3tui.tui import failures
+
+        path = failures.state_file(self.project)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        if mtime == self._failures_mtime:
+            return
+        self._failures_mtime = mtime
+        now = failures.failed(self.project)
+        shown = [f"{f.step} ({f.flow})" if f.flow and f.flow != self.engine.flow.name else f.step for f in now if failures.recent(f)]
+        if shown != self._failed_now:
+            self._failed_now = shown
+            self._render_header()
+        failures.forget_fixed(self.project)
+        for f in now:
+            if (f.step, f.at) in self._failures_seen:
+                continue
+            self._failures_seen.add((f.step, f.at))
+            if not first:
+                self.notify(f"{f.flow + ' · ' if f.flow else ''}{f.step}: {f.short()}", title=f"✖ {f.step} failed", severity="error", timeout=20)
+            if f.kind == "tool" and failures.recent(f) and not self.engine.read_only:
+                count = failures.note(self.project, f)
+                if count in (1, 2):
+                    self._triage.append((f, count))
+                elif count:
+                    self._log_line(Text(f"{f.step} failed the same way again: the assistant already said what to do (above); "
+                                        "ask it, or fix and press r", "yellow"))
+
+    def _ask_about_failure(self, f, count: int) -> None:
+        from q3tui.tui import failures
+
+        self._triage_failure = f
+        what = "the tool failed again after the fix" if count > 1 else "the tool failed"
+        self._send_to_assistant(failures.prompt(self.project, f, count), shown=f"{f.flow + ' · ' if f.flow else ''}{f.step}: {what} — {f.short()}",
+                                who="Q3TUI", context=f"a tool failure: step {f.step} of the {f.flow} flow", focus=f.step)
+
+    def rerun_failed(self, step: str) -> str:
+        """The assistant's one rerun of a step whose tool failed, after its fix: in the step's own flow, from that step on (a run of its own
+        in the background, or here when it is this flow and runs are not in the background)."""
+        from q3tui.tui import failures
+
+        f = getattr(self, "_triage_failure", None)
+        if f is None or f.step != step:
+            return f"no tool failure of '{step}' is being looked at: rerun only the step you were told failed"
+        if not failures.take_rerun(self.project, f):
+            return "not rerun: it was rerun once already for this failure — tell the user what to do instead"
+        flow = f.flow or self.engine.flow.name
+        if flow == self.engine.flow.name:
+            return self.start_run(start=step)
+        if self.runner.alive(flow) or any(r["flow"] == flow for r in self.engine.other_runs()):
+            return f"a run of the {flow} flow is going on already: it was not rerun (tell the user)"
+        pid = self.runner.start(self.project, flow, start=step)
+        return f"rerun of {step} started in the background ({flow} flow, pid {pid}); a failure again is said here"
 
     def _follow_run(self) -> None:
         """Watch mode: the other process's events (its run's events.jsonl) in the activity log, as if it ran here."""
@@ -302,18 +434,6 @@ class Q3TUIApp(App):
         finally:
             self._replaying = False
 
-    def _vlsit_badge(self, kind: str) -> str:
-        from q3tui.tui.vlsit_panels import artifact
-
-        rtm = (artifact(self, "rtm.json", {}) or {}).get("requirements", [])
-        if not rtm:
-            return ""
-        if kind == "vlsit_verify":
-            signed = sum(bool(r.get("signed_off")) for r in rtm)
-            return f"[{'green' if signed == len(rtm) else 'yellow'}]{signed}/{len(rtm)} REQ[/]"
-        traced = sum(bool(r.get("sva_traced")) for r in rtm)
-        return f"[{'green' if traced == len(rtm) else 'yellow'}]{traced}/{len(rtm)} SVA[/]"
-
     def _render_steps(self, views: list[StepView]) -> None:
         modes = self.engine.gate_modes()
         for v in views:
@@ -333,12 +453,9 @@ class Q3TUIApp(App):
                 extra.append(f"[grey42]{v.detail.replace('planned for ', '')}[/]")
             if v.edited:
                 extra.append(f"[grey62]{I('edited')}[/]")
-            kind = self.engine.by_name[v.name].kind or v.name
             mode = modes.get(v.name)
             if mode in ("auto", "auto_answer"):
                 extra.append(f"[grey62]{'auto' if mode == 'auto' else 'auto-ans'}[/]")
-            if kind in ("vlsit_verify", "vlsit_sva") and v.status in ("done", "stale"):
-                extra.append(self._vlsit_badge(kind))
             label = f"[{color}]{icon}[/] {self.engine.label(v.name):<2} {v.name:<13}" + " ".join(x for x in extra if x)
             w = self._w(f"#step-{safe_id(v.name)}")
             if getattr(w, "_last", None) != label:
@@ -470,6 +587,20 @@ class Q3TUIApp(App):
         if self._pipeline_worker and self._pipeline_worker.is_running:
             return "a run is already in progress"
         self._gate_shown = None
+        if self.background:
+            flow = self.engine.flow.name
+            other = self.engine.other_run()
+            if self.runner.alive(flow) or other:
+                return f"a run of {flow} is already going on in the background (pid {self.runner.pid(flow) or other['pid']}); x stops it"
+            if self.engine.read_only:
+                return "read-only: this TUI only looks (start it without --read-only to run)"
+            self.engine.save()  # what this TUI holds is on disk; the run reads it
+            pid = self.runner.start(self.project, flow, start=start, stop=stop, only=only, regenerate=regenerate or ())
+            self._bg_alive, self._bg_key = True, flow
+            self._watch_tick = 1  # (follow it at the next tick)
+            also = sorted({r["flow"] for r in self.engine.other_runs() if r["flow"] != flow})
+            return (f"run started in the background (pid {pid}, {flow} flow): it goes on while you switch flows"
+                    + (f" (beside the runs of {', '.join(also)})" if also else "") + "; x stops it; quitting the TUI ends it")
 
         async def go() -> None:
             outcome = await self.engine.run(start=start, stop=stop, only=only, regenerate=regenerate)
@@ -491,6 +622,18 @@ class Q3TUIApp(App):
                            regenerate: set[str] | None = None) -> str:
         """Start a run and wait for it to stop (used by the assistant to chain actions in one turn)."""
         msg = self.start_run(start, stop, only, regenerate)
+        flow = self.engine.flow.name
+        if self.background and self.runner.alive(flow) and msg.startswith("run started"):
+            import asyncio
+
+            while self.runner.alive(flow):
+                await asyncio.sleep(1)
+            self.engine.reload()
+            self.refresh_all()
+            views = {v.name: v for v in self.engine.status()}
+            return "run finished (exit code %s); " % self.runner.returncode(flow) + ", ".join(
+                f"{n} {v.status}" + (" (review open)" if v.gate == "open" and v.status in ("done", "user") else "")
+                for n, v in views.items() if v.status != "unavailable")
         worker = self._pipeline_worker
         if worker is None or msg.startswith("a run is already"):
             return msg
@@ -505,7 +648,31 @@ class Q3TUIApp(App):
                             for n, v in views.items() if v.status != "unavailable")
         return f"run finished: {self._last_outcome or 'stopped'}; {summary}"
 
+    def start_auto(self) -> str:
+        """/auto: the full unattended run (core/chain.py) as a process of its own; this TUI follows its flow runs like any other run."""
+        if self.engine.read_only:
+            return "read-only: this TUI only looks (start it without --read-only to run)"
+        if self.runner.alive("auto"):
+            return f"the unattended run is already going on (pid {self.runner.pid('auto')}); /auto stop ends it"
+        busy = sorted({r["flow"] for r in self.engine.other_runs()} | ({self.engine.flow.name} if self._pipeline_worker and self._pipeline_worker.is_running else set()))
+        if busy:
+            return f"runs are going on ({', '.join(busy)}): stop them first (x), then /auto"
+        self.engine.save()
+        pid = self.runner.start_auto(self.project)
+        chain = " → ".join(self.project.cfg.pipeline.chain)
+        return (f"unattended run started in the background (pid {pid}): {chain}, until each passed with the RTL as it is at the end; "
+                f"switch flows (F) to watch each; /auto stop ends it; quitting the TUI ends it; its log: .q3tui/tui/run.auto.log")
+
+    def stop_auto(self) -> str:
+        if self.runner.stop("auto"):
+            return "stopping the unattended run (Ctrl-C sent: the step running is cancelled)"
+        return "no unattended run is going on"
+
     def stop_run(self) -> str:
+        flow = self.engine.flow.name
+        if self.background and self.runner.alive(flow):
+            self.runner.stop(flow)
+            return f"stopping the background run of {flow} (Ctrl-C sent to it)"
         if self._pipeline_worker and self._pipeline_worker.is_running:
             self._pipeline_worker.cancel()
             return "stopping"
@@ -522,7 +689,8 @@ class Q3TUIApp(App):
 
     def stop_any(self) -> str:
         """x and /stop: the pipeline run if one is running, else the assistant's reply."""
-        if self._pipeline_worker and self._pipeline_worker.is_running:
+        if (self._pipeline_worker and self._pipeline_worker.is_running) or (
+                self.background and self.runner.alive(self.engine.flow.name)):
             return self.stop_run()
         return self.stop_chat() if self._assistant_worker and self._assistant_worker.is_running else "nothing is running"
 
@@ -577,7 +745,11 @@ class Q3TUIApp(App):
                 self._gate_shown = None
                 return
             self.refresh_all()
-            self.start_run()
+            offer = self.engine.by_name[step].follow_up(self.engine)
+            if offer:
+                self._offer_follow_up(offer)
+            else:
+                self.start_run()
         elif choice == "questions":
             self._select_step(step)
             self.action_show_tab("questions")
@@ -613,9 +785,7 @@ class Q3TUIApp(App):
 
     def action_settings(self, tab: str | None = None) -> None:
         """Settings dialog; opens on the selected step's tab when it has one."""
-        from q3tui.core.settings import TABS
-
-        tabs = [t.id for t in TABS] + ["gates"]
+        tabs = [t.id for t in self.ops.settings_tabs()] + ["gates"]
         here = self.selected_step
         tab = tab if tab in tabs else (here if here in tabs else "general")
 
@@ -632,7 +802,45 @@ class Q3TUIApp(App):
             self._render_header()
             self.refresh_all()
 
-        self.push_screen(SettingsScreen(self.ops.settings(), tab, gates=self._gate_rows()), done)
+        self.push_screen(SettingsScreen(self.ops.settings(), tab, gates=self._gate_rows(), tabs=self.ops.settings_tabs()), done)
+
+    def action_switch_flow(self, name: str | None = None) -> None:
+        """F / `/flow [name]`: work on another flow of this project — remembered in q3tui.yaml (pipeline.flow); the TUI restarts on it
+        (each flow keeps its own state in .q3tui/pipeline.json). A running step is cancelled, after you confirm."""
+        from q3tui import flows
+
+        if self.engine.read_only:
+            self.notify("read-only: not switching", severity="warning")
+            return
+        now = self.engine.flow.name
+
+        def switch(target: str) -> None:
+            if target == now:
+                self.notify(f"already on {now}")
+                return
+            try:
+                flows.load_flow(target, self.project.root)
+            except flows.FlowError as exc:
+                self._log_line(Text(str(exc), "red"))
+                return
+
+            def go() -> None:
+                self.project.save_config_values({"pipeline": {"flow": target}})
+                self.exit(result=("flow", target))
+
+            if self._pipeline_worker and self._pipeline_worker.is_running:
+                self.push_screen(ConfirmScreen(f"'{self.engine.running}' is running. Switch to {target} and cancel it?",
+                                               "Its output so far is discarded; run it again later with r."),
+                                 lambda ok: go() if ok else None)
+            else:
+                go()
+
+        if name:
+            switch(name)
+            return
+        from q3tui.tui.flowmap import FlowMapScreen
+
+        self.push_screen(FlowMapScreen(set(flows.list_flows(self.project.root)), now), lambda r: switch(r) if r else None)
 
     def action_flow_editor(self) -> None:
         """F: the flow editor — add / remove / move steps, edit deps, gate, view, pass conditions and notes."""
@@ -700,6 +908,11 @@ class Q3TUIApp(App):
         self.push_screen(StatsScreen(lambda since: stats.report(self.project.state_dir, since), self.session_start, order,
                                      reset=self.ops.reset_stats))
 
+    def action_history(self) -> None:
+        from q3tui.tui.screens import HistoryScreen
+
+        self.push_screen(HistoryScreen(self.ops, restored=self.refresh_all))
+
     def action_pick_model(self) -> None:
         def done(result: dict | None) -> None:
             if result:
@@ -708,6 +921,11 @@ class Q3TUIApp(App):
         self.push_screen(ModelScreen(self.project.cfg.llm.model, self.project.cfg.llm.effort), done)
 
     async def action_quit(self) -> None:
+        if self.background and self.runner.alive():
+            self.push_screen(ConfirmScreen("Runs are going on in the background. Quit and stop them?",
+                                           "Quitting the TUI ends its background run (the step is cancelled); run it again later with r."),
+                             lambda ok: self.exit() if ok else None)
+            return
         if not (self._pipeline_worker and self._pipeline_worker.is_running):
             self.exit()
             return
@@ -763,6 +981,9 @@ class Q3TUIApp(App):
         """A run is already going: if you are not looking at a step that's running, offer to go back to
         one instead of silently refusing — jumping to another step and pressing r by mistake must not look
         like nothing happened. Returns True when it is fine to start a run now."""
+        if self.background and self.runner.alive(self.engine.flow.name):
+            self.notify(f"a run of {self.engine.flow.name} is already going on in the background (pid {self.runner.pid(self.engine.flow.name)}); x stops it")
+            return False
         if not (self._pipeline_worker and self._pipeline_worker.is_running):
             return True
         running = self.engine.running_steps
@@ -808,6 +1029,25 @@ class Q3TUIApp(App):
 
         self.push_screen(ConfirmScreen(f"Approve {', '.join(pending)}?",
                                        "Open non-blocking questions take their default answers; steps with blocking questions are skipped."), done)
+
+    def _offer_follow_up(self, offer: dict) -> None:
+        """A step's offer after its approval (StepDef.follow_up): yes runs its action and, when it names a flow, moves there."""
+        def done(ok: bool | None) -> None:
+            if not ok:
+                self.start_run()
+                return
+            try:
+                if offer.get("action"):
+                    self.log_info(self.ops.run_action(offer["action"]))
+            except EngineError as exc:
+                self._log_line(Text(str(exc), "red"))
+                self.refresh_all()
+                return
+            self.refresh_all()
+            if offer.get("switch"):
+                self.action_switch_flow(offer["switch"])
+
+        self.push_screen(ConfirmScreen(offer["title"], offer.get("detail", "")), done)
 
     def _approve_all(self, force: bool = False) -> None:
         lines = self.engine.approve_all(force=force)
@@ -868,10 +1108,9 @@ class Q3TUIApp(App):
         self._w("#steps").focus()
 
     def action_focus_input(self, prefix: str = "") -> None:
-        cmd = self.query_one("#cmd", Input)
+        cmd = self.query_one("#cmd", HistoryInput)
         if prefix and not cmd.value:
             cmd.value = prefix
-            cmd.cursor_position = len(prefix)
         cmd.focus()
 
     def action_help(self) -> None:
@@ -1051,6 +1290,12 @@ class Q3TUIApp(App):
             return [*steps, "all"]
         if kind == "gate":
             return [*self.engine.gate_modes(), "all"]
+        if kind == "action":
+            return list(self.engine.flow.actions)
+        if kind == "flow":
+            from q3tui import flows
+
+            return list(flows.list_flows(self.project.root))
         if kind == "gate_mode":
             return ["human", "auto", "auto_answer", "none"]
         if kind == "question":
@@ -1063,10 +1308,11 @@ class Q3TUIApp(App):
             return sorted({self.project.rel(p) for st in self.engine.steps for p in st.outputs(self.engine) if p.is_file()})
         return []
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id != "cmd":
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "cmd":
             return
-        text = command_hint(event.value, self._completions) if event.value.startswith("/") else ""
+        value = event.text_area.text
+        text = command_hint(value, self._completions) if value.startswith("/") else ""
         box = self._w("#cmd-hint")
         box.display = bool(text)
         if text:
@@ -1139,31 +1385,30 @@ class Q3TUIApp(App):
         self.push_screen(TextPromptScreen(f"Comment on {where.replace(chr(96), '')}", body=shown or "(no text selected: the comment is about the file)",
                                           placeholder="what should change?"), done)
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "cmd":
-            return
+    async def on_history_input_submitted(self, event: HistoryInput.Submitted) -> None:
         text = event.value.strip()
-        event.input.value = ""
         if not text:
             return
-        if isinstance(event.input, HistoryInput):
-            event.input.remember(text)
+        event.input.remember(event.shown, event.pastes)
         if text.startswith("/"):
+            event.input.value = ""
             self._command(text)
             return
-        if self._assistant_worker and self._assistant_worker.is_running:
-            event.input.value = text  # keep what they typed
+        if self._assistant_worker and self._assistant_worker.is_running:  # (what they typed stays in the box)
             self.notify("the assistant is still answering — Esc stops it, or send again when it is done", severity="warning")
             return
-        self._send_to_assistant(text)
+        event.input.value = ""
+        self._send_to_assistant(text, shown=event.shown)
 
-    def _send_to_assistant(self, text: str) -> None:
-        self._log_chat("you", text, "bold blue")
+    def _send_to_assistant(self, text: str, shown: str | None = None, who: str = "you", context: str | None = None, focus: str | None = None) -> None:
+        """Ask the assistant `text`; the chat shows `shown` (a large paste as its `[+text N lines]` placeholder) when given. `who`, `context`,
+        `focus`: a message Q3TUI sends itself (a failed tool), about a step that may not be the one on screen."""
+        self._log_chat(who, shown or text, "bold blue" if who == "you" else "bold yellow")
 
         # the step the user is working on is fixed when they send the message (the view may
         # follow a running step afterwards)
-        self._chat_focus = self.selected_step
-        context = self.view_context()
+        self._chat_focus = focus or self.selected_step
+        context = context or self.view_context()
 
         async def ask() -> None:
             try:
@@ -1208,12 +1453,24 @@ class Q3TUIApp(App):
             elif cmd == "prompts":
                 self.action_prompt_editor()
             elif cmd == "flow":
+                self.action_switch_flow(args[0] if args else None)
+            elif cmd == "flowedit":
                 self.action_flow_editor()
             elif cmd == "step":
                 if len(args) < 2:
                     raise EngineError("usage: /step <step> view|pass|notes [text] [--session]  (no text: clear; pass conditions split by ;;)")
                 text = " ".join(a for a in args[2:] if a != "--session")
                 self.log_info(self.ops.set_step_setting(args[0], args[1], text, save="--session" not in args))
+                self.refresh_all()
+            elif cmd == "act":
+                if not args:
+                    for a in self.ops.actions().values():
+                        self._log_line(f"{a.name} {' '.join(a.params)} — {a.help}")
+                    if not self.ops.actions():
+                        raise EngineError("this flow has no actions")
+                    return
+                kv = dict(p.partition("=")[::2] for p in args[1:])
+                self.log_info(self.ops.run_action(args[0], **kv))
                 self.refresh_all()
             elif cmd == "gates":
                 for line in self.ops.gates_text().splitlines():
@@ -1250,11 +1507,18 @@ class Q3TUIApp(App):
                 if not args or args[0] not in ("on", "off"):
                     raise EngineError(f"usage: /specreview on|off [--save]  (now: {'on' if self.project.cfg.spec.self_review else 'off'})")
                 self.ops.set_spec_review(args[0] == "on", save="--save" in args)
-            elif cmd == "parallel":
-                if not args or args[0] not in ("on", "off"):
-                    raise EngineError("usage: /parallel on|off [--multi-agent|--shared] [--save]")
-                multi_agent = True if "--multi-agent" in args else (False if "--shared" in args else None)
-                self.ops.set_parallel_rtl_tb(args[0] == "on", multi_agent=multi_agent, save="--save" in args)
+            elif cmd == "tool":
+                if len(args) < 3:
+                    self._log_line(Text("usage: /tool <role> timeout_s|env|modules|cmd <value>", "yellow"))
+                else:
+                    import json as _json
+
+                    raw = " ".join(args[2:])
+                    try:
+                        value = _json.loads(raw)
+                    except ValueError:
+                        value = raw
+                    self._log_line(self.ops.set_tool_role(args[0], args[1], value))
             elif cmd == "cost":
                 if args and args[0] == "reset":
                     self.ops.reset_cost()
@@ -1270,6 +1534,10 @@ class Q3TUIApp(App):
                     self._log_line(self.ops.reset_stats())
                 else:
                     self.action_stats()
+            elif cmd == "history":
+                self.action_history()
+            elif cmd == "auto":
+                self._log_line(self.stop_auto() if args and args[0] == "stop" else self.start_auto())
             elif cmd == "settings":
                 self.action_settings(args[0] if args else None)
             elif cmd == "newchat":

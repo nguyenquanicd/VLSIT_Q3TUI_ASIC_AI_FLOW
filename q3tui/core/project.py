@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,7 +15,7 @@ from q3tui.core.config import CONFIG_FILENAME, Config, q3tui_home, load_config
 
 SPEC_DOC_EXTS = {".md", ".pdf", ".txt", ".html", ".htm", ".rst", ".adoc", ".docx", ".odt", ".rtf"}
 # Files in spec/ that Q3TUI manages and that are not spec documents.
-SPEC_CONTROL_FILES = {"intent.md", "questions.md", "questions.json", "answers.json"}
+SPEC_CONTROL_FILES = {"intent.md"}
 
 
 _HASH_CACHE: dict[tuple[str, int, int], str] = {}
@@ -42,8 +43,12 @@ def sha256_json(data: Any) -> str:
 
 
 def write_json(path: Path, data: Any) -> Path:
+    """Whole or not at all: written to a temporary file and renamed over it, so a reader in another process (the TUI while a run writes)
+    never sees it empty or half written."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, default=str) + "\n")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, default=str) + "\n")
+    os.replace(tmp, path)
     return path
 
 
@@ -118,8 +123,52 @@ class Project:
         return self._dir("tb_dir")
 
     @property
+    def fpga_src_dir(self) -> Path:
+        return self._dir("fpga_src_dir")
+
+    @property
     def state_dir(self) -> Path:
         return self._dir("state_dir")
+
+    @property
+    def config_dir(self) -> Path:
+        return self._dir("config_dir")
+
+    @property
+    def constraints_dir(self) -> Path:
+        return self._dir("constraints_dir")
+
+    @property
+    def sdc_dir(self) -> Path:
+        return self.constraints_dir / "sdc"
+
+    @property
+    def reviews_dir(self) -> Path:
+        return self._dir("reviews_dir")
+
+    @property
+    def reports_dir(self) -> Path:
+        return self._dir("reports_dir")
+
+    @property
+    def build_dir(self) -> Path:
+        return self._dir("build_dir")
+
+    @property
+    def syn_dir(self) -> Path:
+        return self._dir("syn_dir")
+
+    @property
+    def fpga_dir(self) -> Path:
+        return self.syn_dir / "fpga"
+
+    @property
+    def asic_dir(self) -> Path:
+        return self.syn_dir / "asic"
+
+    @property
+    def sim_dir(self) -> Path:
+        return self._dir("sim_dir")
 
     def rel(self, path: Path) -> str:
         try:

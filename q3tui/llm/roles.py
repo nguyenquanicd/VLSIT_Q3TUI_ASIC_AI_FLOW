@@ -36,7 +36,7 @@ ROLES = ("architect", "modeler", "designer", "verifier", "reviewer", "flow")
 # offered to every task of a role (the task's own list is enforced): only roles whose tasks write files get write tools —
 # an offered tool a task may not use is a tool the model reaches for
 ROLE_BUILTINS = {"architect": ["Read", "Grep", "Glob"], "modeler": ["Read", "Grep", "Glob", "Write", "Edit"],
-                 "designer": ["Read", "Grep", "Glob", "Write", "Edit"], "verifier": ["Read", "Grep", "Glob"],
+                 "designer": ["Read", "Grep", "Glob", "Write", "Edit"], "verifier": ["Read", "Grep", "Glob", "Write", "Edit"],  # (the dv flow's tb_* write src/tb/)
                  "reviewer": ["Read", "Grep", "Glob"], "flow": ["Read", "Grep", "Glob", "Write", "Edit"]}
 _FRESH = re.compile(r"review|_section_|^arch_block_|_group_|^triage_(rtl|tb|model)$|_init$")
 
@@ -288,6 +288,9 @@ class Team:
                                     f"trying it once in a fresh session")
             if main:
                 self.busy[role] = False
+            if main and runtime.LOST_SESSION in str(exc).lower():  # the session is gone: the next task starts a new one
+                st.session, st.sent, st.totals, st.pending, st.idle_at = None, [], None, [], None
+                st.needs_brief = True
             st.cost_usd += exc.cost_usd
             result = await runtime.run_stage(stage, cfg, emit)
             result.cost_usd += exc.cost_usd

@@ -27,8 +27,9 @@ independent of the project's `tui.language` setting, which only covers the TUI's
 steps' generated content, never this conversation.
 
 You are the Q3TUI assistant inside the Q3TUI TUI. Q3TUI takes a hardware \
-block from its spec to verified RTL through a flow of steps (the default, VLSIT: spec → parse \
-(requirements) → config → rtl ∥ tb → sva → verify → doc; pipeline_status lists the project's steps).
+block from its spec to RTL through flows of steps (the default, spec: spec → parse \
+(requirements) → config; the rtl flow adds the rules, CSR, RTL, format, style lint and a smoke test; \
+pipeline_status lists the project's steps).
 
 The user drives the project by prompting you. Everything they could do with keys or \
 commands you can do with your tools, so act instead of explaining how:
@@ -42,23 +43,21 @@ run_steps, which regenerates with the LLM spec writer.
 content now, write_section.
 - Intent: set_intent / append_intent. Questions: list_questions, answer_question. \
 Review: mark_reviewed (spec sections), approve, and the per-item reviews of the steps \
-(review_parse_requirement, review_config_parameter, review_property, sign_requirement). \
-Pipeline: run_steps, stop_run, reset_step. Settings: get_settings / set_settings \
+(review_parse_requirement, review_config_parameter). \
+Pipeline: run_steps, stop_run, reset_step; the full unattended run of every flow (spec → rtl → dv → sanity → fpga): start_unattended / \
+stop_unattended; a step whose tool failed: set_tool_role, rerun_failed_step (you are told when). Settings: get_settings / set_settings \
 (everything in the settings dialog: general, llm, per step), set_model, show_cost, reset_cost, \
-reset_stats. Bring-your-own spec: import_file.
+reset_stats. Bring your own spec / RTL / tests / whole project folder: import_file (kind all for a folder). \
+The project's versions (one per finished step, and per flow that passed): show_history, history_diff, show_file_version, restore_version.
 - You can also Edit/Write files under spec/, schemas/ and src/ directly (as the user could \
 in an editor); prefer the dedicated tools when one fits. You cannot modify Q3TUI's internal state.
 - Changes to a step's result: request_change(step=..., ...) then run_steps.
 
 Where things are (read the files of the step the user asks about, not just the spec):
-- spec: spec/*.md (sections), spec/intent.md, spec/questions.json; section structure: get_template
+- spec: spec/*.md (sections), spec/intent.md, schemas/questions/spec.json; section structure: get_template
 - parse: schemas/structured_spec.json (requirements REQ-nnn, parameters, module map)
 - config: schemas/final_config.json (resolved parameter values)
-- rtl: src/rtl/*.sv, src/rtl/filelist.f; schemas/synth_report.json
-- tb: src/tb/*.sv, src/tb/filelist.f; schemas/selected_testplan.json
-- sva: src/sva/*.sv, the bind file, src/sva/GATE3_REVIEW.md
-- verify: schemas/verification_report.json; schemas/rtm.json (the requirements traceability matrix)
-- doc: docs/specification.md (.pdf)
+- rtl (rtl flow): src/rtl/*.sv, src/rtl/filelist.f; schemas/synth_report.json
 - questions of any step: list_questions; step states: pipeline_status
 Each message starts with a [TUI context] line saying which step/tab the user is looking \
 at and what is selected. "This", "it", "the requirements" etc. refer to that view.
@@ -75,7 +74,7 @@ edit the spec or other steps from here. Tools that touch another step ask the us
 - You cannot act after your reply: nothing wakes you up later. Never say "once X \
 finishes I'll do Y". If Y depends on a run, call run_steps with wait=true and then do \
 Y in the same turn, or tell the user what to do next.
-- Destructive actions (reset_step, approve with force, reset_cost, reset_stats) show the user a \
+- Destructive actions (reset_step, approve with force, reset_cost, reset_stats, restore_version) show the user a \
 confirmation dialog; just call the tool — if they decline, say so and stop.
 - Only approve when the user asks for it.
 - Starting a run returns immediately; progress appears in the activity panel.
@@ -100,6 +99,12 @@ class AssistantHost(Protocol):
     def focus_step(self) -> str | None: ...  # step the user is working on (None: no restriction)
 
     async def ask_user(self, questions: list[dict]) -> list[str]: ...  # the TUI picker; answers as text
+
+    def rerun_failed(self, step: str) -> str: ...  # the one rerun of a step whose tool failed (tui/failures.py), in its own flow
+
+    def start_auto(self) -> str: ...  # the full unattended run (core/chain.py) in the background
+
+    def stop_auto(self) -> str: ...
 
 
 def _text(s: str) -> dict:
@@ -245,6 +250,20 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
     async def _stop(a):
         return host.stop_run()
 
+    @add("start_unattended", "The full unattended run, only when the user asks for it: every flow of pipeline.chain (spec → rtl → dv → sanity → "
+         "fpga) in the background, gates approved and questions answered with their defaults, until each flow passed with the RTL as it is at "
+         "the end (a flow that changed the RTL makes the ones before it run again). It can take hours and cost a lot: the user confirms.", none)
+    async def _auto(a):
+        chain = " → ".join(eng.project.cfg.pipeline.chain)
+        if not await host.confirm(f"Start the full unattended run ({chain})?", "Every gate is approved and every question takes its default; "
+                                  "it runs until each flow passed with the final RTL, or one does not pass. It can take hours and cost a lot."):
+            return "not started (the user declined)"
+        return host.start_auto()
+
+    @add("stop_unattended", "Stop the full unattended run.", none)
+    async def _auto_stop(a):
+        return host.stop_auto()
+
     @add("approve", "Approve a review gate (a step of the flow that has one; see `gates`): exactly the step the user named, only when they asked. "
          "step='all' approves every gate waiting for review, only when the user asks to approve all/everything (they confirm). "
          "The step must be done and up to date. force=true approves despite "
@@ -309,6 +328,16 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
     async def _step_setting(a):
         return ops.set_step_setting(a["step"], a["key"], a["value"], a.get("save", True))
 
+    for act in eng.flow.actions.values():  # the flow's own actions (add-ons), each a tool of its own
+
+        def _action_tool(act=act):
+            @add(act.name, act.help, _schema({k: ("string", d) for k, d in act.params.items()},
+                                            [k for k in act.params if k not in act.optional]))
+            async def _run(a):
+                return ops.run_action(act.name, **{k: str(v) for k, v in a.items()})
+
+        _action_tool()
+
     @add("get_skill", "Show a step's skill.md (settings, notes and the stage system prompts as `<!-- NAME -->` sections).",
          _schema({"step": ("string", "a step id")}, ["step"]))
     async def _get_skill(a):
@@ -344,22 +373,6 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
         answers = await host.ask_user(qs)
         return "\n".join(f"{q.get('header') or q['question']}: {ans}" for q, ans in zip(qs, answers))
 
-    @add("list_properties", "VLSIT flow: the SVA properties with their NL text, vacuity and review status (pending|confirmed|rejected).", none)
-    async def _props(a):
-        return json.dumps(ops.properties(), indent=1, default=str)
-
-    @add("review_property", "VLSIT flow: confirm / reject (with a reason) / reset an assertion; only what the user asked. "
-         "Rejected ones are rewritten by the sva step.",
-         _schema({"label": ("string", "assertion label, e.g. a_no_x_on_pc"), "status": ("string", "confirmed|rejected|pending"),
-                  "note": ("string", "reason (for rejected)")}, ["label", "status"]), scope=lambda a: ("sva", "review assertions of"))
-    async def _review_prop(a):
-        return ops.review_property(a["label"], a["status"], a.get("note", ""))
-
-    @add("confirm_all_properties", "VLSIT flow: confirm every pending assertion (vacuous ones stay pending unless include_vacuous); only when "
-         "the user asks to confirm them all.", _schema({"include_vacuous": ("boolean", "")}, []), scope=lambda a: ("sva", "review assertions of"))
-    async def _confirm_props(a):
-        return ops.confirm_properties(bool(a.get("include_vacuous")))
-
     @add("review_parse_requirement", "VLSIT flow (parse, Gate 1): confirm a flagged requirement as read, or take it back to pending; only "
          "what the user asked. A requirement needing a decision (red) is a blocking question instead — answer it with answer_question.",
          _schema({"req_id": ("string", "REQ-nnn"), "confirmed": ("boolean", "")}, ["req_id", "confirmed"]),
@@ -383,23 +396,6 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
          "reviewed; only when the user asks to confirm them all.", none, scope=lambda a: ("config", "review parameters of"))
     async def _confirm_params(a):
         return ops.confirm_parameters()
-
-    @add("rtm_status", "VLSIT flow: the requirements traceability matrix — the six sign-off conditions per requirement.", none)
-    async def _rtm(a):
-        return json.dumps(ops.rtm(), indent=1, default=str)
-
-    @add("sign_requirement", "VLSIT flow: sign a requirement off in the RTM (only when the user says so; refused unless RTL, SVA, TC, "
-         "simulation and mutation hold; signed=false withdraws it).",
-         _schema({"req_id": ("string", "REQ-nnn"), "signed": ("boolean", "default true"), "note": ("string", "")}, ["req_id"]),
-         scope=lambda a: ("verify", "sign off requirements in"))
-    async def _sign_req(a):
-        return ops.sign_req(a["req_id"], a.get("signed", True), a.get("note", ""))
-
-    @add("sign_all_ready_requirements", "VLSIT flow: sign off every requirement whose conditions already hold (RTL, SVA, TC, "
-         "simulation and mutation) — \"approve all\" at Gate 5; only when the user asks to sign them all. Requirements that are "
-         "not ready are left alone.", _schema({"note": ("string", "")}, []), scope=lambda a: ("verify", "sign off requirements in"))
-    async def _sign_all(a):
-        return ops.sign_all_ready(a.get("note", ""))
 
     # -- settings ---------------------------------------------------------------------------------
     @add("set_model", "Change the LLM model/effort for the next stages; save=true writes the project q3tui.yaml.",
@@ -439,6 +435,37 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
             return "the user declined"
         return ops.set_auto_confirm_reviews(bool(a["on"]), bool(a.get("save")))
 
+    @add("set_tool_role", "Change one field of a tool role in the project's config/tools.json (the file is backed up): timeout_s (seconds, "
+         "empty: the default), env ({\"VAR\": \"value\"}, merged; null removes VAR), modules (list of environment modules) or cmd (the command; "
+         "the user is asked). value: JSON (a number, an object, a list) or plain text.",
+         _schema({"role": ("string", "the role, e.g. rdc, sim, fpga_synth"), "key": ("string", "timeout_s | env | modules | cmd"),
+                  "value": ("string", "the new value")}, ["role", "key", "value"]))
+    async def _set_tool_role(a):
+        raw = a.get("value")
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            value = raw
+        if a["key"] == "cmd" and not await host.confirm(f"Change the command of the tool role '{a['role']}'?", str(value)):
+            return "the user declined"
+        return ops.set_tool_role(a["role"], a["key"], value)
+
+    @add("set_step_option", "Set an option a step offers for a tool failure (you are told which, e.g. the Sanity flow's rdc.blackbox: modules VC Static "
+         "treats as black boxes, for big memories that take the analysis past the machine's memory); saved to q3tui.yaml. value: JSON or text.",
+         _schema({"step": ("string", ""), "key": ("string", ""), "value": ("string", "")}, ["step", "key", "value"]))
+    async def _set_step_option(a):
+        raw = a.get("value")
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            value = raw
+        return ops.set_step_option(a["step"], a["key"], value)
+
+    @add("rerun_failed_step", "Rerun, once, a step whose tool failed, after you fixed what made it fail (you are told when a tool failed): it "
+         "runs in its own flow, from that step on, in the background.", _schema({"step": ("string", "")}, ["step"]))
+    async def _rerun_failed(a):
+        return host.rerun_failed(a["step"])
+
     @add("get_settings", "Every user-facing setting (the TUI settings dialog: general, llm, per step) with its current value and help.", none)
     async def _get_settings(a):
         from q3tui.core import settings
@@ -447,7 +474,7 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
         return "\n".join(f"{t.title}:\n" + "\n".join(
             f"  {s.path} = {json.dumps(vals[s.path])}  ({s.kind}{', or null' if s.nullable else ''}"
             + (f"; one of {[v for v, _ in s.choices]}" if s.choices else "") + f") — {s.help}" for s in t.settings)
-            for t in settings.TABS)
+            for t in ops.settings_tabs())
 
     @add("set_settings", "Change settings by path, e.g. {\"llm.effort\": \"low\", \"spec.self_review\": false}; use "
          "get_settings for paths and allowed values. save=true also writes them to the project's q3tui.yaml. "
@@ -485,6 +512,33 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
         if not await host.confirm("Reset the LLM cost counter to $0?"):
             return "the user declined"
         return ops.reset_cost()
+
+    @add("show_history", "Q3TUI's own record of the project: the versions (one each time a step finishes, and when a flow passes: "
+         "marked passed/<flow>), newest first, with the files each one changed; `path`: only the versions that changed it.",
+         _schema({"limit": ("integer", "default 30"), "path": ("string", "a file or folder, e.g. src/rtl")}, []))
+    async def _history(a):
+        return ops.history_text(int(a.get("limit") or 30), a.get("path") or None)
+
+    @add("history_diff", "The changes between two versions of the project: from `version` (an id from show_history, passed/<flow>, HEAD~n) to "
+         "`to` (default: the last version; \"own\": what `version` itself changed); `path`: only that file or folder.",
+         _schema({"version": ("string", ""), "to": ("string", ""), "path": ("string", "")}, ["version"]))
+    async def _history_diff(a):
+        return ops.history_diff(a["version"], a.get("to") or None, a.get("path") or None)
+
+    @add("show_file_version", "A file as it was in a version of the project (show_history gives the versions).",
+         _schema({"version": ("string", ""), "path": ("string", "")}, ["version", "path"]))
+    async def _history_show(a):
+        return ops.history_show(a["version"], a["path"])
+
+    @add("restore_version", "Put files or folders (space-separated `paths`; empty: the whole project) back as they were in a version; what "
+         "changes is backed up. Only when the user asks; they are asked to confirm.",
+         _schema({"version": ("string", ""), "paths": ("string", "space-separated, e.g. src/rtl/m_lane_mul.sv")}, ["version"]))
+    async def _restore(a):
+        paths = (a.get("paths") or "").split()
+        if not await host.confirm(f"Restore {', '.join(paths) or 'the whole project'} from version {a['version']}?",
+                                  "The files are written back as they were then; what changes is backed up to .q3tui/bkp/."):
+            return "the user declined"
+        return ops.restore_version(a["version"], paths)
 
     return tools
 

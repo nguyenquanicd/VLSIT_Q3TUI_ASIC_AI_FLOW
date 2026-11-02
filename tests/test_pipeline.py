@@ -130,6 +130,18 @@ def test_intent_change_updates_the_spec_instead_of_rewriting(engine, llm):
     assert "<new_intent>" in llm.calls[n].prompt and "flush input" in llm.calls[n].prompt
 
 
+def test_a_spec_needs_no_intent_once_it_exists(engine, llm):
+    """The intent only seeds the first draft: a copied project without spec/intent.md keeps its spec (no LLM, no 'missing input')."""
+    engine.import_intent("A two-stage FIFO")
+    run(engine, yes=True, stop="spec")
+    (engine.project.spec_dir / "intent.md").unlink()
+    assert {v.name: v.status for v in engine.status()}["spec"] in ("stale", "done")  # not missing_input
+    n = len(llm.calls)
+    run(engine, yes=True, stop="spec")
+    assert len(llm.calls) == n and {v.name: v.status for v in engine.status()}["spec"] == "done"  # nothing to update: no LLM call
+    assert (engine.project.spec_dir / "spec.md").is_file()
+
+
 def test_reworded_repeats_of_settled_questions_are_dropped():
     from q3tui.steps.common import Question, drop_settled
     from tests.apb_questions import ARCH_Q, REQ_Q
@@ -173,7 +185,7 @@ def test_every_question_comes_with_options(engine, llm):
     assert qs and all(q["options"] for q in qs)
 
 
-# -- parallel_rtl_tb (pipeline.parallel_rtl_tb / parallel_multi_agent) -------------------------------------
+# -- the running set ------------------------------------------------------------------------------------------
 
 
 def test_running_set_tracks_more_than_one_step(engine):
@@ -188,39 +200,31 @@ def test_running_set_tracks_more_than_one_step(engine):
     assert engine.running is None and engine.running_steps == []
 
 
-def test_parallel_tb_ready_off_by_default(engine, llm, monkeypatch):
-    from q3tui.pipeline.engine import StepView
+def test_flow_session_reviewers_run_fresh(engine, llm, monkeypatch):
+    """session: flow — every task goes to the flow's one session, except reviewers (roles.FLOW_FRESH: spec_review
+    re-reads the whole draft and compacted the flow session at its first step) and the flow file's fresh_steps."""
+    from q3tui.llm import roles
+    from q3tui.llm.runtime import Stage
+    from q3tui.pipeline.base import StepContext
 
-    monkeypatch.setattr(engine, "evaluate", lambda step: StepView(step.name, step.title, "pending", "none", [], 0))
-    assert engine._parallel_tb_ready(["rtl", "tb"], set()) is None  # pipeline.parallel_rtl_tb is False
-    engine.project.cfg.pipeline.parallel_rtl_tb = True
-    assert engine._parallel_tb_ready(["rtl", "tb"], set()) is engine.by_name["tb"]
-    assert engine._parallel_tb_ready(["rtl"], set()) is None  # tb outside the requested range: nothing to join
+    sent = []
 
+    class Team:
+        async def run(self, stage, role, cfg, emit):
+            sent.append((stage.name, role))
+            return await runtime.run_stage(stage, cfg, emit)
 
-def test_parallel_tb_ready_skips_steps_that_would_not_really_run(engine, llm, monkeypatch):
-    from q3tui.pipeline.engine import StepView
+    monkeypatch.setattr(roles, "team", lambda project: Team())
+    engine.project.cfg.pipeline.session = "flow"
+    ctx = StepContext(engine, engine.bus.scoped("spec"))
+    for name in ("spec_write", "spec_review"):
+        anyio.run(ctx.llm, Stage(name=name, system_prompt="", prompt="", cwd=engine.project.root))
+    assert sent == [("spec_write", "flow")]
+    assert [c.name for c in llm.calls] == ["spec_write", "spec_review"]
 
-    engine.project.cfg.pipeline.parallel_rtl_tb = True
-    for status in ("missing_input", "unavailable"):
-        monkeypatch.setattr(engine, "evaluate", lambda step, status=status: StepView(step.name, step.title, status, "none", [], 0))
-        assert engine._parallel_tb_ready(["rtl", "tb"], set()) is None
-    monkeypatch.setattr(engine, "evaluate", lambda step: StepView(step.name, step.title, "done", "none", [], 0))
-    assert engine._parallel_tb_ready(["rtl", "tb"], set()) is None  # done and not asked to --regenerate: nothing to join
-    assert engine._parallel_tb_ready(["rtl", "tb"], {"tb"}) is engine.by_name["tb"]  # --regenerate tb: it will run again
-
-
-def test_parallel_multi_agent_role_override_targets_tb_only(engine, llm):
-    """StepContext.llm() (pipeline/base.py), when engine.session_mode() == "flow", picks its role with
-    `engine._step_role_override.get(self.emit.step, "flow")` — the one line this locks down: tb gets
-    "verifier" only while _run_parallel has set the override; every other step (and tb once the parallel
-    run is over) still gets "flow", the whole flow's one shared session."""
-    assert engine._step_role_override.get("tb", "flow") == "flow"
-    engine._step_role_override["tb"] = "verifier"
-    assert engine._step_role_override.get("tb", "flow") == "verifier"
-    assert engine._step_role_override.get("rtl", "flow") == "flow"
-    engine._step_role_override.pop("tb", None)  # _run_parallel's `finally`: cleared once both steps are done
-    assert engine._step_role_override.get("tb", "flow") == "flow"
+    engine.flow.fresh_steps = ["spec"]  # the flow file's fresh_steps: every stage of the step runs fresh
+    anyio.run(ctx.llm, Stage(name="spec_update", system_prompt="", prompt="", cwd=engine.project.root))
+    assert sent == [("spec_write", "flow")] and llm.calls[-1].name == "spec_update"
 
 
 def test_yes_approves_and_staleness(engine, llm):
@@ -356,3 +360,39 @@ def test_a_step_left_running_by_a_killed_process_is_run_again_not_yours(engine, 
     assert v.status == "stale" and "interrupted" in v.detail
     run(fresh, yes=True, stop="rtl")
     assert fresh.state.steps["rtl"].origin == "generated" and fresh.state.steps["rtl"].status == "done"
+
+
+def test_a_steps_cost_adds_up_over_its_runs(engine, llm):
+    """`q3tui cost` showed only the last run of a step (the first run's cost vanished from the per-step list)."""
+    engine.import_intent("fifo")
+    run(engine, yes=True, stop="spec")
+    first = engine.state.steps["spec"].cost_usd
+    assert first > 0
+    engine.request_change("spec", "tighten the overview")
+    run(engine, yes=True, stop="spec")
+    rec = engine.state.steps["spec"]
+    assert rec.cost_usd > first and rec.cost_usd == pytest.approx(engine.state.total_cost_usd)
+    assert engine.cost_summary()["steps"]["spec"] == pytest.approx(rec.cost_usd)
+
+
+def test_a_builtin_input_has_the_same_name_in_every_checkout(engine, tmp_path_factory, monkeypatch):
+    """A built-in file (a template, the default rules) is named relative to the q3tui package in the hashes: running the TUI from a second
+    checkout of Q3TUI left every step with such an input stale, though its content was the same."""
+    from pathlib import Path
+
+    from q3tui.pipeline import engine as enginemod
+
+    builtin = enginemod.PACKAGE / "flows" / "spec" / "spec" / "vlsit_template.yaml"
+    here = engine._hash_files([builtin])
+    assert list(here) == ["q3tui/flows/spec/spec/vlsit_template.yaml"]
+    other = tmp_path_factory.mktemp("other_checkout") / "q3tui"  # (the same file in another checkout, outside the project)
+    (other / "flows" / "spec" / "spec").mkdir(parents=True)
+    (other / "flows" / "spec" / "spec" / "vlsit_template.yaml").write_bytes(builtin.read_bytes())
+    monkeypatch.setattr(enginemod, "PACKAGE", other)
+    assert engine._hash_files([other / "flows" / "spec" / "spec" / "vlsit_template.yaml"]) == here
+    (other / "flows" / "spec" / "spec" / "vlsit_template.yaml").write_text("changed")  # (its content still counts)
+    assert engine._hash_files([other / "flows" / "spec" / "spec" / "vlsit_template.yaml"]) != here
+    inside = engine.project.root / "spec" / "x.md"
+    inside.parent.mkdir(exist_ok=True)
+    inside.write_text("x")
+    assert list(engine._hash_files([inside])) == ["spec/x.md"] and list(engine._hash_files([Path("/etc/hostname")])) == ["/etc/hostname"]

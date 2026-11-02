@@ -13,10 +13,10 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widgets import Label, OptionList, Static
 from textual.widgets.option_list import Option
 
+from q3tui.tui.dialog import Dialog
 from q3tui.tui.i18n import t as t_
 
 OTHER = "__other__"
@@ -64,7 +64,7 @@ def choices_from(options, recommended: str | None = None) -> list[Choice]:
     return out
 
 
-class ChoiceScreen(ModalScreen):
+class ChoiceScreen(Dialog):
     """Pick one option (or several), or type something else.
 
     Dismisses with a `ChoiceResult` (None on Esc). Subclasses (gate, reset, confirm) override `finish` to return

@@ -11,17 +11,16 @@ design is, what is running, and what needs your decision.
 ## Layout
 
 ```text
-┌─ Q3TUI · fifo_top · flow vlsit · ~/proj/fifo ─────────────── claude-opus-5-5 · $1.84 ─┐
-│ PIPELINE            │ STEP 3a · rtl   [Modules] [Synthesis] [Files] [Questions] [Log]   │
+┌─ Q3TUI · fifo_top · flow spec · ~/proj/fifo ──────────────── claude-opus-5-5 · $1.84 ─┐
+│ PIPELINE            │ STEP 1 · parse  [Requirements] [Parameters] [Files] [Questions]   │
 │                     │ ✔ NOT REVIEWED …                                                  │
 │ ✔ 0  spec           │ …                                                                 │
-│ ✔ 1  parse          │                                                                   │
-│ ✔ 2  config  auto   ├───────────────────────────────────────────────────────────────────┤
-│ ◐ 3a rtl            │ ACTIVITY — 3a rtl                                                 │
-│ · 4  tb      auto   │ 14:02:11 rtl    writing src/rtl/fifo_ctrl.sv                      │
-│ · 3b sva  0/12 SVA  │ 14:02:40 rtl    → lint  2 warnings                                │
-│ · 5  verify         │ 14:02:41        fifo_ctrl.sv:33  width mismatch on count          │
-│ · 6  doc            │ 14:03:02 rtl    → lint  clean · → synth …                         │
+│ ◐ 1  parse          │                                                                   │
+│ · 2  config  auto   ├───────────────────────────────────────────────────────────────────┤
+│                     │ ACTIVITY — 1 parse                                                │
+│                     │ 14:02:11 parse  reading spec/spec.md                              │
+│                     │ 14:02:40 parse  → 14 requirements, 3 questions                    │
+│                     │                                                                   │
 │                     │                                                                   │
 ├─────────────────────┴───────────────────────────────────────────────────────────────────┤
 │ > make the ingress depth a parameter, default 16                                        │
@@ -32,9 +31,9 @@ design is, what is running, and what needs your decision.
 
 | Area | Content |
 |---|---|
-| Header | design, the flow (`flow vlsit`), project path, model, total LLM cost for the session |
-| Pipeline | the steps **of the project's flow** (`engine.pipeline_steps`, tags from `engine.label`; the VLSIT flow: 0 spec, 1 parse, 2 config, 3a rtl, 4 tb, 3b sva, 5 verify, 6 doc): status, stale marker, open gate / question count, **gate mode badge** (`auto`, `auto-ans`; nothing = human), fix-loop iteration. Keys `1`–`9` select by position. Selecting a step filters Activity and Files to it |
-| Activity | live event stream of the running step(s): agent messages (collapsed to one line, expandable), tool calls, lint / synthesis / sim results. Steps may run in parallel (`pipeline.parallel_rtl_tb`: rtl ‖ tb), so lines are tagged |
+| Header | design, the flow (`flow spec`), project path, model, total LLM cost for the session |
+| Pipeline | the steps **of the project's flow** (`engine.pipeline_steps`, tags from `engine.label`; the spec flow: 0 spec, 1 parse, 2 config): status, stale marker, open gate / question count, **gate mode badge** (`auto`, `auto-ans`; nothing = human), fix-loop iteration. Keys `1`–`9` select by position. Selecting a step filters Activity and Files to it |
+| Activity | live event stream of the running step(s): agent messages (collapsed to one line, expandable), tool calls, lint / synthesis / sim results. Steps may run in parallel, so lines are tagged |
 | Result banner | top of each step view: the state of the result shown below it: `⚑ NOT REVIEWED` (a to approve) — or, with a specific reason for the gate still being open, `⚑ QUESTION WAITING` (blocking question(s): open the Questions tab, `o`) / `⚑ CONFIRM NEEDED` (StepDef.pending_reviews() items not confirmed: `c` / `C`) — `✔ APPROVED <time>`, `! OUT OF DATE` (old result shown), `✎ EDITED` by you, `◐ RUNNING` (previous result shown), `✖ LAST RUN FAILED` (last good result shown), `★ YOURS`, `○ NO RESULT YET`. Results are always shown when they exist |
 | Section status (spec) | per section: `✔ reviewed`, `⚑ not reviewed`, `✎ edited`, `? TBD`, `↻ change pending`, `○ missing`, `+ extra`. `v` marks a section reviewed; approving the spec marks all; regenerated sections whose text is unchanged keep their review |
 | Step view (lower panel) | follows the selected step (and the running one); see "Panels" below for how a flow's steps get theirs. **spec**: Sections (template ↔ spec.md; Enter edits the selected section's text in place, `n` add, `d` delete, `t` required/optional, `[` `]` move, `E` edit template) · Questions · Files. Other kinds: their tables, Files, Questions, Log |
@@ -50,22 +49,15 @@ The lower panel of a step comes from its **kind** (`StepDef.kind`, the `kind:` o
 - `spec` has the Sections panel above (`SpecPanel`).
 - A kind without a registered panel gets the **default panel**: the result banner, tabs **Files** (the step's outputs and
   inputs, rendered), **Questions**, **Log** (what the step did: its events, the last 300 lines).
-- The VLSIT kinds (`tui/vlsit_panels.py`) are the default panel plus tables over the JSON artifacts (each row has a detail
+- The spec flow's kinds (`tui/vlsit_panels.py`) are the default panel plus tables over the JSON artifacts (each row has a detail
   pane; missing files or keys only mean an empty table):
 
 | Kind | Tabs (before Files / Questions) |
 |---|---|
 | `vlsit_parse` | **Requirements** (REQ, category, ambiguity score, state: `review` when > 0.3, `decide` when it needs your decision; detail: text, source, SVA hint, parameters, RTL modules) · **Parameters** |
 | `vlsit_config` | **Parameters** (value, default, changed, locked, confirmed) · **Constraints** (C1–C5 ✔/✖ with rule and detail) |
-| `vlsit_rtl` | **Modules** (file, lines, `// REQ-xxx` tags, cells, area; source in the detail) · **Synthesis** (`synth_report.json`) |
-| `vlsit_tb` | **Test plan** (TC ↔ REQs, selected) · **Uncovered REQs** (no selected test case covers them) |
-| `vlsit_sva` | **Assertions** (label, module, REQs, vacuity, review status; the `// NL:` text in the detail). `c` confirm · `x` reject (asks why; the SVA step rewrites it) · `u` back to pending · `C` confirm all. Only confirmed assertions count in the RTM |
-| `vlsit_verify` | **RTM** (the six conditions per REQ, mutation score, sign-off; detail: each condition with its evidence). `v` signs the highlighted requirement off (a note is asked; refused unless RTL, SVA, TC, simulation and mutation hold), `V` takes it back · **Simulation** (per-TC results) |
-| `vlsit_doc` | Files · Questions |
 
-The pipeline list also shows `n/m SVA` (assertions confirmed) and `n/m REQ` (signed off). The keys call
-`Ops.review_property`, `Ops.confirm_properties`, `Ops.sign_req` (wrappers of `flows/vlsit/sva/review.py`); the assistant has
-the same as tools (`list_properties`, `review_property`, `confirm_all_properties`, `rtm_status`, `sign_requirement`).
+The RTL, testbench, assertion and verification panels (Modules, Test plan, Assertions, RTM) were removed with those steps.
 
 ## The picker
 
@@ -122,6 +114,47 @@ updates, and the run stops again at the next review or blocking question. With
 auto-approve on, it runs through reviews too. (`q3tui approve` on the CLI only
 approves; run `q3tui run` to continue.)
 
+## Background runs and switching flows
+
+`q3tui tui` starts every run (`r`, the gate's approve-and-continue, the assistant's run tool) as a `q3tui run` process of its own
+(`tui/runner.py`; its output in `.q3tui/tui/run.<flow>.log`), with the live model / effort and the auto-approve / auto-answer switches on its
+command line. The TUI follows it the way it follows any run of another process: `run.<flow>.lock`, the latest `runs/*/events.jsonl` replayed
+into the activity log, the state re-read every 2 s, a badge `RUNNING in the background (pid N)`. So **a run goes on while you switch
+flows** (`F`, `/flow`: the TUI restarts on the other flow; the run is not cancelled), and **one run per flow**: `r` in dv, then in fpga,
+then in sanity runs the three at the same time (pipeline.md "Runs of several flows"); a badge `also running: …` names the other flows'
+runs. `x` stops the run of the flow you look at (Ctrl-C to the process: the step cancels and kills its tools), quitting the TUI asks first
+and then ends them all (gently, then each one's process group).
+What a background run does not see: settings changed for this session only other than model / effort / the auto switches, and gate modes
+set for this session only. A TUI that is not started by `q3tui tui` (tests, embedding) runs in-process as before.
+
+## When a step fails
+
+**Every failure is said**, whichever run it was in: this TUI's own run, a background run, or a run of another flow. Before this, a run of
+another flow just dropped out of `also running: …` without a word. When the engine records a failed step, it also records what failed
+(`StepRecord.failure`: `kind` `tool` or `step`, the `flow`, the time `at`). The TUI re-reads `.q3tui/pipeline.json` when it changes (at most
+every 2 s). For each new failure it shows a notice (`✖ <step> failed`, the flow and the first line of the error), and a red header badge
+`✖ failed: <step> (<flow>)` stays until the step runs again.
+
+**A tool failure goes to the assistant** (`tui/failures.py`). That is a failure that is not the design's: the tool crashed or its server
+died, it timed out, it is missing, or its command is wrong (`ToolBroken`, `ToolUnavailable`), so no fix loop takes it. Q3TUI sends the
+assistant a message of its own (`Q3TUI` in the chat, with the step as the message's focus). The message carries the error, the last 40 lines
+of the log the error names, the tool's role from `config/tools.json`, the step's options, and this machine's memory. The assistant judges:
+
+- **It can fix it with its tools:** a step setting (`set_settings`), the tool role (`set_tool_role, set_step_option (an option a step offers for a tool failure, e.g. Sanity's `blackbox`)`: `timeout_s`, `env`, `modules`; a new
+  `cmd` asks you first), or nothing needs fixing because the problem passed (a busy machine). It says what it changed and why,
+  and calls `rerun_failed_step` once. The step reruns in its own flow, from that step on: in the background, or here when it is this flow
+  and runs are not in the background.
+- **It cannot:** the fix needs the RTL or the spec (only ever through a change request to its step), a tool install, more memory,
+  or a change to Q3TUI. It changes nothing and tells you the cause, the evidence and what to do.
+
+The same failure again (same step, kind and first error line) after that: the assistant only explains and asks; it does not fix or rerun
+again. A third time: only the notice and a line in the activity log. What was handled is kept in `.q3tui/tui/failures.json`, so two TUIs, or a
+restart, do not hand the same failure over twice. A step that runs again without failing is forgotten there. A tool failure of the last 24 h
+that no TUI saw (a CLI run) is handed over when a TUI starts; older ones are only listed. A read-only TUI only says the failures.
+`set_settings` reaches the steps of the flow on screen: for a failure in another flow, the assistant can change the tool role (all flows share
+`config/tools.json`), but for that flow's step options it tells you. `/tool <role> <field> <value>` changes a tool role yourself, as
+`set_tool_role` does.
+
 ## Reset
 
 `R` asks what to reset: **(s)** the selected step and the steps after it, or **(a)** all
@@ -141,10 +174,10 @@ to full height.
 
 ## Settings
 
-`,` or `/settings [general|gates|llm|models|spec|rtl|tb]` opens the settings dialog.
-Tabs: **General** (auto-approve, auto-answer, auto-confirm, rtl ‖ tb in parallel, fix loop, language, icon set: `unicode` ✔ ⚑ ◐, `nerd` for a
+`,` or `/settings [general|gates|llm|models|spec|rtl]` opens the settings dialog.
+Tabs: **General** (auto-approve, auto-answer, auto-confirm, fix loop, language, icon set: `unicode` ✔ ⚑ ◐, `nerd` for a
 "… Nerd Font Mono" font, `ascii` for any font), **Gates** (the mode of each step's review gate in the current flow), **LLM** (model, effort, thinking budget,
-turns, $ and time limits, fallback model), **Spec**, **RTL**, **TB** and **Models per step**
+turns, $ and time limits, fallback model), **Spec**, **RTL** and **Models per step**
 (model / effort per step); it opens on the selected step's tab. Each
 setting has a one-line help. `ctrl+s` applies and saves to the project's `q3tui.yaml`; tick "Only for this
 session" to try a setting without saving it; invalid values keep the dialog open with the error.
@@ -198,9 +231,10 @@ CLI, the assistant can do by prompting.** Both go through the same operations la
 | Spec content | `write_section` (write or replace one section of `spec.md` now; creates it at its template position), `set_intent`, `append_intent`, `mark_reviewed` |
 | Gates and asking | `gates`, `set_gate_mode`, `ask_user` (the picker: up to 4 questions with options, answers come back as text) |
 | Flow | `set_step_setting` (view / pass / notes), `get_skill`, `set_skill`, `get_prompt`, `set_prompt` |
-| VLSIT flow | `review_parse_requirement`, `confirm_all_requirements`, `review_config_parameter`, `confirm_all_parameters`, `list_properties`, `review_property`, `confirm_all_properties`, `rtm_status`, `sign_requirement`, `sign_all_ready_requirements` |
-| Pipeline | `run_steps` (start/stop/only/regenerate), `stop_run`, `approve`, `answer_question`, `request_change` (optionally for one section), `reset_step`, `import_file` (a spec) |
+| Spec flow | `review_parse_requirement`, `confirm_all_requirements`, `review_config_parameter`, `confirm_all_parameters` |
+| Pipeline | `run_steps` (start/stop/only/regenerate), `stop_run`, `start_unattended` / `stop_unattended` (the full unattended run, confirmed), `approve`, `answer_question`, `request_change` (optionally for one section), `reset_step`, `import_file` (a file or a whole folder: spec documents and RTL; testbench, SVA and scripts are left out) |
 | Settings | `set_model`, `set_spec_review`, `set_auto_approve`, `set_auto_answer`, `set_auto_confirm_reviews`, `get_settings`, `set_settings`, `show_stats`, `reset_stats`, `reset_cost` |
+| History | `show_history`, `history_diff`, `show_file_version`, `restore_version` (confirmed) — docs/spec/history.md |
 | Files | `Read`/`Grep`/`Glob` over the project; `Edit`/`Write` only in `spec/`, `schemas/` and `src/` (like a user in an editor); never `.q3tui/` |
 
 Example: *"add a Power Management section after Performance with a field Power states,
@@ -224,15 +258,22 @@ approves when asked. Its conversation is resumed across TUI launches (Agent-SDK 
 id in `.q3tui/tui/session.json`; `/newchat` starts over).
 
 Slash commands complete as you type: the rest of the command or argument shows as grey ghost text (Tab or → accepts it) and a hint line above the input shows the usage and the valid values (steps, open question ids, models, efforts, files). Slash commands, which need no LLM: `/run [from] [to]`, `/stop`, `/approve <gate>|all [--force]`,
-`/change <step> <text>`, `/answer <id> <text>|all`, `/gate <step> [mode] [--session]`, `/gates`, `/flow`, `/skill`, `/prompts`,
+`/change <step> <text>`, `/answer <id> <text>|all`, `/gate <step> [mode] [--session]`, `/gates`, `/flow [name]` (switch flow; key `F`; a running step is cancelled after you confirm), `/flowedit` (the step editor), `/skill`, `/prompts`,
 `/step <step> view|pass|notes [text]`, `/reset <step>|all [--only]`, `/model [id] [--save]` (no id: the settings' LLM tab),
-`/effort <level>`, `/specreview`, `/autoapprove`, `/autoanswer`, `/autoconfirm` (`on|off [--save]`), `/parallel on|off
-[--multi-agent]`, `/settings [tab]`, `/status`, `/open <file>`, `/cost [reset]`, `/stats [reset]`, `/newchat`, `/help`, `/quit`.
+`/effort <level>`, `/specreview`, `/autoapprove`, `/autoanswer`, `/autoconfirm` (`on|off [--save]`),
+`/settings [tab]`, `/status`, `/open <file>`, `/cost [reset]`, `/stats [reset]`, `/history` (key `H`: the project's versions, docs/spec/history.md), `/auto [stop]` (the full unattended run of every flow in the background, docs/spec/pipeline.md "Full unattended runs"), `/newchat`, `/help`, `/quit`.
 
 Assistant replies render as Markdown; `z` zooms the activity/chat to full height. A new message while the assistant is still answering is held (not sent) instead of cancelling the reply. **Esc** (or `x` / `/stop` when no pipeline step is running) stops the reply; the conversation continues from the last finished reply.
 
 Focus starts on the pipeline so single-key actions work; `i` (or `/`) moves to the
 command line and `Esc` returns.
+
+The command line takes several lines: **Enter** sends, **Ctrl+J** (or Shift+Enter where the terminal sends it) starts a new line, and
+the box grows with its text (up to 10 lines, then it scrolls). A large paste (more than 5 lines or 1000 characters) shows as one
+placeholder, `[+text 40 lines]` (`[+text 1200 chars]` for one long line), so the box stays readable. The assistant gets the whole
+text, while the chat shows the placeholder. Paste with the terminal's paste (Ctrl+Shift+V, right click, middle click). The terminal
+sends Ctrl+V to the TUI as a key, so it pastes only text copied in Q3TUI, and says so when there is none. **↑ / ↓** move the cursor between lines and recall history from the first / last line.
+The history (`.q3tui/tui/history.json`) keeps an entry's pastes, for the last 20 entries that had any.
 
 ## Architecture
 
@@ -250,6 +291,6 @@ command line and `Esc` returns.
   next time.
 
 **Comment (`C`, every view):** select text with the mouse, or highlight a row / section in the shown tab (requirement, port, test,
-assertion, question, spec section …), press `C`, type the comment: the assistant receives it with the quoted text and fixes it with
+question, spec section …), press `C`, type the comment: the assistant receives it with the quoted text and fixes it with
 its tools (change request for the step, or a section edit). One key everywhere; `c` stays free for the views' own actions
-(e.g. Confirm in the SVA properties).
+(e.g. Confirm in the requirements review).
