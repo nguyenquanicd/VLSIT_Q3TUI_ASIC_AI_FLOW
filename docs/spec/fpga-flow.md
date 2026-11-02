@@ -28,7 +28,7 @@ Top module: `options.top` or `schemas/structured_spec.json` `metadata.top_module
 | File | Holds |
 |---|---|
 | `clocks.tcl` | `create_clock` (name, port, period, duty), `set_clock_uncertainty` |
-| `clock_groups.tcl` | `set_clock_groups` (asynchronous / exclusive); a comment for a single clock |
+| `clock_groups.tcl` | `set_clock_groups` (asynchronous / exclusive); a single clock is its own asynchronous group (CDC tools want every primary clock in a user-defined group: VC Static `SETUP_CLOCK_GROUP_MISSING`) |
 | `io_constraints.tcl` | `set_input_delay` / `set_output_delay` (max = share of the period, min 0) on every port of the top module except clocks, resets and `io.exclude`; each reset input also gets a `set_input_delay` (same budget) on the clock whose name ends like the reset (`i_rst_n_pclk` ↔ `i_clk_pclk`), else on the I/O clock — a port with only a false path is "partially constrained" to the CDC tools |
 | `exceptions.tcl` | `set_false_path` from every asynchronous reset, plus false / multicycle / min / max delay exceptions |
 | `env.tcl` | `set_driving_cell`, `set_load`, `set_max_fanout`, `set_max_transition` (ASIC tools; the FPGA tools skip it) |

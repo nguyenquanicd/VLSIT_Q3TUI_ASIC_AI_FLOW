@@ -2,7 +2,7 @@
 
     constraints/sdc/sdc.json         clocks, I/O delay budget, clock groups, path exceptions, environment (the source of truth)
     constraints/sdc/clocks.tcl       create_clock, set_clock_uncertainty
-    constraints/sdc/clock_groups.tcl set_clock_groups (empty comment when there is one clock)
+    constraints/sdc/clock_groups.tcl set_clock_groups (one clock: its own asynchronous group, which CDC tools want)
     constraints/sdc/exceptions.tcl   false / multicycle paths, min / max delay overrides
     constraints/sdc/io_constraints.tcl  set_input_delay / set_output_delay for every port of the top module
     constraints/sdc/env.tcl          driving cell, load, max fanout / transition (ASIC tools; the FPGA tools skip it)
@@ -197,8 +197,12 @@ def _groups_tcl(cfg: SdcConfig) -> str:
     for g in cfg.clock_groups:
         groups = " ".join(f"-group [get_clocks {{{' '.join(grp)}}}]" for grp in g.groups if grp)
         out.append(f"set_clock_groups -{g.kind} {groups}\n")
-    if not cfg.clock_groups:
-        out.append(f"# single clock domain ({len(cfg.clocks)} clock{'s' if len(cfg.clocks) != 1 else ''}): no clock groups\n")
+    if not cfg.clock_groups and len(cfg.clocks) == 1:
+        # one clock: its own group all the same — a CDC tool wants every primary clock in a user-defined group (VC Static: SETUP_CLOCK_GROUP_MISSING)
+        out.append(f"set_clock_groups -asynchronous -group [get_clocks {{{cfg.clocks[0].name}}}]\n")
+    elif not cfg.clock_groups:
+        out.append(f"# {len(cfg.clocks)} clocks, no clock groups set: their relations are the tools' defaults (add groups with the SDC editor)\n"
+                   if cfg.clocks else "# no clock: no clock groups\n")
     return "".join(out)
 
 

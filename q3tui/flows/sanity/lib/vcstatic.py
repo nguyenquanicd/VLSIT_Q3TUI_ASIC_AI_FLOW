@@ -50,3 +50,33 @@ def parse_report(text: str) -> tuple[list[dict], int]:
                     "message": re.sub(r"\[(\w+)\]", lambda m: fields.get(m.group(1), m.group(0)), desc), "fields": fields})
         fields.pop("Tag", None)
     return out, infos
+
+
+def clear_stale_lock(work: Path) -> str | None:
+    """VC Static refuses to start while `vcst_rtdb/session.lock` names a session ("Another session is already running…"): a run that crashed leaves it
+    (rv32iv_sm: the RDC check after a segfault). When the process it names is not running on this host, the lock is stale: it is removed and the
+    message says so. A live session, another host's, or a lock that cannot be read: left as it is (VC Static's own error then says it). None: nothing removed."""
+    import os
+    import re
+    import socket
+
+    lock = work / "vcst_rtdb" / "session.lock"
+    if not lock.is_file():
+        return None
+    text = lock.read_text(errors="replace")
+    pid = re.search(r"ProcessId\s*:\s*\[(\d+)\]", text)
+    host = re.search(r"HostMachine\s*:\s*\[([^\]]*)\]", text)
+    if not pid:
+        return None
+    here = {socket.gethostname(), socket.gethostname().split(".")[0]}
+    if host and host.group(1) and host.group(1) not in here and host.group(1).split(".")[0] not in here:
+        return None
+    try:
+        os.kill(int(pid.group(1)), 0)
+        return None  # (alive: a session that is really running)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        return None  # (another user's live process)
+    lock.unlink()
+    return f"removed a stale VC Static lock ({lock.name}: session {pid.group(1)} is not running here; a run that crashed left it)"

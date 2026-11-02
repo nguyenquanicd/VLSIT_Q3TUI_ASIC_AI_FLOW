@@ -1,5 +1,7 @@
 """The Tcl script of a VC Static run (after the examples of `doc/vcst/examples/CDC` and `RDC`): analyze, elaborate, the shared SDC, the
-resets, the check and the reports. Written by code each run (`build/sanity/<role>_setup.tcl`); `options.extra_tcl` adds lines of your own after the SDC."""
+resets, the check and the reports. Written by code each run (`build/sanity/<role>_setup.tcl`); `options.extra_tcl` adds lines of your own after the SDC;
+`options.blackbox` (module names) makes those modules black boxes before the analysis: a big memory's array (rv32iv_sm's 2 Mbit DMEM) took RDC to
+49 GB and crashed it — only its ports matter for crossings."""
 
 from __future__ import annotations
 
@@ -9,10 +11,10 @@ from pathlib import Path
 SETUP = """# {role} setup of `{top}`, written by Q3TUI (step {role}) from the RTL and the shared SDC: it is rewritten every run; put lines of your own in options.extra_tcl.
 cd {work}
 set_app_var enable_{role} true
-analyze -format sverilog -vcs "-f {filelist}"
+{blackbox}analyze -format sverilog -vcs "-f {filelist}"
 elaborate {top}
 read_sdc {sdc}
-{groups}{resets}{extra}{config}check_{role}
+{groups}{resets}{setup}{extra}{config}check_{role}
 {waive}{reports}
 quit
 """
@@ -57,8 +59,16 @@ def absolute_filelist(filelist: Path, root: Path, work: Path) -> Path:
     return dest
 
 
-def text(role: str, top: str, root: Path, filelist: Path, work: Path, sdc: Path, sdcj: dict, extra: str = "", waive: Path | None = None) -> str:
-    """The script; `waive`: a file of waiver commands sourced after the check (the run of `<role>_check`)."""
-    return SETUP.format(role=role, work=work, filelist=filelist, top=top, sdc=sdc, groups=group_lines(sdcj),
-                        resets=reset_lines(list(sdcj.get("resets") or [])), extra=(extra.rstrip() + "\n") if extra.strip() else "",
+def blackbox_lines(modules) -> str:
+    """`set_blackbox` for the modules of options.blackbox (a list, or names separated by spaces / commas); before analyze (the tool's order)."""
+    names = [m for m in (re.split(r"[\s,]+", modules) if isinstance(modules, str) else [str(x) for x in modules or []]) if m.strip()]
+    return f"set_blackbox -designs {{{' '.join(dict.fromkeys(n.strip() for n in names))}}}\n" if names else ""
+
+
+def text(role: str, top: str, root: Path, filelist: Path, work: Path, sdc: Path, sdcj: dict, extra: str = "", waive: Path | None = None,
+         blackbox=None, resets: str | None = None, setup: str = "") -> str:
+    """The script; `waive`: a file of waiver commands sourced after the check (the run of `<role>_check`); `blackbox`: modules made black boxes;
+    `resets`: the `create_reset` lines of the setup step (None: from the SDC's resets); `setup`: the setup step's other commands (lib/setup.py)."""
+    return SETUP.format(role=role, work=work, filelist=filelist, top=top, sdc=sdc, groups=group_lines(sdcj), blackbox=blackbox_lines(blackbox),
+                        resets=resets if resets is not None else reset_lines(list(sdcj.get("resets") or [])), setup=setup, extra=(extra.rstrip() + "\n") if extra.strip() else "",
                         config=CONFIG.get(role, ""), waive=f"source {waive}\n" if waive else "", reports=REPORTS[role].format(work=work))
