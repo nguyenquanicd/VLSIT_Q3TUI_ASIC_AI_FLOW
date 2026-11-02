@@ -159,9 +159,9 @@ Ghi vào trường `parameters_affected` của mỗi requirement.
 
 Đọc bảng §3.2 (Module list), map từng requirement sang module RTL chịu trách nhiệm implement:
 ```
-REQ-001 (PC sau reset)         → rv32im_if_stage (U03)
-REQ-002 (RV32M decode)         → rv32im_decoder (U05), rv32im_muldiv (U11)
-REQ-007 (Load-use penalty)     → rv32im_hazard_ctrl (U18)
+REQ-001 (PC sau reset)         → m_if_stage (U03)
+REQ-002 (RV32M decode)         → m_decoder (U05), m_muldiv (U11)
+REQ-007 (Load-use penalty)     → m_hazard_ctrl (U18)
 ...
 ```
 Ghi vào trường `rtl_modules` của mỗi requirement. Phase 3 dùng trường này để biết module nào cần tag REQ-ID nào.
