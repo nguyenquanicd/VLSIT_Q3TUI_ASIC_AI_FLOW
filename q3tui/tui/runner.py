@@ -51,6 +51,12 @@ class Runner:
     def start(self, project, flow: str, **kw) -> int:
         return self._spawn(project, flow, self.command(project, flow, **kw))
 
+    def start_auto(self, project) -> int:
+        """`q3tui auto` (core/chain.py), key `auto`: the TUI follows its flow runs like any other run (run.<flow>.lock, runs/*/events.jsonl)."""
+        cfg = project.cfg
+        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "auto"]
+        return self._spawn(project, "auto", cmd)
+
     def _spawn(self, project, key: str, cmd: list[str]) -> int:
         if self.alive(key):
             raise RuntimeError(f"a {key} run is already going on (pid {self.pid(key)})")

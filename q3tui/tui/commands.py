@@ -20,6 +20,8 @@ ON_OFF = (("on", "off"), ("--save",))
 COMMANDS: dict[str, Command] = {
     "run": Command("[from] [to]", "run the pipeline (optionally a range of steps)", ("step", "step")),
     "stop": Command("", "stop the running step, else the assistant's reply (Esc also stops the reply)"),
+    "auto": Command("[stop]", "full unattended run in the background: spec → rtl → dv → sanity → fpga (pipeline.chain) until each passed with the "
+                    "RTL as it is at the end — a flow that changed the RTL makes the ones before run again", (("stop",),)),
     "approve": Command("<step>|all [--force]", "approve a review gate, or every gate waiting for review", ("gate", ("--force",))),
     "change": Command("<step> <text>", "queue a change request for a step", ("step",)),
     "answer": Command("<id> <text> | all", "answer an open question, or `all`: every open question takes its default", ("question",)),
