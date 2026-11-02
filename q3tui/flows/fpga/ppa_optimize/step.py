@@ -108,7 +108,7 @@ class Step(FpgaStep):
         clocks = ", ".join(f"{c['name']} {round(c['freq_mhz'], 1):g} MHz" for c in ppa.get("clocks", []))
         key = self.constraints_key(engine)
         base = {"part": ppa.get("part"), "before": snap, "missed": missed, "history": history, "iteration": len(history) + 1,
-                "sdc": key, "clocks": clocks}
+                "sdc": key, "clocks": clocks, **({"verified_rtl": prev["verified_rtl"]} if prev.get("verified_rtl") else {})}
         if not missed and when != "always":
             self.write(engine, PLAN_JSON, {**base, "status": "met", "analysis": "every target is met", "fixes": []})
             ctx.emit("log", message="PPA targets met: nothing to optimize")
@@ -213,7 +213,7 @@ class Step(FpgaStep):
                                                          "unattended (hand off with ppa_handoff, or accept it in the spec)")
         if not ids:
             if self._needs_verify(engine):
-                await self._verify(engine)
+                return await self._verify(engine)  # (True: the check changed the RTL — synthesis runs again on the RTL as it is now)
             return False
         from q3tui import flows
         from q3tui.core.ops import Ops
@@ -225,10 +225,13 @@ class Step(FpgaStep):
             plan = self.read(engine, PLAN_JSON, {}) or {}
             steps = sorted({f["handed_off"]["step"] for f in plan.get("fixes", []) if f["id"] in ids and f.get("handed_off")})
             owner = flows.load_flow(str(self.options.get("handoff_flow") or "rtl"), engine.project.root)
+            fmt = str(self.options.get("verify_from") or "format")
             for name in steps:
-                engine.bus.emit("log", self.name, message=f"PPA: running {owner.name}:{name} for the handed-off fixes…")
                 other = Engine(engine.project, engine.bus, flow=owner)
-                outcome = await other.run(only=name, yes=True)
+                # the owner's steps that only rewrite the RTL (format) run too: synthesis sees the RTL as it will stay
+                upto = fmt if name == "rtl" and fmt in other.by_name and other.steps.index(other.by_name[fmt]) > other.steps.index(other.by_name[name]) else None
+                engine.bus.emit("log", self.name, message=f"PPA: running {owner.name}:{name}{f' → {upto}' if upto else ''} for the handed-off fixes…")
+                outcome = await (other.run(start=name, stop=upto, yes=True) if upto else other.run(only=name, yes=True))
                 engine.reload()  # (that run wrote the same pipeline.json, and dropped the run lock)
                 engine._take_lock()
                 if outcome != "complete":
@@ -240,9 +243,11 @@ class Step(FpgaStep):
             return False
         return True
 
-    async def _verify(self, engine) -> None:
+    async def _verify(self, engine) -> bool:
         """The targets are met on RTL the optimization changed: run the owner flow's functional check on it (format → smoke). If function
-        broke, that flow's own fix loop repairs the RTL; PPA is not told — the two are not related. Once per RTL."""
+        broke, that flow's own fix loop repairs the RTL; PPA is not told — the two are not related. Once per RTL. True: the check changed the
+        RTL (format, the smoke loop's repair): this flow runs again — the synthesis that passed was not of this RTL (the RTL it leaves counts as
+        checked: no second check of it)."""
         from q3tui import flows
         from q3tui.pipeline.engine import Engine
 
@@ -266,3 +271,15 @@ class Step(FpgaStep):
         engine.bus.emit("log" if outcome == "complete" else "warning", self.name,
                         message=f"PPA: {owner.name} {first} → {last} ended '{outcome}'"
                                 + ("" if outcome == "complete" else f" — see {owner.name} (F); its fix loop repairs the RTL, the PPA is not involved"))
+        now = self._rtl_hash(engine)
+        if outcome != "complete" or now == plan["verified_rtl"]:
+            return False
+        plan = self.read(engine, PLAN_JSON, {}) or {}
+        plan["verified_rtl"] = now
+        self.write(engine, PLAN_JSON, plan)
+        rec = engine.state.steps.get(self.name)
+        if rec is not None:
+            rec.outputs = engine._hash_files(self.outputs(engine))
+        engine.save()
+        engine.bus.emit("log", self.name, message=f"PPA: {owner.name} {first} → {last} changed the RTL: synthesis runs again on it")
+        return True

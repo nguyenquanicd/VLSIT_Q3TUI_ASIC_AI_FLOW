@@ -192,16 +192,17 @@ the clock (or any constraint) and the rounds start afresh; the earlier ones stay
 a gate was approved). Human gate: approving with fixes pending asks "Hand N PPA fix(es) to 'rtl' and switch to it?"; yes hands them off
 and moves the TUI to that flow (F does the same later), no keeps them proposed. A gate that approves itself cannot ask: in mode `auto` `on_approve` hands the *RTL* fixes off at once (the other flow is yours to run).
 In mode `auto_answer` (or `pipeline.auto_answer`) the run goes on by itself, through the generic `StepDef.unattended` hook: hand the RTL
-fixes off, run the owner flow's `rtl` step (`Engine(flow=owner).run(only="rtl", yes=True)`, its gates approved as the unattended run
-says), then run this flow again — the new RTL makes `sdc`, synthesis, the report and `ppa_optimize` stale — until the targets are met or
+fixes off, run the owner flow's `rtl` step and its `format` after it (`Engine(flow=owner).run(start="rtl", stop="format", yes=True)`, its
+gates approved as the unattended run says: synthesis sees the RTL as it will stay — format rewrites whitespace), then run this flow again — the new RTL makes `sdc`, synthesis, the report and `ppa_optimize` stale — until the targets are met or
 `max_iterations` rounds are used (the step then fails and says so). A spec fix is never handed off unattended (it is your document):
-it stays proposed with a warning. The owner flow's later steps (format, style_lint, smoke) are left stale for you to run.
+it stays proposed with a warning. The owner flow's later steps (style_lint, smoke) are left stale for you to run.
 
 **Function after PPA.** The fixes change the RTL, and nothing in this flow checks that it still works. When the targets are met on RTL that
 handed-off fixes changed (`options.verify_after`, default true; once per RTL), the owner flow's functional check runs on it: unattended
 (`auto_answer`) the step runs `options.verify_from` → `verify_to` (default `format` → `smoke`) there itself; at a human gate it offers to
-switch to that flow (run it there with `r`). If function broke, that flow's own fix loop repairs the RTL — the PPA flow is not told and does
-not run again on the repaired RTL (the two are unrelated); the next run of this flow re-synthesizes it. A run that ends anything but complete
+switch to that flow (run it there with `r`). If function broke, that flow's own fix loop repairs the RTL — the PPA flow is not told (the two are
+unrelated). Unattended, a check that changed the RTL (the formatting, a repair) makes this flow run again at once: the synthesis that passed was
+not of this RTL; the RTL the check leaves counts as checked (`verified_rtl` of the plan, kept across rounds), so it is not checked twice. A run that ends anything but complete
 (for example the owner's upstream steps are not done) leaves a warning that says so.
 
 **Settings.** The `ppa_optimize` options are in Settings (`,`, opens on the step's tab): Max PPA rounds, Optimize when, Goal, Hand fixes to flow,
