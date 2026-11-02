@@ -141,7 +141,7 @@ died, it timed out, it is missing, or its command is wrong (`ToolBroken`, `ToolU
 assistant a message of its own (`Q3TUI` in the chat, with the step as the message's focus). The message carries the error, the last 40 lines
 of the log the error names, the tool's role from `config/tools.json`, the step's options, and this machine's memory. The assistant judges:
 
-- **It can fix it with its tools:** a step setting (`set_settings`), the tool role (`set_tool_role`: `timeout_s`, `env`, `modules`; a new
+- **It can fix it with its tools:** a step setting (`set_settings`), the tool role (`set_tool_role, set_step_option (an option a step offers for a tool failure, e.g. Sanity's `blackbox`)`: `timeout_s`, `env`, `modules`; a new
   `cmd` asks you first), or nothing needs fixing because the problem passed (a busy machine, a taken license). It says what it changed and why,
   and calls `rerun_failed_step` once. The step reruns in its own flow, from that step on: in the background, or here when it is this flow
   and runs are not in the background.

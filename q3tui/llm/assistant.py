@@ -435,6 +435,17 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
             return "the user declined"
         return ops.set_tool_role(a["role"], a["key"], value)
 
+    @add("set_step_option", "Set an option a step offers for a tool failure (you are told which, e.g. the Sanity flow's rdc.blackbox: modules VC Static "
+         "treats as black boxes, for big memories that take the analysis past the machine's memory); saved to q3tui.yaml. value: JSON or text.",
+         _schema({"step": ("string", ""), "key": ("string", ""), "value": ("string", "")}, ["step", "key", "value"]))
+    async def _set_step_option(a):
+        raw = a.get("value")
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            value = raw
+        return ops.set_step_option(a["step"], a["key"], value)
+
     @add("rerun_failed_step", "Rerun, once, a step whose tool failed, after you fixed what made it fail (you are told when a tool failed): it "
          "runs in its own flow, from that step on, in the background.", _schema({"step": ("string", "")}, ["step"]))
     async def _rerun_failed(a):
