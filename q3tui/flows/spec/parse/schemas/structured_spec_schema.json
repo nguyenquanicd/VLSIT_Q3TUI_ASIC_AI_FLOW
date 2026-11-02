@@ -9,7 +9,7 @@
       "type": "object",
       "required": ["ip_name", "spec_revision", "phase", "gate_status"],
       "properties": {
-        "ip_name":        { "type": "string", "example": "rv32im_core" },
+        "ip_name":        { "type": "string", "example": "m_apb_slave" },
         "spec_revision":  { "type": "string", "example": "0.2" },
         "phase":          { "type": "integer", "const": 1 },
         "gate_status":    { "type": "string", "enum": ["pending", "approved"] },
@@ -87,7 +87,7 @@
 
     "style_constraints_source": {
       "type": "string",
-      "description": "Đường dẫn file quy tắc RTL, thường là 'rtl_rule.md'"
+      "description": "Đường dẫn file quy tắc RTL, thường là 'rtl_rule_default.md' (VLSIT RTL Design Rules v2)"
     },
 
     "ambiguity_flags": {

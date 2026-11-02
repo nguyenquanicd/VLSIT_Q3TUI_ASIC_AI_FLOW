@@ -27,7 +27,7 @@ Kiểm tra theo thứ tự ưu tiên:
 Từ dữ liệu đọc được, xây dựng bảng nội bộ gồm:
 `name | type | default | valid_range | description | features_affected | req_ids_affected`
 
-Bảng chuẩn cho `rv32im_core` (tham chiếu `spec_parser.md §2.2`) — dùng khi không có `structured_spec.json`:
+Bảng ví dụ cho core RV32IM `m_rv32im_core` (tham chiếu `spec_parser.md §2.2`) — dùng khi không có `structured_spec.json`:
 
 | ID  | Tên                 | Default            | Range  | Tóm tắt                              | Feature       |
 |-----|---------------------|--------------------|--------|--------------------------------------|---------------|
@@ -96,7 +96,7 @@ Xử lý tuần tự từng parameter người dùng muốn thay đổi:
 
 ## Bước 4 — Style constraints
 
-Thông báo: _"Đọc `rtl_rule_default.md`..."_ và đọc file đó để liệt kê các rule baseline bắt buộc (VLSIT RTL Design Rules v2). Nếu project có `rtl_rule.md` riêng, đọc thêm và liệt kê như phần bổ sung/override cục bộ.
+Thông báo: _"Đọc `rtl_rule_default.md`..."_ và đọc file đó để liệt kê các rule baseline bắt buộc (VLSIT RTL Design Rules v2). Nếu project có `config/rtl_rules.md` riêng, đọc thêm và liệt kê như phần bổ sung/override cục bộ.
 
 Hỏi người dùng:
 
@@ -118,7 +118,7 @@ Hiển thị bảng tổng kết theo format sau:
 
 ```
 ╔══ GATE 2 · CONFIG SUMMARY ═══════════════════════════╗
-║  IP: rv32im_core   Spec rev: 0.2                    ║
+║  IP: m_rv32im_core  Spec rev: 0.2                    ║
 ╠══ Parameters thay đổi so với default ════════════════╣
 ║  (Liệt kê từng parameter đã thay đổi: tên, old→new) ║
 ║  (Nếu không có: "Tất cả giữ default")               ║
@@ -165,7 +165,7 @@ Nếu tất cả pass, hỏi:
 |---|---|
 | `spec_parser.md` và `structured_spec.json` đều không có | Dừng, yêu cầu file spec |
 | `rtl_rule_default.md` không tồn tại | Dừng, cảnh báo "Thiếu rule baseline bắt buộc" |
-| `rtl_rule.md` (project-specific, tuỳ chọn) không tồn tại | Tiếp tục bình thường, ghi nhận "không có rtl_rule.md bổ sung" vào config |
+| `config/rtl_rules.md` (project-specific, tuỳ chọn) không tồn tại | Tiếp tục bình thường, ghi nhận "không có config/rtl_rules.md bổ sung" vào config |
 | Người dùng nhập value ngoài range | Từ chối, giải thích range hợp lệ, hỏi lại |
 | Constraint vi phạm sau thay đổi hàng loạt | Liệt kê tất cả vi phạm cùng lúc trước khi yêu cầu sửa |
 | `schemas/final_config.json` đã tồn tại | Cảnh báo "File đã tồn tại — ghi đè?" trước khi overwrite |
