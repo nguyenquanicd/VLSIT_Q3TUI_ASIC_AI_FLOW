@@ -11,7 +11,7 @@
 #
 # Needs: bash, curl or an existing `uv` (the script can install uv for you), network access for the Python packages
 # (or an internal PyPI mirror: UV_INDEX_URL=...). Python >= 3.11 is fetched by uv when the system one is older.
-# Not installed by this script: Synopsys tools (VCS, Design Compiler — your site's modules) and Claude access.
+# Not installed by this script: any EDA tool (yours: on PATH or loaded through tools.json) and Claude access.
 
 set -euo pipefail
 
@@ -123,9 +123,9 @@ else
   warn "Claude Code CLI not found — Q3TUI's LLM calls go through the Claude Agent SDK: install Claude Code and log in, or set ANTHROPIC_API_KEY"
 fi
 if command -v module >/dev/null 2>&1 || [ -f /etc/profile.d/modules.sh ]; then
-  ok "environment modules available (Synopsys tools are loaded through tools.json 'modules')"
+  ok "environment modules available (EDA tools can be loaded through tools.json 'modules')"
 else
-  warn "no 'module' command: Synopsys tools must be on PATH, or set 'setup_script' in tools.json"
+  warn "no 'module' command: EDA tools must be on PATH, or set 'setup_script' in tools.json"
 fi
 
 # --- verify -----------------------------------------------------------------------------------------------------------
@@ -141,7 +141,7 @@ cat <<EOF
 
 $(printf '\033[1m')Next steps$(printf '\033[0m')
   mkdir my_block && cd my_block
-  q3tui tools init        # tools.json: VCS lint / compile / run, Design Compiler — edit modules and the .db library
+  q3tui tools init        # tools.json: a suggested reference set of tool roles — adapt it to the EDA tools of your site
   q3tui tools check       # are the tools found?
   q3tui init              # spec/intent.md skeleton (or put your spec in spec/); \`q3tui\` alone opens the TUI (r runs, ? for keys)
 Docs: docs/user_guide.md · design: docs/spec/README.md · examples/ (in the repository)

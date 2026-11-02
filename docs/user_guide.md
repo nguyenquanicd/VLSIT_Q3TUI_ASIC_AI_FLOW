@@ -29,7 +29,7 @@ checked against, every setting, and every command/key you use day to day. The de
 |---|---|
 | [`uv`](https://docs.astral.sh/uv/) | The installer can install `uv` for you; `uv` fetches a newer Python when yours is older. |
 | Claude access | The Claude Agent SDK's normal auth: an existing Claude Code login, `ANTHROPIC_API_KEY`, or a gateway / Bedrock / Vertex through `llm.env` in `q3tui.yaml`. |
-| EDA tools (optional) | Verible for the rtl flow; a simulator for smoke / dv; lint, synthesis and CDC tools for the later flows. A role with no tool configured is reported **N/A**, never silently skipped. |
+| EDA tools (optional, yours) | Q3TUI ships none. A linter and formatter for the rtl flow, a simulator for smoke / dv, lint, synthesis and CDC tools for the later flows: bring the ones your site uses (see below). A role with no tool configured is reported **N/A**, never silently skipped. |
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW/main/install.sh | bash   # no clone needed
@@ -45,9 +45,11 @@ It installs the `q3tui` command into `~/.local/bin`. Run the same line again to 
 
 Settings for every project go in `~/.q3tui/q3tui.yaml` (start from `q3tui.example.yaml`).
 
-EDA tools load through environment modules (`tools.modules`, or a per-role override) or are on your `PATH`; `q3tui tools init`
-writes the project's `config/tools.json` from a preset and `q3tui tools check` says which roles the current flow needs and
-whether each is configured.
+**EDA tools are yours.** Q3TUI does not install them or require a particular set: every flow runs *roles* (`lint`, `synth`, `sim`, …) and
+`config/tools.json` of the project says which command each role runs. `q3tui tools init` writes a **suggested reference set** of roles:
+use it as a reference, then adapt it or source your own tools. They load through environment modules (`tools.modules`, or a per-role
+override), a setup script, or are on your `PATH`. `q3tui tools check` says which roles the current flow needs and whether each is
+configured.
 
 ## 2. Start a project
 
@@ -341,8 +343,8 @@ spec → parse → config → rules → csr → rtl → format → style_lint �
    violations back to `rtl`. This repeats by itself, up to `style_lint.max_rounds`.
 4. **Smoke test.** A small testbench written from the spec only, compiled and run (tool roles `sim` and `run`). A failure is triaged and fixed, or becomes a question for you.
 
-Tools: Verible (`verible_lint`, `verible_format`) and the CSR generator come with the flow's defaults; `sim` / `run` / `lint` / `synth` come from your `config/tools.json` (the Synopsys
-preset when you have none). A missing tool makes its step wait and name the role. **Skills:** the LLM stages read playbooks (`config/skills/<name>/SKILL.md`); put your own in
+Tools: every role (`verible_lint`, `verible_format`, `csr_gen`, `sim` / `run` / `lint` / `synth`, …) comes from your `config/tools.json`; the flow has no defaults and there is no
+fallback. Start from the suggested reference set of `q3tui tools init` and adapt it. A missing tool makes its step wait and name the role. **Skills:** the LLM stages read playbooks (`config/skills/<name>/SKILL.md`); put your own in
 `<project>/config/skills/` to add or replace one. `q3tui act style_show` and `q3tui act csr_show` print what the flow decided.
 
 ## 11. Unattended runs and the fix loop
