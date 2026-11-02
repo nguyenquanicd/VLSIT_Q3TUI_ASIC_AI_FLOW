@@ -552,6 +552,22 @@ class Ops:
 
     TOOL_KEYS = ("timeout_s", "env", "modules", "cmd")
 
+    def tool_fix_options(self) -> dict[str, dict[str, str]]:
+        """step -> {option: what it does}: the options this flow's steps offer for a tool failure (`StepDef.tool_fix_options`)."""
+        return {s.name: dict(s.tool_fix_options) for s in self.engine.steps if getattr(s, "tool_fix_options", None)}
+
+    def set_step_option(self, step: str, key: str, value) -> str:
+        """Set an option a step offers for a tool failure (e.g. Sanity's `blackbox`) on the live step and in q3tui.yaml (pipeline.step_options)."""
+        import json
+
+        offered = self.tool_fix_options()
+        if key not in offered.get(step, {}):
+            raise EngineError(f"not an option offered for a tool failure: {', '.join(f'{s}.{k}' for s, ks in offered.items() for k in ks) or 'none'}")
+        self.project.cfg.pipeline.step_options.setdefault(step, {})[key] = value
+        self.engine.by_name[step].options[key] = value
+        saved = self.project.save_config_values({"pipeline": {"step_options": {step: {key: value}}}})
+        return self._log(None, f"{step}.{key} = {json.dumps(value)} (saved to {self.project.rel(saved)})")
+
     def set_tool_role(self, role: str, key: str, value) -> str:
         """Change one field of a tool role in the project's tools file (config/tools.json): `timeout_s` (seconds; empty: the default),
         `env` ({VAR: value}, merged; a null value removes VAR), `modules` (the list, replaced) or `cmd`. The file is backed up first."""

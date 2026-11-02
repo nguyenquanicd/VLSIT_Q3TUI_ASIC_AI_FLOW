@@ -137,6 +137,24 @@ def machine() -> str:
 
 def prompt(project: Project, f: Failure, count: int) -> str:
     """The message the assistant gets: the first time judge / fix / rerun or tell; the second time (after its fix) only explain and ask."""
+    if count == 1:
+        head = (f"[Tool failure] Step `{f.step}` of the {f.flow} flow stopped at {f.at}: its tool failed — not the design (no fix round was spent). "
+                "Judge it:\n"
+                "- If you can fix it yourself with your tools — a step setting (get_settings / set_settings), the tool's role in config/tools.json "
+                "(set_tool_role: timeout_s, env, modules), an option the step offers for this (set_step_option, listed below), or nothing needs fixing (it was passing: the machine was busy) — "
+                f"do it, say in a few lines what you changed and why, then call rerun_failed_step(step='{f.step}') once.\n"
+                "- Otherwise — the fix needs the RTL or the spec (only ever through a change request to its step), a tool install, more "
+                "memory, or a change to Q3TUI itself — change nothing: tell the user the cause, the evidence and exactly what they should do.\n"
+                "Keep it short.")
+    else:
+        head = (f"[Tool failure, again] Step `{f.step}` of the {f.flow} flow failed the same way again ({f.at}). Do not change anything and do "
+                "not rerun it: tell the user the cause, what was tried (if anything) and what they need to do.")
+    return head + "\n\n" + facts(project, f)
+
+
+def facts(project: Project, f: Failure) -> str:
+    """What is known about a tool failure: the error, the log's end, the tool's role, the step's options, the machine (the TUI's assistant and an
+    unattended run's tool fix, core/chain.py, get the same)."""
     path, tail = log_tail(f.error)
     m = _ROLE.search(f.error or "")
     role = m.group(1) if m else ""
@@ -155,16 +173,53 @@ def prompt(project: Project, f: Failure, count: int) -> str:
         facts.append(f"Tool role `{role}` (config/tools.json): {json.dumps(role_cfg)}")
     facts.append(f"Step options of `{f.step}`: {json.dumps(options) if options else '(none set)'}")
     facts.append(f"This machine: {machine()}")
-    if count == 1:
-        head = (f"[Tool failure] Step `{f.step}` of the {f.flow} flow stopped at {f.at}: its tool failed — not the design (no fix round was spent). "
-                "Judge it:\n"
-                "- If you can fix it yourself with your tools — a step setting (get_settings / set_settings), the tool's role in config/tools.json "
-                "(set_tool_role: timeout_s, env, modules), or nothing needs fixing (it was passing: the machine was busy) — "
-                f"do it, say in a few lines what you changed and why, then call rerun_failed_step(step='{f.step}') once.\n"
-                "- Otherwise — the fix needs the RTL or the spec (only ever through a change request to its step), a tool install, more "
-                "memory, or a change to Q3TUI itself — change nothing: tell the user the cause, the evidence and exactly what they should do.\n"
-                "Keep it short.")
-    else:
-        head = (f"[Tool failure, again] Step `{f.step}` of the {f.flow} flow failed the same way again ({f.at}). Do not change anything and do "
-                "not rerun it: tell the user the cause, what was tried (if anything) and what they need to do.")
-    return head + "\n\n" + "\n\n".join(facts)
+    try:
+        from q3tui import flows
+        from q3tui.pipeline.engine import Engine
+
+        eng = Engine(project, flow=flows.load_flow(f.flow, project.root)) if f.flow else None
+        offered = [(s.name, k, h, s.options.get(k)) for s in (eng.steps if eng else []) for k, h in (getattr(s, "tool_fix_options", None) or {}).items()]
+    except Exception:  # noqa: BLE001 - a flow that cannot load: no options to offer
+        offered = []
+    if offered:
+        facts.append("Step options offered for a tool failure (set_step_option; current values):\n"
+                     + "\n".join(f"- {s}.{k} = {json.dumps(v)}: {h}" for s, k, h, v in offered))
+    peaks = memory_peaks(project, role_cfg.get("cmd", "") if role_cfg else "")
+    if peaks:
+        facts.append("Memory the same tool reported in its runs (newest first; a run that needs more than the machine has crashes):\n" + "\n".join(peaks))
+    return "\n\n".join(facts)
+
+
+_PEAK = re.compile(r"peak\s*mem\w*\s*(?:\((mb|gb|kb)\))?\s*[:=]?\s*([\d.]+)\s*(mb|gb|kb)?", re.I)
+
+
+def memory_peaks(project: Project, cmd: str, limit: int = 6) -> list[str]:
+    """The peak memory the tool of `cmd` said in its logs (`Peak Memory(MB): 48846`, the largest per log), newest log first: the logs Q3TUI kept
+    (their first line is `$ <command>`) under .q3tui/ and build/."""
+    binary = cmd.split()[0] if cmd.split() else ""
+    if not binary or "{" in binary:
+        return []
+    logs = []
+    for base in (project.state_dir, project.build_dir):
+        if base.is_dir():
+            logs += [p for p in base.rglob("*.log") if p.is_file()]
+    out = []
+    for p in sorted(logs, key=lambda x: x.stat().st_mtime, reverse=True)[:400]:
+        try:
+            with p.open(errors="replace") as fh:
+                if not fh.readline().startswith(f"$ {binary}"):
+                    continue
+                best = 0.0
+                for line in fh:
+                    m = _PEAK.search(line)
+                    if m:
+                        unit = (m.group(1) or m.group(3) or "mb").lower()
+                        best = max(best, float(m.group(2)) * {"kb": 1 / 1024, "mb": 1.0, "gb": 1024.0}[unit])
+        except OSError:
+            continue
+        if best:
+            when = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            out.append(f"- {project.rel(p)} ({when}): peak {best / 1024:.1f} GB")
+        if len(out) >= limit:
+            break
+    return out
