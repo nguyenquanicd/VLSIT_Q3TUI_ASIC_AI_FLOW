@@ -25,7 +25,8 @@ The flow starts at `spec`, which is Q3TUI's spec step with the VLSIT layout (`op
 `/spec_writer` / `/autoflow --describe`):
 - **an intent** (`spec/intent.md`, `q3tui run --intent "…"` / `--intent-file FILE`): `spec` writes `spec/spec.md` section by
   section (the 21 sections of the VLSIT ASIC IP Design Specification template: Purpose and Scope … Requirements REQ-<AREA>-<NNN>,
-  Features FEAT-NNN, Parameters PARA_* / LPARA_* with constraints C1…, Interfaces, Architecture, Functional Behavior, Register pointer to
+  Features FEAT-NNN (each with its application: the use case it serves), Parameters PARA_* / LPARA_* with constraints C1…, Interfaces,
+  Architecture, Functional Behavior (each operation opens with its application), Register pointer to
   the CSR workbook, RTL contract, Verification, Traceability, Assumptions …), reviews it, and asks what the intent leaves open (questions; the spec gate is human by default).
   What you answer is written into the spec, and `parse` follows the changed sections only.
 - **a spec** (`--spec FILE`, or a file in `spec/`): `spec` counts as done (user-provided, never rewritten) and the flow starts at `parse`.
@@ -45,7 +46,7 @@ spec flow only spec documents are taken; the `rtl` flow also takes RTL.
 
 | Kind | Goes to | What the flow does with it |
 |---|---|---|
-| spec documents | `spec/ref/` (name clashes get their folder as prefix) | references: the `spec` step's LLM **ports** them into `spec/spec.md` with the template's predefined sections (Overview, Key Features, Parameters `PR_*`, Interface, …): it reads every document itself (text in the prompt as it is, HTML / PDF with its Read tool — no conversion by code), carries every fact over, keeps module and port names, names parameters by the template (original name noted), and marks what the documents do not cover TBD + a question; the review pass checks it against them. No intent is needed. A re-import updates only the sections the changed documents affect. Only the spec step reads `spec/ref/`; later steps read the ported spec. Documents that were taken as the spec before (identical copies in `spec/`) become references. `--spec FILE` still takes a document as the spec as it is |
+| spec documents | `spec/ref/` (name clashes get their folder as prefix) | references: the `spec` step's LLM **ports** them into `spec/spec.md` with the template's predefined sections (Overview, Key Features, Parameters `PARA_*`, Interface, …): it reads every document itself (text in the prompt as it is, HTML / PDF with its Read tool — no conversion by code), carries every fact over, keeps module and port names, names parameters by the template (original name noted), and marks what the documents do not cover TBD + a question; the review pass checks it against them. No intent is needed. A re-import updates only the sections the changed documents affect. Only the spec step reads `spec/ref/`; later steps read the ported spec. Documents that were taken as the spec before (identical copies in `spec/`) become references. `--spec FILE` still takes a document as the spec as it is |
 | RTL (rtl flow) | the rtl step's own folder | its module names, hierarchy, top and ports (pyslang, at import time: `.q3tui/imports/rtl.json`) are given to `parse` as fact: the module map **is** the imported RTL (`fit_to_design`), a requirement on another module goes to the top. The `rtl` step of the rtl flow then **checks** each imported module (rules, REQ tags, lint) instead of writing it, see [rtl-flow.md](rtl-flow.md) |
 
 The folder imported from, when it lies inside the project (e.g. `ref/<project>/`), is denied to every stage.

@@ -41,8 +41,11 @@ sections:
       (unsupported functions, responsibilities owned by other blocks). 1.2 Deployment assumptions, a table: target
       SoC / product class, technology / library assumptions, operating modes and workload, security / privilege context,
       external dependencies (memory, endpoint, firmware, clock/reset controller). 1.3 Feature summary, a table:
-      Feature ID (FEAT-001, ...), feature, required / optional, configuration condition, requirement ids. Features are
-      externally observable; this is the checklist the rest of the spec elaborates.
+      Feature ID (FEAT-001, ...), feature, application, required / optional, configuration condition, requirement ids.
+      The application says what the feature is used for in the system: the use case or scenario it serves, who uses it
+      (software, another block, the SoC) and why it is needed (e.g. "burst writes: DMA fills a frame buffer at full bus
+      rate"); never a restatement of the feature. Features are externally observable; this is the checklist the rest of
+      the spec elaborates.
     fields:
       - {name: IP name, guidance: "the IP's name"}
       - {name: Version, guidance: 'document version, e.g. "0.1"'}
@@ -154,8 +157,9 @@ sections:
     required: true
     guidance: >
       10.1 Modes and state transitions, a table (mode/state, entry condition, behavior, exit condition, outputs/side
-      effects). 10.2 Operations: for each operation (OP-001, ...) the inputs, preconditions, acceptance point, exact
-      function, result, completion, latency, ordering and exceptions. 10.3 Cycle-level behavior: timing diagrams / cycle
+      effects). 10.2 Operations: for each operation (OP-001, ...) its application first (the use case it serves, who
+      triggers it and why, and the feature ids FEAT-NNN it implements), then the inputs, preconditions, acceptance point,
+      exact function, result, completion, latency, ordering and exceptions. 10.3 Cycle-level behavior: timing diagrams / cycle
       tables, the active edge and when values are sampled/observed. 10.4 Arbitration, buffering and throughput: tie-breaking,
       fairness/starvation, FIFO depths, simultaneous enqueue/dequeue, backpressure, outstanding limits, cross-port ordering,
       acceptance-to-result latency, initiation interval, sustained throughput. 10.5 Memories and storage, a table (storage

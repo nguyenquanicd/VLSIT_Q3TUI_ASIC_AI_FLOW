@@ -10,7 +10,7 @@
       "type": "object",
       "required": ["ip_name", "spec_revision", "phase", "gate_status", "gate_2_approved"],
       "properties": {
-        "ip_name":           { "type": "string", "example": "rv32im_core" },
+        "ip_name":           { "type": "string", "example": "m_apb_slave" },
         "spec_revision":     { "type": "string", "example": "0.2" },
         "phase":             { "type": "integer", "const": 2 },
         "gate_status":       { "type": "string", "enum": ["pending", "approved"] },
@@ -21,7 +21,7 @@
 
     "parameters": {
       "type": "object",
-      "description": "Map tên parameter → giá trị và metadata. Key là tên parameter (PR_*).",
+      "description": "Map tên parameter → giá trị và metadata. Key là tên parameter (PARA_*).",
       "additionalProperties": {
         "type": "object",
         "required": ["value", "default", "type", "changed_from_default", "confirmed_by_user"],
@@ -39,7 +39,7 @@
       },
       "examples": [
         {
-          "PR_BOOT_ADDR": {
+          "PARA_BOOT_ADDR": {
             "value": "32'h8000_0000",
             "default": "32'h8000_0000",
             "type": "logic [31:0]",
@@ -61,7 +61,7 @@
         "C1": {
           "type": "object",
           "properties": {
-            "rule":   { "type": "string", "const": "PR_BOOT_ADDR[1:0] == 2'b00" },
+            "rule":   { "type": "string", "const": "PARA_BOOT_ADDR[1:0] == 2'b00" },
             "pass":   { "type": "boolean" },
             "detail": { "type": "string" }
           }
@@ -69,7 +69,7 @@
         "C2": {
           "type": "object",
           "properties": {
-            "rule":   { "type": "string", "const": "PR_MTVEC_RESET[1:0] == 2'b00" },
+            "rule":   { "type": "string", "const": "PARA_MTVEC_RESET[1:0] == 2'b00" },
             "pass":   { "type": "boolean" },
             "detail": { "type": "string" }
           }
@@ -77,7 +77,7 @@
         "C3": {
           "type": "object",
           "properties": {
-            "rule":   { "type": "string", "const": "PR_IRQ_EN == 1 → PR_CSR_EN == 1" },
+            "rule":   { "type": "string", "const": "PARA_IRQ_EN == 1 → PARA_CSR_EN == 1" },
             "pass":   { "type": "boolean" },
             "detail": { "type": "string" }
           }
@@ -85,7 +85,7 @@
         "C4": {
           "type": "object",
           "properties": {
-            "rule":   { "type": "string", "const": "PR_MTVEC_VEC_EN == 1 → PR_CSR_EN == 1" },
+            "rule":   { "type": "string", "const": "PARA_MTVEC_VEC_EN == 1 → PARA_CSR_EN == 1" },
             "pass":   { "type": "boolean" },
             "detail": { "type": "string" }
           }
@@ -93,7 +93,7 @@
         "C5": {
           "type": "object",
           "properties": {
-            "rule":   { "type": "string", "const": "PR_COUNTER_EN == 1 → PR_CSR_EN == 1" },
+            "rule":   { "type": "string", "const": "PARA_COUNTER_EN == 1 → PARA_CSR_EN == 1" },
             "pass":   { "type": "boolean" },
             "detail": { "type": "string" }
           }
@@ -107,7 +107,7 @@
       "properties": {
         "source_file": {
           "type": ["string", "null"],
-          "description": "Đường dẫn file quy tắc RTL gốc, thường 'rtl_rule.md'"
+          "description": "Đường dẫn file quy tắc RTL gốc, thường 'rtl_rule_default.md' (VLSIT RTL Design Rules v2), hoặc 'config/rtl_rules.md' của project"
         },
         "natural_language_additions": {
           "type": "array",
@@ -122,7 +122,7 @@
             "required": ["id", "source", "rule"],
             "properties": {
               "id":     { "type": "string", "description": "Mã rule, ví dụ 'STYLE-001'" },
-              "source": { "type": "string", "enum": ["rtl_rule.md", "user_addition"] },
+              "source": { "type": "string", "description": "Tên file rule mà rule này lấy từ (ví dụ 'rtl_rule_default.md'), hoặc 'user_addition'" },
               "rule":   { "type": "string", "description": "Mô tả rule ngắn gọn" },
               "original_nl": { "type": ["string", "null"], "description": "Câu ngôn ngữ tự nhiên gốc nếu là user_addition" }
             }
@@ -149,13 +149,13 @@
           "F02": {
             "enabled": true,
             "mandatory": true,
-            "parameters_driving": ["PR_M_EXT_EN"],
+            "parameters_driving": ["PARA_M_EXT_EN"],
             "req_ids": ["REQ-002"]
           },
           "F16": {
             "enabled": true,
             "mandatory": false,
-            "parameters_driving": ["PR_COUNTER_EN"],
+            "parameters_driving": ["PARA_COUNTER_EN"],
             "req_ids": ["REQ-016"]
           }
         }

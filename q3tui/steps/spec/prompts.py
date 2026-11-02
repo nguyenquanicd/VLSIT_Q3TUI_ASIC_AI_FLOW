@@ -170,7 +170,7 @@ in its order, with its fields. The documents are the source of truth: carry over
 (signal tables, burst types, encodings, parameters and defaults, latencies, error conditions, corner cases), \
 reworded into the section it belongs to — do not drop, weaken or invent behaviour. Keep module names and \
 port names exactly as the documents give them (the user's RTL and tests use them); parameters follow the \
-template's naming (e.g. PR_<NAME>), with the documents' original name noted once in the Parameters table. \
+template's naming (e.g. PARA_<NAME>), with the documents' original name noted once in the Parameters table. \
 A template section or field the documents do not cover: write what follows from them, else "TBD" plus a \
 question. Where the documents contradict each other, write the more specific statement and raise a question.
 

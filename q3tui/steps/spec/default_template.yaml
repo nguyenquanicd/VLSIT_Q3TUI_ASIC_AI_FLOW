@@ -24,7 +24,9 @@ sections:
     title: Features
     required: true
     guidance: >
-      Numbered list of features (F1, F2, ...), one line each, externally observable.
+      Numbered list of features (F1, F2, ...), externally observable, each one line
+      followed by its application: what it is used for in the system (the use case or
+      scenario, who uses it and why), not a restatement of the feature.
       This is the checklist the rest of the spec elaborates.
 
   - id: parameters
@@ -60,7 +62,8 @@ sections:
     title: Functional Behaviour
     required: true
     guidance: >
-      Numbered subsections, one per feature. Use "shall". Give cycle-level timing
+      Numbered subsections, one per feature, each opening with the application it serves
+      (the use case, who triggers it and why). Use "shall". Give cycle-level timing
       (latency, throughput, ordering) wherever it is observable at the ports.
 
   - id: registers
