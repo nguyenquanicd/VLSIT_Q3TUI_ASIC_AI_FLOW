@@ -3,7 +3,7 @@ Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanc
 | Tool Version : Vivado v.2025.1 (lin64) Build 6140274 Wed May 21 22:58:25 MDT 2025
 | Date         : Fri Oct  9 22:27:24 2026
 | Host         : vlsi running 64-bit Debian GNU/Linux 11 (bullseye)
-| Command      : report_timing_summary -delay_type min_max -max_paths 10 -file /home/user/work/VLSIT_Q3TUI_AI_FLOW/projects/axi4_sram_ctrl/.q3tui/fpga/fpga_synth/timing.rpt
+| Command      : report_timing_summary -delay_type min_max -max_paths 10 -file <project>/.q3tui/fpga/fpga_synth/timing.rpt
 | Design       : m_vlsi_axi4_sram
 | Device       : 7k325t-ffg900
 | Speed File   : -2  PRODUCTION 1.12 2017-02-17
