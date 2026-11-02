@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Q3TUI installer — installs the `q3tui` command with `uv tool` (the same way a developer install works here):
 #
-#   ./install.sh                 install (editable: `git pull` updates it) into ~/.local/bin
+#   curl -fsSL https://raw.githubusercontent.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW/main/install.sh | bash
+#                                one line, no clone: installs the latest from git (Q3TUI_REF=<tag|branch> picks another,
+#                                Q3TUI_REPO_URL=<git url> another repository). Re-run it to update.
+#   ./install.sh                 from a checkout: install (editable: `git pull` updates it) into ~/.local/bin
 #   ./install.sh --no-editable   install a copy (an update needs ./install.sh again)
 #   ./install.sh --uninstall     remove the command
 #   ./install.sh --dry-run       print what would be done, change nothing
@@ -12,14 +15,21 @@
 
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# A checkout when the script sits beside pyproject.toml; otherwise (`curl … | bash`) install from git.
+SELF="${BASH_SOURCE[0]:-}"
+REPO=""
+if [ -n "$SELF" ] && [ -f "$(dirname "$SELF")/pyproject.toml" ]; then
+  REPO="$(cd "$(dirname "$SELF")" && pwd)"
+fi
+GIT_URL="${Q3TUI_REPO_URL:-https://github.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW.git}"
+GIT_REF="${Q3TUI_REF:-}"
 EDITABLE=1
 DRY=0
 UNINSTALL=0
 ASSUME_YES=0
 PYTHON_REQ=">=3.11"
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -71,15 +81,21 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 # --- checks -----------------------------------------------------------------------------------------------------------
-[ -f "$REPO/pyproject.toml" ] || die "run this script from a Q3TUI checkout (pyproject.toml not found in $REPO)"
-say "installing Q3TUI from $REPO"
+if [ -n "$REPO" ]; then
+  say "installing Q3TUI from $REPO"
+  SOURCE="$REPO"
+else
+  SOURCE="git+${GIT_URL}${GIT_REF:+@$GIT_REF}"
+  say "installing Q3TUI from $SOURCE"
+  EDITABLE=0   # nothing to edit without a checkout
+fi
 [ "$(uname -s)" = "Linux" ] || warn "tested on Linux only (EDA tools are Linux tools)"
 ensure_uv
 
 # --- install ----------------------------------------------------------------------------------------------------------
 say "installing the 'q3tui' command (uv tool, Python $PYTHON_REQ)"
 args=(tool install --force --python "$PYTHON_REQ")
-if [ "$EDITABLE" = 1 ]; then args+=(--editable "$REPO"); else args+=("$REPO"); fi
+if [ "$EDITABLE" = 1 ]; then args+=(--editable "$SOURCE"); else args+=("$SOURCE"); fi
 run uv "${args[@]}"
 
 BIN_DIR="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
@@ -92,10 +108,12 @@ esac
 CONF_DIR="${Q3TUI_HOME:-$HOME/.q3tui}"
 if [ -f "$CONF_DIR/q3tui.yaml" ]; then
   ok "keeping your settings: $CONF_DIR/q3tui.yaml"
-elif [ -f "$REPO/q3tui.example.yaml" ]; then
+elif [ -n "$REPO" ] && [ -f "$REPO/q3tui.example.yaml" ]; then
   say "writing a starting configuration: $CONF_DIR/q3tui.yaml (edit the model, tool modules, flow)"
   run mkdir -p "$CONF_DIR"
   run cp "$REPO/q3tui.example.yaml" "$CONF_DIR/q3tui.yaml"
+else
+  warn "no starting configuration written (none needed: the defaults work; see q3tui.example.yaml in the repository to set EDA tool modules)"
 fi
 
 # --- what the script cannot do for you --------------------------------------------------------------------------------
@@ -125,6 +143,6 @@ $(printf '\033[1m')Next steps$(printf '\033[0m')
   mkdir my_block && cd my_block
   q3tui tools init        # tools.json: VCS lint / compile / run, Design Compiler — edit modules and the .db library
   q3tui tools check       # are the tools found?
-  q3tui run --intent "…"  # or put your spec in spec/ ; \`q3tui\` alone opens the TUI (/run, ? for keys)
-Docs: $REPO/docs/spec/README.md · flows: docs/spec/vlsit-flow.md · examples: $REPO/examples/
+  q3tui init              # spec/intent.md skeleton (or put your spec in spec/); \`q3tui\` alone opens the TUI (r runs, ? for keys)
+Docs: docs/user_guide.md · design: docs/spec/README.md · examples/ (in the repository)
 EOF

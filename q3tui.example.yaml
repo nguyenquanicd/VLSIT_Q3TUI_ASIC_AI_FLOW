@@ -2,7 +2,7 @@
 # Full schema: docs/spec/config.md
 
 # pipeline:
-#   flow: vlsit          # default (q3tui flow list)
+#   flow: spec           # default (q3tui flow list)
 #   auto_answer: false   # true: unattended — approve gates, confirm assertions, sign the ready requirements
 
 llm:
