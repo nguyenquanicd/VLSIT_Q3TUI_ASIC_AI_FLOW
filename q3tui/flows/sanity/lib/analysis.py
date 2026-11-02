@@ -92,7 +92,7 @@ class AnalysisStep(SanityStep):
         try:
             tools = self.tools(engine)
             if not await anyio.to_thread.run_sync(lambda: toolmod.available(tools, role)):
-                raise ToolUnavailable(f"the `{role}` tool was not found (VC Static, /path/to/vc_static; see config/tools.json / `q3tui tools check`)")
+                raise ToolUnavailable(f"the `{role}` tool was not found (VC Static: `vc_static_shell` on PATH, or the role's cmd in config/tools.json; `q3tui tools check`, docs/user_guide.md#setting-up-the-eda-tools-for-your-site)")
         except ToolUnavailable as exc:
             raise StepFailed(f"{role.upper()} not run: {exc}") from exc
         work = self.workdir(engine)
