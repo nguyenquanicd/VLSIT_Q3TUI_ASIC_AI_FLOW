@@ -1,14 +1,14 @@
-# Q3TUI User Guide (English)
+# Q3TUI User Guide
 
-Also available: [Tiếng Việt](vi.md).
-
-Q3TUI runs the **spec flow**: `spec → parse → config`, and the **rtl flow** (`rules → csr → rtl → format → style_lint → smoke` after the same three steps). The testbench step lives in the `dv` flow; the SVA, verification and document steps were removed. This guide covers
-installing it, running a project start to finish, the rule system RTL is checked against, every setting, and
-every command/key you'll use day to day.
+Q3TUI takes a hardware IP block from an intent (or a spec) to checked, synthesizable RTL through a chain of **flows**
+(`spec → rtl → dv → sanity → fpga / asic`). Every flow is a pipeline of steps; a step that needs a human decision stops at a
+**gate**, and everything that can be computed (parsing, lint, formatting, simulation, synthesis) is done by code and tools, not
+by the model's word. This guide covers installing it, running a project start to finish, every flow, the rule system RTL is
+checked against, every setting, and every command/key you use day to day. The design reference is [`docs/spec/`](spec/).
 
 - [1. Install](#1-install)
 - [2. Start a project](#2-start-a-project)
-- [3. The flow, step by step](#3-the-flow-step-by-step)
+- [3. The flows](#3-the-flows)
 - [4. Gates and review](#4-gates-and-review)
 - [5. RTL coding rules](#5-rtl-coding-rules)
 - [6. Settings](#6-settings)
@@ -16,22 +16,38 @@ every command/key you'll use day to day.
 - [8. Input and output](#8-input-and-output)
 - [9. The assistant (chat)](#9-the-assistant-chat)
 - [10. The RTL flow](#10-the-rtl-flow)
+- [11. Unattended runs and the fix loop](#11-unattended-runs-and-the-fix-loop)
+- [12. History and import](#12-history-and-import)
+- [13. Command-line reference](#13-command-line-reference)
+- [14. Troubleshooting](#14-troubleshooting)
 
 ## 1. Install
 
+**You need**
+
+| | |
+|---|---|
+| [`uv`](https://docs.astral.sh/uv/) | The installer can install `uv` for you; `uv` fetches a newer Python when yours is older. |
+| Claude access | The Claude Agent SDK's normal auth: an existing Claude Code login, `ANTHROPIC_API_KEY`, or a gateway / Bedrock / Vertex through `llm.env` in `q3tui.yaml`. |
+| EDA tools (optional) | Verible for the rtl flow; a simulator for smoke / dv; lint, synthesis and CDC tools for the later flows. A role with no tool configured is reported **N/A**, never silently skipped. |
+
 ```bash
-git clone <this repo> && cd Q3TUI
-uv sync                                                          # Python >= 3.11
-mkdir -p ~/.q3tui && cp q3tui.example.yaml ~/.q3tui/q3tui.yaml   # your defaults: model, EDA tool modules
+curl -fsSL https://raw.githubusercontent.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW/main/install.sh | bash   # no clone needed
+q3tui --version
 ```
 
-LLM access uses the Claude Agent SDK's normal auth: an existing Claude Code login, `ANTHROPIC_API_KEY`, or a
-gateway/Bedrock/Vertex via `llm.env` in `q3tui.yaml`. EDA tools (lint, synthesis, simulation) load through
-environment modules (`tools.modules`, or a per-role override) — a role with no tool configured is reported
-**N/A**, never silently skipped.
+It installs the `q3tui` command into `~/.local/bin`. Run the same line again to update. Other ways:
 
-To install the `q3tui` command system-wide instead of running it from the repo: `./install.sh` (uses
-`uv tool install`; `./install.sh --uninstall` removes it, your `~/.q3tui` settings and projects are untouched).
+- **Pin a version:** `curl … | Q3TUI_REF=<tag|branch> bash`
+- **From a clone** (editable, `git pull` updates it): `./install.sh`; `--no-editable` installs a copy.
+- **Preview or remove:** `./install.sh --dry-run`, `./install.sh --uninstall` (your `~/.q3tui` settings and projects are untouched).
+- **Without the script:** `uv tool install git+https://github.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW.git`.
+
+Settings for every project go in `~/.q3tui/q3tui.yaml` (start from `q3tui.example.yaml`).
+
+EDA tools load through environment modules (`tools.modules`, or a per-role override) or are on your `PATH`; `q3tui tools init`
+writes the project's `config/tools.json` from a preset and `q3tui tools check` says which roles the current flow needs and
+whether each is configured.
 
 ## 2. Start a project
 
@@ -40,9 +56,13 @@ that directory and keeps its own state in `.q3tui/` (never read by the LLM).
 
 ```bash
 mkdir my_block && cd my_block
-mkdir spec && vi spec/my_block_spec.md      # write your spec, or start from an intent (see below)
-q3tui                                       # opens the TUI
+q3tui init                                  # spec/intent.md skeleton (or: mkdir spec && vi spec/my_block_spec.md)
+q3tui                                       # opens the TUI: r runs, a reviews, o answers questions
 ```
+
+To try it on something that exists, copy `examples/apb_slave` (an intent only, for the spec flow) or use
+`examples/axi4_sram_ctrl` (the dv flow), and run `q3tui` in the copy. `q3tui status` shows every step, its review gate and open
+questions without opening the TUI; `q3tui run` is the same as `r`.
 
 **Starting point — a spec, or just an intent:**
 - **A spec file** in `spec/` (Markdown, or a PDF) — `parse` reads it as-is.
@@ -51,7 +71,7 @@ q3tui                                       # opens the TUI
 
 ### The screen
 
-![Q3TUI stopped at Gate 1: requirements to review](../images/tui-parse.svg)
+![Q3TUI stopped at Gate 1: requirements to review](images/tui-parse.svg)
 
 | Area | What it shows |
 |---|---|
@@ -63,7 +83,24 @@ q3tui                                       # opens the TUI
 
 Drag the dividers (or `ctrl+arrows`) to resize; sizes are kept per project.
 
-## 3. The flow, step by step
+## 3. The flows
+
+`pipeline.flow` (in `q3tui.yaml`, or `q3tui --flow <name> …` for one command) picks the flow; `q3tui flow list` shows them all.
+The default is `spec`. All flows work in one project folder and hand work to each other as change requests.
+
+| Flow | Steps | What you get | Reference |
+|---|---|---|---|
+| `spec` (default) | spec → parse → config | A reviewed spec, the requirements (`REQ-NNN`), the parameters and the module map. | [spec-flow.md](spec/spec-flow.md) |
+| `rtl` | the three above → rules → csr → rtl → format → style_lint → smoke | Checked RTL in `src/rtl/` (see [§10](#10-the-rtl-flow)). | [rtl-flow.md](spec/rtl-flow.md) |
+| `dv` | the three above → testplan → tb → prepare → simulate | A testbench written from the spec alone (plain SystemVerilog, or UVM from an existing VIP with the RTL as the DUT), the test programs, and simulation results read from the logs. | [dv-flow.md](spec/dv-flow.md) |
+| `sanity` | sdc → setup → CDC / RDC analysis → waiver review → check | Static CDC / RDC results with every violation sorted into a waiver, an RTL fix, a spec question or a question for you. | [sanity-flow.md](spec/sanity-flow.md) |
+| `fpga` | port → SDC → synthesis → timing / utilization report → PPA fixes | Area / timing estimates on an FPGA part. | [fpga-flow.md](spec/fpga-flow.md) |
+| `asic` | port → SDC → Design Compiler → logic equivalence check | A standard-cell netlist proved equal to the RTL. | [asic-flow.md](spec/asic-flow.md) |
+| `project` | — | The project, its tools, its standard-cell libraries and its FPGA (settings only). | [project-flow.md](spec/project-flow.md) |
+
+You can write your own flow (a folder, a file or markdown; copy `q3tui/flows/example/`): [flows.md](spec/flows.md).
+
+### The spec flow
 
 ```text
 spec ─► parse ─► config
@@ -77,13 +114,19 @@ spec ─► parse ─► config
 | **parse** | Extracts requirements (REQ-IDs), parameters, module map from the spec; flags ambiguity. | **1 · human** |
 | **config** | Resolves parameter values against your change requests; checks elaboration constraints. | 2 · auto (self-signs when constraints pass) |
 
-The RTL comes from the `rtl` flow (`pipeline.flow: rtl`, `q3tui --flow rtl run`), which reuses these three steps and adds the
-rules, the CSR, the RTL, a Verible format and style lint, and a smoke test (docs/spec/rtl-flow.md).
+### The other flows in one paragraph each
 
-The testbench comes from the `dv` flow (`pipeline.flow: dv`, `q3tui --flow dv run`): the same three steps plus `testplan` (the verification contract and the tests, with the
-open issues you answer), `tb` (a UVM testbench from an existing VIP, built from the spec alone and never from the RTL until its last phase, where the RTL is integrated as the DUT)
-and `simulate` (the smoke and directed tests, every status read from the simulator log); options in `pipeline.step_options.tb.uvm_vip`, reports in `reports/` (docs/spec/dv-flow.md,
-docs/spec/dut-dv.md, example `examples/axi4_sram_ctrl`). SVA, verification and the generated document stay removed; testbench files cannot be imported yet.
+- **`rtl`** reuses the three spec steps, then writes and checks the RTL ([§10](#10-the-rtl-flow)).
+- **`dv`** reuses them too, then `testplan` (the verification contract and the tests, with the open issues you answer), `tb` (the
+  testbench, built from the spec, the requirements and the configuration — never from the RTL, except the UVM backend's last phase,
+  where the RTL is integrated as the DUT), `prepare` (the programs and data the plain testbench's tests load) and `simulate`
+  (the tests run, every status read from the simulator log). The testbench kind is the `tb` step's `testbench` option: `plain`,
+  `uvm` (needs a VIP) or `auto`. Reports are in `reports/`; example: `examples/axi4_sram_ctrl`. Testbench files cannot be imported yet.
+- **`sanity`** takes the RTL (read only) and the SDC, and runs CDC / RDC analysis with Synopsys VC Static. One LLM stage decides the
+  analysis environment (resets, black boxes, constants) and, later, reviews the violations; code runs the tool and checks the result.
+  A missing tool fails the step ("not run"); it never passes.
+- **`fpga`** / **`asic`** take the RTL (read only) and estimate or synthesize it. The two share `constraints/sdc/`; a fix that
+  would change the RTL goes back to the rtl flow as a change request.
 
 **Updates, not re-runs:** editing a requirement, a parameter, or asking for a change re-runs only what that
 change actually affects — earlier steps and your existing approvals are untouched unless the change reaches
@@ -112,7 +155,7 @@ Change a gate's mode: `g` (picker) or `/gate <step> <mode>`. `pipeline.auto_appr
   items simply stay open), but they **do** block a plain `Approve` (`a`) on a `human` gate,
   unless you turn on `pipeline.auto_confirm_reviews`.
 
-![The review dialog of a gate](../images/tui-gate.svg)
+![The review dialog of a gate](images/tui-gate.svg)
 
 `a` opens the review dialog above: approve, answer the open questions, edit the result, request changes, or
 leave it for later.
@@ -189,7 +232,7 @@ pressing `g` on a step, or `/gate <step> <mode>` — this tab just shows every s
 
 | Setting | Type | What it does |
 |---|---|---|
-| `llm.model` | choice | Default model for every stage from the next stage on: Opus 5.5 (best quality, default), Sonnet 5.5 (faster/cheaper), Haiku 4.5 (cheapest, no effort setting), Fable 5.1 (most capable, most expensive). |
+| `llm.model` | choice | Default model for every stage from the next stage on: Sonnet 5.5 (default), Opus 5.5 (best quality), Haiku 4.5 (cheapest, no effort setting), Fable 5.1 (most capable, most expensive). |
 | `llm.effort` | choice, nullable | How hard the model thinks: `low` / `medium` / `high` / `xhigh` / `max`. Empty for Haiku 4.5 (it has no effort setting). |
 | `llm.thinking_budget` | int, nullable | Only for models without an effort setting (Haiku 4.5): caps thinking tokens. `0` = off, empty = model default. |
 | `llm.max_budget_usd` | float, nullable | Stop a stage that costs more than this (empty = no limit). |
@@ -200,7 +243,7 @@ pressing `g` on a step, or `/gate <step> <mode>` — this tab just shows every s
 
 ### Models per step
 
-One `model` + `effort` pair per step (spec, parse, config, rtl) and for the assistant —
+One `model` + `effort` pair per step (one per LLM step of the current flow) and for the assistant —
 leave unset to use the LLM tab's default. Lets you mix models,
 e.g. Opus where precision matters, Haiku for mechanical/high-volume work.
 
@@ -302,6 +345,76 @@ Tools: Verible (`verible_lint`, `verible_format`) and the CSR generator come wit
 preset when you have none). A missing tool makes its step wait and name the role. **Skills:** the LLM stages read playbooks (`config/skills/<name>/SKILL.md`); put your own in
 `<project>/config/skills/` to add or replace one. `q3tui act style_show` and `q3tui act csr_show` print what the flow decided.
 
+## 11. Unattended runs and the fix loop
+
+**Full run.** `q3tui auto` (TUI `/auto`, `/auto stop`) runs every flow of `pipeline.chain` (default `spec, rtl, dv, sanity, fpga`) in
+order, with no gate stopping for you, until each flow passed with the RTL as it is at the end. A flow that changes the RTL (a
+Sanity fix, an fpga PPA fix) makes the checking flows that passed before it run again, at most `pipeline.chain_max_runs` times
+(default 3); a flow that does not pass stops the run for you to look at. `q3tui auto --flows spec,rtl` runs only those flows.
+Gates are approved and every question takes its default, so read the summary table, `q3tui status` and the reports afterwards.
+
 **Fix loop for CDC / RDC.** `q3tui --flow sanity loop [--owner rtl] [--max-rounds N] [--max-cost USD]` runs the Sanity analysis, hands the review's fixes to the rtl flow, lets it
 update the RTL and analyses again, until nothing is open, a round is not better than the best one, nothing can be handed off, a flow fails or the spend limit is reached. The best round's
 RTL is kept; `q3tui loop --restore-best` puts it back. `q3tui act sanity_handoff` also adds the review's plain SDC commands to `constraints/sdc/extra.tcl` (when the SDC comes from `sdc.json`).
+
+## 12. History and import
+
+**History.** Q3TUI keeps its own record of the project in `.q3tui/history/`: a version each time a step finishes and each time a flow
+passes (`passed/<flow>`). It is separate from your git (never pushed, never touches your `.git`). `q3tui history [log]`,
+`q3tui history diff VERSION [TO]`, `q3tui history show VERSION PATH`, `q3tui history restore VERSION [PATHS…]`; in the TUI `H` or
+`/history`. A restore asks first and backs up what it replaces; steps that read the restored files are out of date afterwards.
+Off with `pipeline.history: false`. Details: [history.md](spec/history.md).
+
+**Import.** `q3tui import PATH [--kind all|spec|rtl|tb|sva]` copies your own files into the project: spec documents go to `spec/ref/`
+(the spec step ports them into its template), RTL is mapped and checked against the rules, not rewritten. Testbench and SVA files
+are recognised only to keep them out of the RTL; they are not taken yet. Nothing runs: `q3tui run` next. Details:
+[spec-flow.md](spec/spec-flow.md) "Importing".
+
+## 13. Command-line reference
+
+`q3tui` with no command opens the TUI. Global options: `-C/--project DIR`, `--config FILE`, `-m/--model ID`, `--effort LEVEL`,
+`--flow NAME|FILE`. `q3tui COMMAND --help` has the full text.
+
+| Command | Does |
+|---|---|
+| `init [--template]` | Start a project here: `spec/intent.md` skeleton. |
+| `run [from] [to]` | Run every pending or stale step, stopping at review gates. |
+| `status` / `questions` | Step states, gates and open questions. |
+| `answer`, `approve`, `change`, `gate` | The same actions as in the TUI ([§7](#7-commands-and-keys)). |
+| `reset STEP` | Clear a step's generated outputs (shows the plan, backs up first). |
+| `flow list` / `flow check` | The available flows / check one. |
+| `auto` | Full unattended run of the flow chain ([§11](#11-unattended-runs-and-the-fix-loop)). |
+| `loop` | CDC / RDC fix loop, with `--flow sanity`. |
+| `import PATH` | Import your own spec / RTL files. |
+| `history …` | The project's versions. |
+| `tools init` / `tools check` | Write `config/tools.json` from a preset / check which tool roles are configured. |
+| `act [NAME key=value …]` | The flow's add-on actions (`q3tui act` lists them), e.g. `rtl_rules_init`, `csr_tool_install`. |
+| `design parse` / `design check` | Parse and compile-check a design, no LLM. |
+| `config show` | The effective configuration. |
+| `cost` / `stats` | LLM cost and token statistics. |
+| `tui` | Open the TUI (read-only watcher while another run is going). |
+
+Settings come from `./q3tui.yaml` over `~/.q3tui/q3tui.yaml` ([§6](#6-settings), schema in [config.md](spec/config.md)).
+
+## 14. Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| A step says a tool role is **N/A** or waits "for role X" | `q3tui tools check`, then `q3tui tools init` or edit `config/tools.json` (and `tools.modules`). The step never passes without the tool. |
+| LLM stage fails to start / authentication error | Log in with Claude Code, set `ANTHROPIC_API_KEY`, or set `llm.env` for your gateway. |
+| A second run does not start, or waits | One run per flow per project folder (`.q3tui/run.<flow>.lock`); a step another run is executing is waited for. Use the TUI as a watcher meanwhile. |
+| A gate will not approve | Open the Questions tab (`o`) and unconfirmed review items ([§4](#4-gates-and-review)); `/approve --force` only when you have judged it fine. |
+| A step re-ran something you did not expect | Everything is content-hashed: check what changed (`q3tui history diff`). `format` asks before touching a file you edited. |
+| Cost is higher than expected | `q3tui cost`, `q3tui stats`; use a cheaper model per step, `llm.max_budget_usd`, or `llm.effort: low`. |
+| Wrong state, want to start a step over | `q3tui reset STEP` (your hand-written files and `reviews/` are kept). |
+
+### Known limitations (beta)
+
+- **rtl flow:** the known issues KI-1 … KI-9 are listed in [rtl-flow.md](spec/rtl-flow.md) "Known issues".
+- **Languages:** `tui.language` translates the legend, result banners and the Questions / Picker dialogs; the keybinding help and some
+  dialogs (Settings, Flow / Skill / Prompt editors, Stats) are English only. Key labels and table headers of a widget are set when it
+  first mounts: after switching the language, reopen the tab or dialog (or restart the TUI).
+- **RTL rule checking by code** covers naming, length and the prohibited-construct list; a few rules (the abbreviation table,
+  combinational-loop freedom) are guidance the LLM follows and are not independently verified.
+- **Import:** testbench and SVA files are not taken yet ([§12](#12-history-and-import)); SVA, the mutation / traceability verification
+  and the generated specification document of the former VLSIT flow were removed.
