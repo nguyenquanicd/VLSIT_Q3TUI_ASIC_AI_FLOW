@@ -166,6 +166,8 @@ class StepDef:
     # the options that change this step's result (a template, a library, a target): their values are part of the step's staleness, wherever
     # they come from (the flow file, `pipeline.step_options` of q3tui.yaml, Settings). Others (a round limit, a goal) do not rerun it.
     hashed_options: tuple[str, ...] = ()
+    # options an unattended run's tool fix (core/chain.py) may set when the step's tool failed, with what each one does (its prompt lists them)
+    tool_fix_options: dict[str, str] = {}
 
     def inputs(self, engine: "Engine") -> list[Path]:
         """Files whose content determines this step's result (for staleness)."""
