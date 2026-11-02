@@ -55,10 +55,13 @@ Other ways:
 - **Preview or remove:** `./install.sh --dry-run`, `./install.sh --uninstall`
 - **Without the script:** `uv tool install git+https://github.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW.git`
 
-**EDA tools** are optional and depend on the flow: Verible (rtl flow), a simulator (smoke test, dv flow), lint / synthesis / CDC
-tools (later flows). They are configured per role in the project's `config/tools.json`: `q3tui tools init` seeds it from a preset
-and `q3tui tools check` shows what the current flow needs. A role with no tool is reported **N/A**, never silently passed.
-Default model and tool modules for every project go in `~/.q3tui/q3tui.yaml` (start from `q3tui.example.yaml`).
+**EDA tools are yours to bring.** Q3TUI installs none and does not require a particular set. Each flow asks for tool *roles*
+(a linter and formatter for the rtl flow, a simulator for the smoke test and the dv flow, lint / synthesis / CDC tools for the later
+flows) and you give every role the command of the tool your site uses, in the project's `config/tools.json`. `q3tui tools init`
+writes a **suggested reference set** to start from: use it as a reference, and adapt it or source your own tools (environment modules,
+`PATH` or a setup script). It is a starting point, not a requirement. `q3tui tools check` shows what the current flow needs. A role with
+no tool is reported **N/A**, never silently passed. Default model and tool modules for every project go in `~/.q3tui/q3tui.yaml`
+(start from `q3tui.example.yaml`: its tool entries are examples).
 
 ## Quick start
 
