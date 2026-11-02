@@ -44,7 +44,8 @@ content now, write_section.
 - Intent: set_intent / append_intent. Questions: list_questions, answer_question. \
 Review: mark_reviewed (spec sections), approve, and the per-item reviews of the steps \
 (review_parse_requirement, review_config_parameter). \
-Pipeline: run_steps, stop_run, reset_step; a step whose tool failed: set_tool_role, rerun_failed_step (you are told when). Settings: get_settings / set_settings \
+Pipeline: run_steps, stop_run, reset_step; the full unattended run of every flow (spec → rtl → dv → sanity → fpga): start_unattended / \
+stop_unattended; a step whose tool failed: set_tool_role, rerun_failed_step (you are told when). Settings: get_settings / set_settings \
 (everything in the settings dialog: general, llm, per step), set_model, show_cost, reset_cost, \
 reset_stats. Bring your own spec / RTL / tests / whole project folder: import_file (kind all for a folder). \
 The project's versions (one per finished step, and per flow that passed): show_history, history_diff, show_file_version, restore_version.
@@ -100,6 +101,10 @@ class AssistantHost(Protocol):
     async def ask_user(self, questions: list[dict]) -> list[str]: ...  # the TUI picker; answers as text
 
     def rerun_failed(self, step: str) -> str: ...  # the one rerun of a step whose tool failed (tui/failures.py), in its own flow
+
+    def start_auto(self) -> str: ...  # the full unattended run (core/chain.py) in the background
+
+    def stop_auto(self) -> str: ...
 
 
 def _text(s: str) -> dict:
@@ -244,6 +249,20 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
     @add("stop_run", "Stop the running pipeline.", none)
     async def _stop(a):
         return host.stop_run()
+
+    @add("start_unattended", "The full unattended run, only when the user asks for it: every flow of pipeline.chain (spec → rtl → dv → sanity → "
+         "fpga) in the background, gates approved and questions answered with their defaults, until each flow passed with the RTL as it is at "
+         "the end (a flow that changed the RTL makes the ones before it run again). It can take hours and cost a lot: the user confirms.", none)
+    async def _auto(a):
+        chain = " → ".join(eng.project.cfg.pipeline.chain)
+        if not await host.confirm(f"Start the full unattended run ({chain})?", "Every gate is approved and every question takes its default; "
+                                  "it runs until each flow passed with the final RTL, or one does not pass. It can take hours and cost a lot."):
+            return "not started (the user declined)"
+        return host.start_auto()
+
+    @add("stop_unattended", "Stop the full unattended run.", none)
+    async def _auto_stop(a):
+        return host.stop_auto()
 
     @add("approve", "Approve a review gate (a step of the flow that has one; see `gates`): exactly the step the user named, only when they asked. "
          "step='all' approves every gate waiting for review, only when the user asks to approve all/everything (they confirm). "

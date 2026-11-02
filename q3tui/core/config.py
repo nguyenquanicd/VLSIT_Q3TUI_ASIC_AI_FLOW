@@ -187,6 +187,11 @@ class PipelineConfig(_Strict):
     # Q3TUI's own record of the project: a version when a step finishes and when a flow passes, in .q3tui/history/ (never pushed; your own
     # git is not touched) — docs/spec/history.md
     history: bool = True
+    # the full unattended run (`q3tui auto`, TUI /auto): these flows in order, until each passed with the RTL as it is at the end — a flow that
+    # changed the RTL makes the ones that passed before run again (docs/spec/pipeline.md "Full unattended runs"); a flow runs at most
+    # chain_max_runs times
+    chain: list[str] = Field(default_factory=lambda: ["spec", "rtl", "dv", "sanity", "fpga"])
+    chain_max_runs: int = Field(3, ge=1, le=10)
 
 
 class SpecConfig(_Strict):
