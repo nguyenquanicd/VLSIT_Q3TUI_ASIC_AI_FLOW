@@ -183,6 +183,7 @@ def run_command(
                 except ProcessLookupError:
                     pass
                 proc.wait()
+            left = _reap_group(proc.pid)  # (what the tool started and left running: a server whose client crashed, a background job)
             reader.join(timeout=30)
             if st["omitted"]:
                 log.write(f"\n[q3tui: {st['omitted']} bytes of output left out here]\n".encode())
@@ -195,9 +196,47 @@ def run_command(
                 log.write(f"\n[q3tui: killed after {timeout_s} s (timeout)]\n".encode())
             if stopped:
                 log.write(b"\n[q3tui: stopped (the run no longer needed it)]\n")
+            if left:
+                log.write(f"\n[q3tui: {left} process(es) the tool left running were stopped]\n".encode())
     elapsed = time.monotonic() - start
     text = log_path.read_text(errors="replace")
     return rc, text.split("\n", 1)[1] if "\n" in text else "", elapsed, timed_out
+
+
+def _reap_group(pgid: int, grace_s: float = 3.0) -> int:
+    """Stop what is left of a tool's process group once the tool is done (it runs in a session of its own): VC Static's server kept 25 GB and its
+    license after its shell crashed (rv32iv_sm). Gently first, then for sure. Returns how many were left."""
+    import signal
+
+    def alive() -> list[int]:
+        out = []
+        for d in Path("/proc").iterdir() if Path("/proc").is_dir() else []:
+            if d.name.isdigit():
+                try:
+                    if os.getpgid(int(d.name)) == pgid:
+                        out.append(int(d.name))
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+        return out
+
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return 0
+    left = len(alive()) or 1
+    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 1.0)):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return left
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError):
+                return left
+            time.sleep(0.1)
+    return left
 
 
 class _Stopped(Exception):
