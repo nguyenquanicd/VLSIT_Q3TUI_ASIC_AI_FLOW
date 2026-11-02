@@ -33,6 +33,11 @@ FAKE_VCST = r'''
 import json, re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text()
+if "check_" not in text:  # (the setup's dry run: elaborate with its commands; a name with "nope" in it is not in the design)
+    for n, line in enumerate(text.splitlines(), 1):
+        if "nope" in line:
+            print(Path(sys.argv[1]).name + ":" + str(n) + ": [Error] TCL_COMMAND_INVALID: " + line.strip() + " [Reason: design object not found].")
+    sys.exit(0)
 role = "rdc" if "check_rdc" in text else "cdc"
 viol = json.loads(Path(%r, role + ".json").read_text())
 waived = set()
@@ -79,8 +84,29 @@ def _tools(root: Path, cdc=CDC, rdc=RDC, ignore_waivers: bool = False, extra: st
     (root / "q3tui.yaml").write_text(f"pipeline:\n  flow: sanity\n{extra}tools:\n  roles:\n    cdc: {{cmd: \"{cmd}\", parse: generic}}\n    rdc: {{cmd: \"{cmd}\", parse: generic}}\n")
 
 
+def _setup_answer(stage, plan=None):
+    """The fake setup stage (step `setup`): `plan` (SanitySetup kwargs), else an empty setup."""
+    from q3tui.flows.sanity.lib.setup import SanitySetup
+    from q3tui.llm.runtime import StageResult
+
+    return StageResult("ok", SanitySetup(**(plan or {})), 0.0, 1, "s-setup")
+
+
+@pytest.fixture(autouse=True)
+def no_live_llm(monkeypatch):
+    """No test calls a live LLM: the setup stage gets an empty setup unless a test says otherwise."""
+    from q3tui.llm import runtime
+
+    async def fake(stage, cfg, emit):
+        if stage.name == "sanity_setup":
+            return _setup_answer(stage)
+        raise AssertionError(f"unexpected live LLM stage {stage.name}")
+
+    monkeypatch.setattr(runtime, "run_stage", fake)
+
+
 class ReviewLLM:
-    """The fake review: `decide(batch ids) -> {id: Decision kwargs}`; records the stages."""
+    """The fake review: `decide(batch ids) -> {id: Decision kwargs}`; records the stages (not the setup's: it answers that with an empty setup)."""
 
     def __init__(self, decide):
         self.decide, self.stages = decide, []
@@ -88,6 +114,8 @@ class ReviewLLM:
     async def __call__(self, stage, cfg, emit):
         from q3tui.llm.runtime import StageResult
 
+        if stage.name == "sanity_setup":
+            return _setup_answer(stage)
         self.stages.append(stage)
         ids = [line.split("**")[1] for line in stage.prompt.splitlines() if line.startswith("- **")]
         emit.add_cost(0.01)
@@ -107,8 +135,8 @@ def _decide(i):
 def test_flow_loads():
     flow = flows.load_flow("sanity", Path.cwd())
     assert flows.validate(flow) == []
-    assert [s.id for s in flow.steps] == ["sdc", "cdc", "cdc_waivers", "cdc_check", "rdc", "rdc_waivers", "rdc_check"]
-    assert flow.gates == {"cdc_waivers": "human", "rdc_waivers": "human"}
+    assert [s.id for s in flow.steps] == ["sdc", "setup", "cdc", "cdc_waivers", "cdc_check", "rdc", "rdc_waivers", "rdc_check"]
+    assert flow.gates == {"setup": "human", "cdc_waivers": "human", "rdc_waivers": "human"}
     assert {"sanity_handoff", "sdc_set", "sdc_show"} <= set(flow.actions)
     assert {"cdc", "rdc"} <= set(T.roles_needed(flow))
     assert "sanity" in flows.list_flows()
@@ -222,6 +250,8 @@ async def test_the_sdc_request_is_a_question_for_the_user(proj, monkeypatch):
     fake = ReviewLLM(_decide)
     monkeypatch.setattr(runtime, "run_stage", fake)
     eng = Engine(proj)
+    await eng.run(stop="setup")  # (the setup's gate first: you approve it)
+    eng.approve("setup")
     await eng.run(stop="cdc_waivers")  # (no --yes: the gate waits for you, the question stays open)
     qs = [q for q in eng.questions() if q["step"] == "cdc_waivers"]
     assert len(qs) == 1 and qs[0]["id"].startswith("CDC-") and qs[0]["status"] == "open" and "input delay" in qs[0]["question"]
@@ -311,7 +341,7 @@ async def test_a_clean_analysis_needs_no_llm(proj, monkeypatch):
     _tools(proj.root, cdc=[], rdc=[])
     eng = Engine(Project.open(proj.root))
     await eng.run(yes=True)
-    assert fake.stages == [] and {v.name: v.status for v in eng.status()} == {s: "done" for s in ("sdc", "cdc", "cdc_waivers", "cdc_check", "rdc", "rdc_waivers", "rdc_check")}
+    assert fake.stages == [] and {v.name: v.status for v in eng.status()} == {s: "done" for s in ("sdc", "setup", "cdc", "cdc_waivers", "cdc_check", "rdc", "rdc_waivers", "rdc_check")}
     assert json.loads((proj.schemas_dir / "cdc_check.json").read_text())["ok"] is True
 
 
@@ -528,3 +558,148 @@ async def test_the_lane_panels_show_the_violations_the_review_and_the_check(proj
         by_item = {r[0]: r for r in mod._check_rows("cdc")(app)}
         assert str(by_item["result"][4]) in ("pass", "fail") and by_item["total"][2] == "3"
         assert mod._check_rows("rdc")(app) == []  # (a lane that has not run shows its empty message, not an error)
+
+
+# -- a VC Static lock a crashed run left ------------------------------------------------------------------------------------------------------------------------
+
+def _lock(work, pid, host=None):
+    import socket
+
+    d = work / "vcst_rtdb"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "session.lock").write_text(f"ProcessId : [{pid}]\nHostMachine : [{host or socket.gethostname()}]")
+    return d / "session.lock"
+
+
+def test_a_stale_vc_static_lock_is_removed_a_live_or_foreign_one_is_kept(tmp_path):
+    """rv32iv_sm: the RDC check crashed, its lock stayed, and every later run stopped at "Another session is already running"."""
+    import os
+    import subprocess
+
+    from q3tui.flows.sanity.lib import vcstatic
+
+    p = subprocess.Popen(["true"])
+    p.wait()
+    lock = _lock(tmp_path, p.pid)
+    msg = vcstatic.clear_stale_lock(tmp_path)
+    assert msg and f"session {p.pid} is not running" in msg and not lock.exists()
+    lock = _lock(tmp_path, os.getpid())
+    assert vcstatic.clear_stale_lock(tmp_path) is None and lock.exists()  # (a live session)
+    lock = _lock(tmp_path, p.pid, host="some-other-host")
+    assert vcstatic.clear_stale_lock(tmp_path) is None and lock.exists()  # (another machine's: cannot tell)
+    lock.unlink()
+    assert vcstatic.clear_stale_lock(tmp_path) is None  # (no lock)
+
+
+def test_blackbox_modules_come_before_the_analysis(tmp_path):
+    """rv32iv_sm: RDC of the 2 Mbit DMEM's flops peaked at 48 GB and crashed; a black box keeps only the memory's ports."""
+    from q3tui.flows.sanity.lib import script
+
+    fl = tmp_path / "f.f"
+    fl.write_text("a.sv\n")
+    text = script.text("rdc", "top", tmp_path, fl, tmp_path, tmp_path / "s.sdc", {}, blackbox=["m_dmem", "m_imem", "m_dmem"])
+    assert "set_blackbox -designs {m_dmem m_imem}\nanalyze" in text
+    assert "set_blackbox" not in script.text("rdc", "top", tmp_path, fl, tmp_path, tmp_path / "s.sdc", {})
+    assert script.blackbox_lines("m_dmem, m_imem") == "set_blackbox -designs {m_dmem m_imem}\n"
+
+
+
+# -- the setup: the analysis environment both lanes use ----------------------------------------------------------------------------------------------
+
+def _setup_llm(monkeypatch, answers: list[dict]):
+    """The setup stage answers `answers` in turn (the last one again); the review waives nothing. Returns the setup stages."""
+    from q3tui.llm import runtime
+
+    stages = []
+
+    async def fake(stage, cfg, emit):
+        if stage.name == "sanity_setup":
+            stages.append(stage)
+            return _setup_answer(stage, answers[min(len(stages) - 1, len(answers) - 1)])
+        return await ReviewLLM(lambda i: None)(stage, cfg, emit)
+
+    monkeypatch.setattr(runtime, "run_stage", fake)
+    return stages
+
+
+GOOD_SETUP = {"resets": [{"port": "i_rst_n", "active": "low", "kind": "async", "reason": "blk.sv:3 resets r_a asynchronously"}],
+              "blackbox": [{"module": "blk", "clock": "A", "reason": "a model"}],
+              "quasi_static": [{"signal": "u_a.reg_cfg", "reason": "spec 3.1: written before enable"}],
+              "constants": [{"port": "i_d", "value": "0", "reason": "spec: tied in operation"}],
+              "reset_synchronizers": [{"module": "blk", "depth": 2, "reason": "blk.sv:3-4: two flops on the reset"}],
+              "summary": "one reset, the model as a black box"}
+
+
+async def test_the_setup_is_decided_reviewed_and_used_by_both_lanes(proj, monkeypatch):
+    stages = _setup_llm(monkeypatch, [GOOD_SETUP])
+    eng = Engine(proj)
+    await eng.run(stop="setup")
+    assert {v.name: v.gate for v in eng.status()}["setup"] == "open"  # (the review gate: design intent)
+    (st,) = stages
+    assert "Top `blk`" in st.prompt and "input i_rst_n" in st.prompt and str(proj.root / "src" / "tb") in [str(d) for d in st.deny_dirs]
+    plan = json.loads((proj.schemas_dir / "sanity_setup.json").read_text())
+    assert plan["resets"][0]["port"] == "i_rst_n" and "| i_rst_n | low | async |" in (proj.root / "reports" / "sanity_setup.md").read_text()
+    eng.approve("setup")
+    await eng.run(yes=True, stop="rdc")
+    cdc = (proj.root / "build" / "sanity" / "cdc_setup.tcl").read_text()
+    rdc = (proj.root / "build" / "sanity" / "rdc_setup.tcl").read_text()
+    for t in (cdc, rdc):
+        assert "set_blackbox -designs {blk}\nanalyze" in t and "create_reset -async -sense low i_rst_n" in t
+        assert "create_static -name {u_a/reg_cfg}" in t and "set_case_analysis 0 [get_ports {i_d}]" in t
+        assert "create_reset -sense low i_rst_n" not in t  # (the setup's resets replace the ones guessed from the RTL)
+    assert "set_rdc_synchronizer -sync_cell {blk} -min_depth 2 -max_depth 2" in rdc and "set_rdc_synchronizer" not in cdc
+
+
+async def test_a_name_that_is_not_in_the_design_goes_back_to_the_llm(proj, monkeypatch):
+    bad = {**GOOD_SETUP, "blackbox": [{"module": "nope_mem", "reason": "x"}], "quasi_static": [{"signal": "u_a.nope", "reason": "x"}]}
+    stages = _setup_llm(monkeypatch, [bad, {**GOOD_SETUP, "quasi_static": [{"signal": "u_a.nope", "reason": "x"}]}, GOOD_SETUP])
+    eng = Engine(proj)
+    await eng.run(stop="setup")
+    assert len(stages) == 3 and all(s.resume == "s-setup" for s in stages[1:])
+    assert "black box `nope_mem` is not a module of the RTL" in stages[1].prompt  # (code: the RTL's modules)
+    assert "TCL_COMMAND_INVALID" in stages[2].prompt and "u_a/nope" in stages[2].prompt  # (the tool's dry run)
+    assert json.loads((proj.schemas_dir / "sanity_setup.json").read_text())["quasi_static"][0]["signal"] == "u_a.reg_cfg"
+
+
+async def test_what_stays_wrong_is_left_out_never_passed_to_the_tool(proj, monkeypatch):
+    bad = {**GOOD_SETUP, "quasi_static": [{"signal": "u_a.nope", "reason": "x"}, {"signal": "u_a.reg_cfg", "reason": "y"}]}
+    stages = _setup_llm(monkeypatch, [bad])
+    eng = Engine(proj)
+    await eng.run(stop="setup")
+    assert len(stages) == 3
+    assert [s["signal"] for s in json.loads((proj.schemas_dir / "sanity_setup.json").read_text())["quasi_static"]] == ["u_a.reg_cfg"]
+
+
+async def test_a_changed_setup_makes_both_analyses_run_again(proj, monkeypatch):
+    _setup_llm(monkeypatch, [GOOD_SETUP])
+    eng = Engine(proj)
+    await eng.run(yes=True, stop="rdc")
+    assert {v.name: v.status for v in eng.status()}["cdc"] == "done"
+    f = proj.schemas_dir / "sanity_setup.json"
+    f.write_text(json.dumps({**json.loads(f.read_text()), "constants": []}))
+    st = {v.name: v.status for v in Engine(proj).status()}
+    assert st["cdc"] == "stale" and st["rdc"] == "stale"
+
+
+
+def test_a_black_box_gets_its_pins_constrained_on_its_clock(tmp_path):
+    """rv32iv_sm: black-boxing the memories gave 11 SETUP_BBOXPIN_UNCONSTRAINED (the tool no longer knows their pins' clock)."""
+    from q3tui.flows.sanity.lib import setup as setupmod
+
+    (tmp_path / "t.sv").write_text("""module mem(input logic clk, input logic [3:0] a, input logic we, output logic [7:0] q);
+  logic [7:0] m [0:15];
+  always_ff @(posedge clk) begin if (we) m[a] <= 8'h0; q <= m[a]; end
+endmodule
+module top(input logic clk, input logic [3:0] a, input logic we, output logic [7:0] q);
+  mem u_mem(.clk(clk), .a(a), .we(we), .q(q));
+endmodule
+""")
+    (tmp_path / "f.f").write_text("t.sv\n")
+    des = setupmod.design(tmp_path / "f.f", tmp_path, "top")
+    (pins,) = setupmod.blackbox_pins(des, "top", ["mem"])
+    assert pins == {"module": "mem", "instances": ["u_mem"], "inputs": ["a", "we"], "outputs": ["q"]}  # (not the clock)
+    plan = {"blackbox": [{"module": "mem", "clock": "", "reason": "x"}], "clocks": ["clk"], "blackbox_pins": [pins]}
+    text = setupmod.tcl(plan, "cdc")
+    assert "set_output_delay -clock {clk} 0 [get_pins {u_mem/a u_mem/we}]" in text and "set_input_delay -clock {clk} 0 [get_pins {u_mem/q}]" in text
+    bad = setupmod.SanitySetup(blackbox=[setupmod.BlackBox(module="mem", reason="x")])
+    assert any("name the clock" in p for p in setupmod.problems(bad, {"mem", "top"}, [], ["clk", "clk2"]))

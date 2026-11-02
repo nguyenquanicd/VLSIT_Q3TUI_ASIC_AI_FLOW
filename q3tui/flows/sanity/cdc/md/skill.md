@@ -1,7 +1,7 @@
 ---
-label: "2"
+label: "3"
 title: CDC analysis
-deps: [sdc]
+deps: [setup]
 gate: none
 options:
   extra_tcl: ""   # lines of your own for the script, after the SDC (set_app_var, configure_cdc_*, create_reset …)

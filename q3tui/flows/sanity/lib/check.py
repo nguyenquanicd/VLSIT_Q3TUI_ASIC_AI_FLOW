@@ -31,7 +31,8 @@ def summary(r: dict) -> str:
 
 
 class CheckStep(AnalysisStep):
-    hashed_options = ("extra_tcl", "resets")
+    hashed_options = ("extra_tcl", "resets", "blackbox")
+    tool_fix_options: dict[str, str] = {}  # (the check runs the analysis step's script: its options are set there)
 
     def inputs(self, engine) -> list[Path]:
         return [self.artifact(engine, report_json(self.role)), self.artifact(engine, waivers_json(self.role)), self.filelist(engine),
@@ -74,6 +75,8 @@ class CheckStep(AnalysisStep):
             old.unlink()
         script = work / f"{role}_waive_setup.tcl"  # (the analysis script with the waivers sourced after the check, the reports in this step's folder)
         script.write_text(self.script_text(engine, report.get("top") or self.top(engine), work, waive))
+        if stale := vcstatic.clear_stale_lock(work):
+            engine.bus.emit("log", self.name, message=f"{role.upper()}: {stale}")
         t0 = time.monotonic()
         res = toolmod.run_role(tools, role, work, {"script": script, "top": report.get("top"), "filelist": self.filelist(engine),
                                                    "files": self.rtl_files(engine), "workdir": work})

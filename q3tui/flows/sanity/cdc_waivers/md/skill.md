@@ -1,5 +1,5 @@
 ---
-label: "3"
+label: "4"
 title: CDC waivers
 deps: [cdc]
 gate: human

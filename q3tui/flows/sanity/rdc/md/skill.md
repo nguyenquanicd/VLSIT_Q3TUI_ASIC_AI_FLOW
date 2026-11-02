@@ -1,7 +1,7 @@
 ---
-label: "5"
+label: "6"
 title: RDC analysis
-deps: [sdc]
+deps: [setup]
 gate: none
 options:
   extra_tcl: ""

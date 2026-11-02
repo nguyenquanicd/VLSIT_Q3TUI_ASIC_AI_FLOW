@@ -37,10 +37,25 @@ def rtl_resets(filelist: Path, root: Path, top: str) -> list[str]:
 
 
 class AnalysisStep(SanityStep):
-    hashed_options = ("extra_tcl", "resets")  # (staleness: these change the result)
+    hashed_options = ("extra_tcl", "resets", "blackbox")  # (staleness: these change the result)
+    tool_fix_options = {
+        "blackbox": "modules (a list of names) VC Static treats as black boxes: set_blackbox before analyze. For big memories (an array of flops with no reset, "
+                    "a RAM model): only their ports matter for crossings, and their arrays can take the analysis past the machine's memory. The "
+                    "analysis, the waiver review and the check run again on it.",
+        "extra_tcl": "Tcl lines added after the SDC (tool settings of your own)",
+    }
+
+    def setup_plan(self, engine) -> dict | None:
+        """The setup step's decisions (schemas/sanity_setup.json), when this flow has the step and it ran."""
+        from q3tui.flows.sanity.lib import setup as setupmod
+
+        return self.read(engine, setupmod.SETUP_JSON, None) if "setup" in engine.by_name else None
 
     def inputs(self, engine) -> list[Path]:
-        return [self.filelist(engine), *self.rtl_files(engine), *self.sdc_files(engine)]
+        from q3tui.flows.sanity.lib import setup as setupmod
+
+        plan = [self.artifact(engine, setupmod.SETUP_JSON)] if "setup" in engine.by_name else []
+        return [self.filelist(engine), *self.rtl_files(engine), *self.sdc_files(engine), *plan]
 
     def outputs(self, engine) -> list[Path]:
         return [p for p in (self.artifact(engine, report_json(self.role)), *self.table_files(engine)) if p.is_file()]
@@ -59,12 +74,17 @@ class AnalysisStep(SanityStep):
         """The run's Tcl; with `waive`, the waivers of the review sourced after the check (the `<role>_check` step)."""
         root = engine.project.root
         opts = engine.by_name[self.role].options if self.role in engine.by_name else self.options  # (the lane's analysis step owns extra_tcl / resets: the check runs the same script)
+        from q3tui.flows.sanity.lib import setup as setupmod
+
+        plan = self.setup_plan(engine)
         sdcj = read_json(engine.project.sdc_dir / "sdc.json", {}) or {}
         if not sdcj.get("resets") and not opts.get("resets"):  # (a hand-written SDC says nothing of resets)
             sdcj = {**sdcj, "resets": rtl_resets(self.filelist(engine), root, top)}
         elif opts.get("resets"):
             sdcj = {**sdcj, "resets": [str(r) for r in opts["resets"]]}
-        return script.text(self.role, top, root, script.absolute_filelist(self.filelist(engine), root, work), work, self.sdc_top(engine), sdcj, str(opts.get("extra_tcl") or ""), waive)
+        resets = None if opts.get("resets") else setupmod.reset_lines(plan)  # (your option wins; else the setup's, else the SDC's)
+        return script.text(self.role, top, root, script.absolute_filelist(self.filelist(engine), root, work), work, self.sdc_top(engine), sdcj, str(opts.get("extra_tcl") or ""), waive,
+                           setupmod.blackbox_modules(plan, opts.get("blackbox")), resets, setupmod.tcl(plan, self.role))
 
     async def run(self, ctx: StepContext) -> None:
         engine, project, role = ctx.engine, ctx.project, self.role
@@ -83,6 +103,8 @@ class AnalysisStep(SanityStep):
         project.backup([setup])
         setup.write_text(self.script_text(engine, top, work))
         ctx.emit("log", message=f"{role.upper()} analysis of {top} with {project.rel(self.sdc_top(engine))}…")
+        if stale := vcstatic.clear_stale_lock(work):
+            ctx.emit("log", message=f"{role.upper()}: {stale}")
         t0 = time.monotonic()
         res = await anyio.to_thread.run_sync(lambda: toolmod.run_role(
             tools, role, work, {"script": setup, "top": top, "filelist": self.filelist(engine), "files": self.rtl_files(engine), "workdir": work}),

@@ -75,7 +75,7 @@ def test_default_config_and_files():
     # a reset is a false path, but its port still gets an input delay (CDC tools call a port with none "partially constrained")
     assert "set_input_delay -clock [get_clocks i_clk] -max 1.5 [get_ports {i_rst_n}]" in io and "-min 0 [get_ports {i_rst_n}]" in io
     assert "(none)" in files["extra.tcl"] and "source $_d/extra.tcl" in files["sdc.tcl"]
-    assert "single clock domain" in files["clock_groups.tcl"]
+    assert "set_clock_groups -asynchronous -group [get_clocks {i_clk}]" in files["clock_groups.tcl"]  # (one clock: its own group, VC Static CDC wants it)
     assert "source $_d/clocks.tcl" in files["sdc.tcl"]
 
 
