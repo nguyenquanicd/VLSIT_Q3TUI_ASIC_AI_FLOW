@@ -77,6 +77,8 @@ pipeline:
   history: true                   # the project's versions in .q3tui/history/: one per finished step and per flow that passed (docs/spec/history.md)
   design_flows: [rtl]             # the flows whose steps make the design (rtl includes spec → parse → config): a run changes the design only
                                   # while no run of another flow is in a step (pipeline.md "Runs of several flows"; an old `lanes:` block is read for it)
+  chain: [spec, rtl, dv, sanity, fpga]  # the full unattended run (`q3tui auto`, /auto): these flows in order, until each passed with the final RTL
+  chain_max_runs: 3               # most runs of one flow in it (a flow that changed the RTL makes dv / sanity / fpga run again; pipeline.md)
   max_fix_iterations: 5           # fix rounds (a step's triage → fixes → check loop) when the step sets no `max_fix_rounds`
   escalate_after_repeats: 2       # same finding, no progress → ask human
   step_options: {}                # per-step options on top of the flow file's: {rtl: {lint_max_warnings: 0}}
