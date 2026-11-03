@@ -10,7 +10,7 @@
 #   ./install.sh --dry-run       print what would be done, change nothing
 #
 # Needs: bash, curl or an existing `uv` (the script can install uv for you), network access for the Python packages
-# (or an internal PyPI mirror: UV_INDEX_URL=...). Python >= 3.11 is fetched by uv when the system one is older.
+# (or an internal PyPI mirror: UV_INDEX_URL=...). Python >= 3.12 is fetched by uv when the system one is older.
 # Not installed by this script: any EDA tool (yours: on PATH or loaded through tools.json) and Claude access.
 
 set -euo pipefail
@@ -27,7 +27,7 @@ EDITABLE=1
 DRY=0
 UNINSTALL=0
 ASSUME_YES=0
-PYTHON_REQ=">=3.11"
+PYTHON_REQ=">=3.12"
 
 usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 

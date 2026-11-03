@@ -38,7 +38,7 @@ How it behaves:
 
 ## Install
 
-You need [`uv`](https://docs.astral.sh/uv/) (the installer offers to install it; it also fetches Python ≥ 3.11 when yours is
+You need [`uv`](https://docs.astral.sh/uv/) (the installer offers to install it; it also fetches Python ≥ 3.12 when yours is
 older) and access to Claude (a Claude Code login, `ANTHROPIC_API_KEY`, or a Bedrock / Vertex / gateway setup).
 
 ```bash

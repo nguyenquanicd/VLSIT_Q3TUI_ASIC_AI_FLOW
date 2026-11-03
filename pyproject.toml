@@ -3,7 +3,7 @@ name = "q3tui"
 version = "0.1.0"
 description = "Multi-agent platform for chip design and verification, built on the Claude Agent SDK"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "claude-agent-sdk>=0.2.160",
     "pytest>=8.0",  # runs the golden model's self-tests
