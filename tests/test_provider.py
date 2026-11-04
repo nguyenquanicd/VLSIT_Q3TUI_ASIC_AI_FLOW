@@ -91,7 +91,16 @@ def test_gateway_config_and_what_each_provider_needs():
     with pytest.raises(gateway.GatewayError, match="ChatGPT login"):
         gateway.check("openai")
     (gateway.chatgpt_dir()).mkdir(parents=True)
-    (gateway.chatgpt_dir() / "auth.json").write_text("{}")
+    (gateway.chatgpt_dir() / "auth.json").write_text('{"device_code_requested_at": 1.0}')   # a code asked for: no login yet
+    assert not gateway.logged_in()
+    with pytest.raises(gateway.GatewayError, match="ChatGPT login"):
+        gateway.check("openai")
+    gateway.clear_pending_login()                                     # the next login shows a new code at once
+    assert json.loads((gateway.chatgpt_dir() / "auth.json").read_text()) == {}
+    (gateway.chatgpt_dir() / "auth.json").write_text('{"access_token": "t", "refresh_token": "r", "device_code_requested_at": 1.0}')
+    assert gateway.logged_in()
+    gateway.clear_pending_login()                                     # a saved login is left alone
+    assert "device_code_requested_at" in json.loads((gateway.chatgpt_dir() / "auth.json").read_text())
     gateway.check("openai")
     with pytest.raises(gateway.GatewayError, match="OPENAI_API_KEY"):
         gateway.check("openai_api")

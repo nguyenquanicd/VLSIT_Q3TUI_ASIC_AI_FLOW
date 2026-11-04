@@ -48,9 +48,28 @@ def chatgpt_dir() -> Path:
     return home() / "chatgpt"
 
 
+def _auth() -> dict:
+    try:
+        data = json.loads((chatgpt_dir() / "auth.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def logged_in() -> bool:
-    """A ChatGPT login is saved (`q3tui gateway login`); LiteLLM refreshes its token by itself."""
-    return (chatgpt_dir() / "auth.json").is_file()
+    """A ChatGPT login is saved (`q3tui gateway login`): a token in LiteLLM's auth.json, which it refreshes by itself.
+    (LiteLLM writes the file when it asks for a code too, before any login: the file alone says nothing.)"""
+    auth = _auth()
+    return bool(auth.get("access_token") or auth.get("refresh_token"))
+
+
+def clear_pending_login() -> None:
+    """Forget a code asked for by an earlier login that did not finish: for 5 minutes after asking, LiteLLM's next login
+    waits silently for that one instead of showing a new link and code."""
+    auth = _auth()
+    if "device_code_requested_at" in auth and not logged_in():
+        auth.pop("device_code_requested_at")
+        (chatgpt_dir() / "auth.json").write_text(json.dumps(auth))
 
 
 def uses_gateway(provider: str) -> bool:
@@ -110,6 +129,7 @@ def python_cmd(*args: str) -> list[str]:
 
 def login_cmd() -> list[str]:
     """The ChatGPT device-code login: prints a link and a code, waits until they were entered, saves the token."""
+    clear_pending_login()
     return python_cmd("-u", "-c", "print('loading LiteLLM…', flush=True); "
                                   "from litellm.llms.chatgpt.authenticator import Authenticator; "
                                   "Authenticator().get_access_token(); print('ChatGPT login saved')")
