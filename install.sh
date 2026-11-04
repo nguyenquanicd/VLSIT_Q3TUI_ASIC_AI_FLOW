@@ -99,12 +99,6 @@ args=(tool install --force --python "$PYTHON_REQ")
 if [ "$EDITABLE" = 1 ]; then args+=(--editable "$SOURCE"); else args+=("$SOURCE"); fi
 run uv "${args[@]}"
 
-# the gateway of the OpenAI providers (llm.provider: openai | openai_api): LiteLLM in its own uv environment, the same
-# requirement as q3tui/llm/gateway.py (LITELLM), so the first stage that needs it does not wait for the install
-say "installing the LLM gateway (LiteLLM, its own environment) for the OpenAI providers"
-run uv run --quiet --no-project --with 'litellm[proxy]>=1.108' -- python -c 'import litellm.proxy.proxy_cli' \
-  || warn "the LLM gateway did not install now; Q3TUI installs it on first use (only needed for the OpenAI providers)"
-
 BIN_DIR="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH" ;;
@@ -142,6 +136,10 @@ if [ "$DRY" != 1 ]; then
   command -v q3tui >/dev/null 2>&1 || die "the q3tui command is not on PATH yet (see the PATH note above)"
   q3tui --version
   q3tui flow list
+  # the gateway of the OpenAI providers (llm.provider: openai | openai_api): LiteLLM in its own environment
+  # (~/.q3tui/gateway/venv), made now so the first stage or login that needs it does not wait for the install
+  say "installing the LLM gateway (LiteLLM) for the OpenAI providers"
+  q3tui gateway install || warn "the LLM gateway did not install now; Q3TUI installs it on first use (only the OpenAI providers need it)"
 fi
 
 cat <<EOF

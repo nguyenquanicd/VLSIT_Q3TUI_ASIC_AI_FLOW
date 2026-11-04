@@ -352,8 +352,9 @@ Where the LLM stages' requests go (Settings → **Provider**, or `llm.provider` 
 - **Keys** go to `~/.q3tui/keys.env` (only you can read it), never to the project's `q3tui.yaml`. Type one in the
   Provider tab (it shows only whether a key is set) or run `q3tui keys set OPENAI_API_KEY`.
 - The two **OpenAI** providers run through a small local gateway (LiteLLM) that Q3TUI starts by itself when a stage
-  needs it; the first start installs it (about a minute). `q3tui gateway status` shows the provider, the gateway, the
-  login and the keys; `q3tui gateway stop` stops it.
+  needs it. The installer sets it up (`q3tui gateway install`: once, a few minutes); a start then takes about half a
+  minute (LiteLLM loads slowly). `q3tui gateway status` shows the provider, the gateway, the login and the keys;
+  `q3tui gateway stop` stops it.
 - Switching the provider also switches the model when the new provider does not have it. Any model name the provider
   knows works: pick one in the LLM tab, type it in the model dialog (`m`), or set `llm.model`.
 - Other providers' models take no effort setting, and their cost may show as $0 (Claude Code prices only Claude models).
@@ -505,7 +506,7 @@ are recognised only to keep them out of the RTL; they are not taken yet. Nothing
 | `loop` | CDC / RDC fix loop, with `--flow sanity`. |
 | `import PATH` | Import your own spec / RTL files. |
 | `history …` | The project's versions. |
-| `gateway status` / `start` / `stop` / `login` | The LLM provider, the local gateway of the OpenAI providers, the ChatGPT login ([Provider](#provider)). |
+| `gateway status` / `start` / `stop` / `login` / `install` | The LLM provider, the local gateway of the OpenAI providers, the ChatGPT login ([Provider](#provider)). |
 | `keys list` / `set NAME` / `clear NAME` | The providers' API keys, in `~/.q3tui/keys.env`. |
 | `tools init` / `tools check` | Write `config/tools.json` from a preset / check which tool roles are configured. |
 | `act [NAME key=value …]` | The flow's add-on actions (`q3tui act` lists them), e.g. `rtl_rules_init`, `csr_tool_install`. |

@@ -124,6 +124,7 @@ class SettingsScreen(Dialog[dict | None]):
         super().__init__()
         self.values, self.initial_tab, self.tabs = values, initial_tab, tabs
         self.gates = gates or []  # (step, title, mode) of the flow's steps: the Gates tab
+        self._login_proc = None  # the ChatGPT login running from the Provider tab
 
     def compose(self) -> ComposeResult:
         from textual.containers import VerticalScroll
@@ -167,34 +168,62 @@ class SettingsScreen(Dialog[dict | None]):
                      id="chatgpt-login-out", classes="set-help", markup=False)
 
     async def _chatgpt_login(self) -> None:
+        """One login at a time: the button cancels a running one; closing the dialog stops it too (on_unmount)."""
         import asyncio
         import os
 
         from q3tui.llm import gateway
 
         out = self.query_one("#chatgpt-login-out", Static)
-        try:
-            cmd = gateway.login_cmd()
-        except gateway.GatewayError as exc:
-            out.update(str(exc))
-            return
-        out.update("starting the login (the first time installs LiteLLM, about a minute)…")
-        proc = await asyncio.create_subprocess_exec(*cmd, env={**os.environ, **gateway.env()}, stdin=asyncio.subprocess.DEVNULL,
-                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        button = self.query_one("#chatgpt-login", Button)
         lines: list[str] = []
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line = raw.decode(errors="replace").rstrip()
-            if line.strip():
-                lines.append(line)
-                out.update("\n".join(lines[-8:]))
-        await proc.wait()
-        if gateway.logged_in():
-            gateway.stop()  # a gateway started before the login: the next stage starts it with the login
-            lines.append("✔ logged in")
-        else:
-            lines.append(f"✖ the login did not finish (exit {proc.returncode})")
-        out.update("\n".join(lines[-8:]))
+
+        def show(line: str) -> None:
+            lines.append(line)
+            out.update("\n".join(lines[-8:]))
+
+        button.label = "Cancel login"
+        try:
+            if not gateway.installed():
+                show(f"installing LiteLLM into {gateway.venv()} (once; a few minutes)…")
+            await asyncio.to_thread(gateway.install)
+            proc = self._login_proc = await asyncio.create_subprocess_exec(
+                *gateway.login_cmd(), env={**os.environ, **gateway.env()}, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+            assert proc.stdout is not None
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").rstrip()
+                if line.strip():
+                    show(line)
+            await proc.wait()
+            if gateway.logged_in():
+                gateway.stop()  # a gateway started before the login: the next stage starts it with the login
+                show("✔ logged in")
+            elif proc.returncode is not None and proc.returncode < 0:
+                show("login cancelled")
+            else:
+                show(f"✖ the login did not finish (exit {proc.returncode})")
+        except gateway.GatewayError as exc:
+            show(str(exc))
+        finally:
+            self._login_proc = None
+            button.label = "Log in to ChatGPT"
+
+    def _stop_login(self) -> bool:
+        import os
+        import signal
+
+        proc = getattr(self, "_login_proc", None)
+        if proc is None or proc.returncode is not None:
+            return False
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        return True
+
+    def on_unmount(self) -> None:
+        self._stop_login()
 
     def _gates_pane(self):
         """Gates tab: the mode of every step's review gate in this flow."""
@@ -311,7 +340,11 @@ class SettingsScreen(Dialog[dict | None]):
             self.dismiss(None)
         elif event.button.id == "chatgpt-login":
             event.stop()
-            self.run_worker(self._chatgpt_login(), exclusive=True, group="chatgpt-login")
+            if self._stop_login():  # a login is running: the button cancels it
+                return
+            if any(w.group == "chatgpt-login" and w.is_running for w in self.workers):
+                return  # (still installing LiteLLM: one login at a time)
+            self.run_worker(self._chatgpt_login(), group="chatgpt-login")
 
     def action_cancel(self) -> None:
         self.dismiss(None)

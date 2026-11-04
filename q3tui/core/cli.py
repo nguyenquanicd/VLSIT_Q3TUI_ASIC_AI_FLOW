@@ -661,7 +661,9 @@ def gateway_start(c: Ctx) -> None:
     cfg = c.project.cfg
     if not gateway.uses_gateway(cfg.llm.provider):
         raise click.ClickException(f"llm.provider is {cfg.llm.provider}: it needs no gateway (openai / openai_api do)")
-    console.print("[dim]starting LiteLLM (the first start installs it, about a minute)…[/dim]")
+    if not gateway.installed():
+        gateway_install.callback()
+    console.print("[dim]starting LiteLLM (about half a minute)…[/dim]")
     try:
         url = gateway.ensure(cfg.llm.provider, cfg.llm.api_base)
     except gateway.GatewayError as exc:
@@ -677,6 +679,21 @@ def gateway_stop() -> None:
     console.print("[green]✔[/green] gateway stopped" if gateway.stop() else "no gateway was running")
 
 
+@gateway_group.command("install")
+def gateway_install() -> None:
+    """Make the gateway's LiteLLM environment (~/.q3tui/gateway/venv) now; once, a few minutes."""
+    from q3tui.llm import gateway
+
+    if gateway.installed():
+        console.print(f"[green]✔[/green] LiteLLM is installed in {gateway.venv()}")
+        return
+    try:
+        gateway.install(lambda line: console.print(f"[dim]{line}[/dim]"))
+    except gateway.GatewayError as exc:
+        raise click.ClickException(str(exc))
+    console.print(f"[green]✔[/green] LiteLLM installed in {gateway.venv()}")
+
+
 @gateway_group.command("login")
 def gateway_login() -> None:
     """Log in to ChatGPT (llm.provider: openai): open the link it prints and enter the code."""
@@ -685,6 +702,7 @@ def gateway_login() -> None:
     from q3tui.llm import gateway
 
     try:
+        gateway.install(lambda line: console.print(f"[dim]{line}[/dim]"))
         cmd = gateway.login_cmd()
     except gateway.GatewayError as exc:
         raise click.ClickException(str(exc))

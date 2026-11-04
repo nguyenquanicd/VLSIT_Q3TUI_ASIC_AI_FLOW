@@ -175,4 +175,66 @@ async def test_provider_tab_in_the_settings_dialog(tmp_path, monkeypatch, home):
 def test_the_installer_prepares_the_same_gateway():
     from pathlib import Path
 
-    assert f"--with '{gateway.LITELLM}'" in (Path(__file__).parent.parent / "install.sh").read_text()
+    assert "q3tui gateway install" in (Path(__file__).parent.parent / "install.sh").read_text()
+
+
+def test_litellm_has_one_environment_made_once(monkeypatch):
+    import subprocess
+
+    ran = []
+
+    def fake_run(cmd, **kw):
+        ran.append(cmd[:3])
+        if cmd[1] == "venv":
+            py = gateway._venv_python()
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(gateway, "_uv", lambda: "uv")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert not gateway.installed()
+    said = []
+    py = gateway.install(said.append)
+    assert py == gateway.venv() / "bin" / "python" and gateway.installed() and said[-1] == "LiteLLM installed"
+    assert ran == [["uv", "venv", "--quiet"], ["uv", "pip", "install"]]
+    assert gateway.python_cmd("-c", "x") == [str(py), "-c", "x"] and len(ran) == 2        # used as it is: no install again
+    assert gateway.login_cmd()[0] == str(py)
+    (gateway.venv() / ".q3tui-litellm").write_text("litellm[proxy]>=1.0\n")             # another requirement: made again
+    assert not gateway.installed()
+
+
+async def test_the_chatgpt_login_runs_once_and_can_be_cancelled(tmp_path, monkeypatch):
+    import sys
+
+    from textual.widgets import Button, Static
+
+    from q3tui.tui.app import Q3TUIApp
+
+    monkeypatch.setattr(runtime, "run_stage", FakeLLM())
+    monkeypatch.setattr(gateway, "install", lambda log=None: None)
+    monkeypatch.setattr(gateway, "login_cmd", lambda: [sys.executable, "-u", "-c",
+                                                        "import time; print('1) Visit https://x 2) Enter code: AB-12', flush=True); time.sleep(60)"])
+    use_test_flow(tmp_path)
+    (tmp_path / "spec").mkdir()
+    (tmp_path / "spec" / "intent.md").write_text("A two-stage FIFO\n")
+    app = Q3TUIApp(Project.open(tmp_path))
+    async with app.run_test(size=(160, 50)) as pilot:
+        await pilot.press("comma")
+        await pilot.pause()
+        screen = app.screen
+        screen.query_one("#chatgpt-login", Button).press()
+        for _ in range(100):
+            await pilot.pause(0.05)
+            if "Enter code" in str(screen.query_one("#chatgpt-login-out", Static).render()):
+                break
+        assert "Enter code: AB-12" in str(screen.query_one("#chatgpt-login-out", Static).render())
+        assert str(screen.query_one("#chatgpt-login", Button).label) == "Cancel login"
+        proc = screen._login_proc
+        screen.query_one("#chatgpt-login", Button).press()          # the same button cancels it
+        for _ in range(100):
+            await pilot.pause(0.05)
+            if screen._login_proc is None:
+                break
+        assert proc.returncode is not None and "login cancelled" in str(screen.query_one("#chatgpt-login-out", Static).render())
+        assert str(screen.query_one("#chatgpt-login", Button).label) == "Log in to ChatGPT"

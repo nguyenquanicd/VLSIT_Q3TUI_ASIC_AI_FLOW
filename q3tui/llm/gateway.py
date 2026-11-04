@@ -4,10 +4,11 @@ The Claude Agent SDK speaks Anthropic's Messages API. For `llm.provider: openai`
 models) and `openai_api` (the OpenAI API or any endpoint that speaks it), Q3TUI runs a LiteLLM proxy on 127.0.0.1 that
 takes those requests and forwards them to the provider; every stage's SDK is pointed at it (`provider.stage_env`).
 
-LiteLLM runs in its own environment (`uv run --no-project --with litellm[proxy]`: its proxy pins a `rich` older than
-Textual's), installed by uv on first use and cached. One gateway per machine and user, under `$Q3TUI_HOME/gateway/`:
-`config.yaml` (written from the project's provider settings), `state.json` (pid, port, the config it serves), `token`
-(the proxy's key, mode 600), `chatgpt/` (the ChatGPT login), `gateway.log`. It keeps running between Q3TUI runs; a
+LiteLLM runs in its own virtual environment, `$Q3TUI_HOME/gateway/venv` (its proxy pins a `rich` older than Textual's),
+made once with uv (`q3tui gateway install`, run by install.sh, or on first use) and used directly afterwards. One gateway
+per machine and user, under `$Q3TUI_HOME/gateway/`: `config.yaml` (written from the project's provider settings),
+`state.json` (pid, port, the config it serves), `token` (the proxy's key, mode 600), `chatgpt/` (the ChatGPT login),
+`gateway.log`. It keeps running between Q3TUI runs; a
 project with other provider settings restarts it with its own config. `q3tui gateway stop` stops it.
 """
 
@@ -28,9 +29,9 @@ from pathlib import Path
 
 from q3tui.core import keys
 
-LITELLM = "litellm[proxy]>=1.108"
+LITELLM = "litellm[proxy]>=1.108"  # what `install` puts into the gateway's own environment
 OPENAI_API_BASE = "https://api.openai.com/v1"
-START_TIMEOUT_S = 240  # the first start installs LiteLLM (~1 min)
+START_TIMEOUT_S = 240  # LiteLLM's import is slow on a network home
 HEALTH_TTL_S = 30.0  # a gateway found healthy is not checked again for this long
 _healthy: dict[str, float] = {}  # config hash → when it was last found healthy
 
@@ -59,18 +60,58 @@ def uses_gateway(provider: str) -> bool:
 def _uv() -> str:
     uv = os.environ.get("UV") or shutil.which("uv")
     if not uv:
-        raise GatewayError("the gateway runs LiteLLM through uv, and uv was not found on PATH (https://docs.astral.sh/uv/)")
+        raise GatewayError("the gateway's LiteLLM is installed with uv, and uv was not found on PATH (https://docs.astral.sh/uv/)")
     return uv
 
 
+def venv() -> Path:
+    return home() / "venv"
+
+
+def _venv_python() -> Path:
+    return venv() / "bin" / "python"
+
+
+def installed() -> bool:
+    """LiteLLM's environment exists and was made for this requirement (a changed LITELLM makes it again)."""
+    marker = venv() / ".q3tui-litellm"
+    return _venv_python().is_file() and marker.is_file() and marker.read_text().strip() == LITELLM
+
+
+def install(log=None) -> Path:
+    """Make LiteLLM's environment (once: a few minutes); `log(line)` is told what happens. Returns its python."""
+    if installed():
+        return _venv_python()
+    home().mkdir(parents=True, exist_ok=True)
+    import fcntl
+
+    with open(home() / ".install.lock", "w") as lock:  # (its own lock: ensure() holds the start lock while it installs)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if installed():
+            return _venv_python()
+        uv = _uv()
+        say = log or (lambda line: None)
+        say(f"installing LiteLLM into {venv()} (once; a few minutes)")
+        for cmd in ([uv, "venv", "--quiet", "--clear", "--python", ">=3.12", str(venv())],
+                    [uv, "pip", "install", "--quiet", "--compile-bytecode", "--python", str(_venv_python()), LITELLM]):
+            done = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if done.returncode:
+                raise GatewayError(f"installing LiteLLM failed: {' '.join(cmd[:3])}: "
+                                   f"{(done.stderr or done.stdout).strip()[-600:]}")
+        (venv() / ".q3tui-litellm").write_text(LITELLM + "\n")
+        say("LiteLLM installed")
+    return _venv_python()
+
+
 def python_cmd(*args: str) -> list[str]:
-    """`python <args>` in LiteLLM's own environment."""
-    return [_uv(), "run", "--quiet", "--no-project", "--with", LITELLM, "--", "python", *args]
+    """`python <args>` in LiteLLM's environment (made first when it is missing)."""
+    return [str(install()), *args]
 
 
 def login_cmd() -> list[str]:
     """The ChatGPT device-code login: prints a link and a code, waits until they were entered, saves the token."""
-    return python_cmd("-u", "-c", "from litellm.llms.chatgpt.authenticator import Authenticator; "
+    return python_cmd("-u", "-c", "print('loading LiteLLM…', flush=True); "
+                                  "from litellm.llms.chatgpt.authenticator import Authenticator; "
                                   "Authenticator().get_access_token(); print('ChatGPT login saved')")
 
 

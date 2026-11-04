@@ -145,10 +145,10 @@ Every LLM stage runs on the Claude Agent SDK; `llm.provider` decides where its r
 - **The gateway** (`q3tui/llm/gateway.py`): a LiteLLM proxy on 127.0.0.1 that takes the SDK's Anthropic-format requests and
   forwards them to the OpenAI provider; every model name goes to the provider as it is. Q3TUI starts it when a stage needs
   it and keeps it running between runs (`q3tui gateway status | start | stop`); another project's provider settings
-  restart it with that config. It runs LiteLLM in its own environment (`uv run --no-project --with litellm[proxy]`;
-  LiteLLM's proxy pins an older `rich` than Textual), installed by uv on first use and pre-installed by `install.sh`.
-  Its files: `~/.q3tui/gateway/` (`config.yaml`, `state.json`, `token` — the proxy's key, mode 600, `chatgpt/` — the
-  ChatGPT login, `gateway.log`).
+  restart it with that config. It runs LiteLLM from its own virtual environment, `~/.q3tui/gateway/venv` (LiteLLM's
+  proxy pins an older `rich` than Textual), made once with uv by `q3tui gateway install` (run by `install.sh`, or by
+  the first start or login that needs it) and used directly afterwards. Its files: `~/.q3tui/gateway/` (`venv/`,
+  `config.yaml`, `state.json`, `token` — the proxy's key, mode 600, `chatgpt/` — the ChatGPT login, `gateway.log`).
 - **Keys** (`q3tui/core/keys.py`): `~/.q3tui/keys.env` (mode 600), set with `q3tui keys set NAME` or the settings
   dialog's Provider tab; an environment variable of the same name wins. Never in `q3tui.yaml`: the dialog and `ops`
   write them only to that file and never read a value back.
