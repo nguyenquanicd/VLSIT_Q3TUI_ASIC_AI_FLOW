@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -86,8 +87,10 @@ def main(ctx: click.Context, config_path: Path | None, project_dir: Path | None,
     llm: dict = {}
     if llm_model:
         llm["model"] = llm_model
-        if llm_model.startswith("claude-haiku-4") and not effort:
-            llm["effort"] = None  # Haiku 4.5 does not accept an effort setting
+        from q3tui.core.config import uses_effort
+
+        if not uses_effort(llm_model) and not effort:
+            llm["effort"] = None  # Haiku 4.5 and other providers' models do not take an effort setting
     if effort:
         llm["effort"] = None if effort == "none" else effort
     overrides: dict = {"llm": llm} if llm else {}
@@ -628,6 +631,105 @@ def flow_check(c: Ctx, flow: str | None) -> None:
     if needed:
         console.print(f"tools needed: {', '.join(needed)}  (config/tools.json / tools.roles in q3tui.yaml)", markup=False)
     console.print("[green]✔[/green] flow is valid")
+
+
+@main.group("gateway")
+def gateway_group() -> None:
+    """The LiteLLM gateway of the OpenAI providers (llm.provider: openai | openai_api)."""
+
+
+@gateway_group.command("status")
+@pass_ctx
+def gateway_status(c: Ctx) -> None:
+    """The provider, whether the gateway runs, the ChatGPT login and the keys."""
+    from q3tui.llm import gateway, provider
+
+    st = gateway.status()
+    console.print(provider.describe(c.project.cfg))
+    console.print(f"gateway: {'[green]running[/green] ' + st['url'] + ' (' + str(st['provider']) + ')' if st['running'] else 'not running'}")
+    console.print(f"ChatGPT login: {'[green]✔[/green]' if st['chatgpt_login'] else '[red]✖[/red] none (q3tui gateway login)'}")
+    for name, ok in st["keys"].items():
+        console.print(f"{name}: {'[green]✔ set[/green]' if ok else '✖ not set'}")
+
+
+@gateway_group.command("start")
+@pass_ctx
+def gateway_start(c: Ctx) -> None:
+    """Start the gateway for this project's provider now (stages start it by themselves when needed)."""
+    from q3tui.llm import gateway
+
+    cfg = c.project.cfg
+    if not gateway.uses_gateway(cfg.llm.provider):
+        raise click.ClickException(f"llm.provider is {cfg.llm.provider}: it needs no gateway (openai / openai_api do)")
+    console.print("[dim]starting LiteLLM (the first start installs it, about a minute)…[/dim]")
+    try:
+        url = gateway.ensure(cfg.llm.provider, cfg.llm.api_base)
+    except gateway.GatewayError as exc:
+        raise click.ClickException(str(exc))
+    console.print(f"[green]✔[/green] gateway at {url} for {cfg.llm.provider}")
+
+
+@gateway_group.command("stop")
+def gateway_stop() -> None:
+    """Stop the gateway."""
+    from q3tui.llm import gateway
+
+    console.print("[green]✔[/green] gateway stopped" if gateway.stop() else "no gateway was running")
+
+
+@gateway_group.command("login")
+def gateway_login() -> None:
+    """Log in to ChatGPT (llm.provider: openai): open the link it prints and enter the code."""
+    import subprocess
+
+    from q3tui.llm import gateway
+
+    try:
+        cmd = gateway.login_cmd()
+    except gateway.GatewayError as exc:
+        raise click.ClickException(str(exc))
+    rc = subprocess.call(cmd, env={**os.environ, **gateway.env()})
+    if rc or not gateway.logged_in():
+        raise click.ClickException("the ChatGPT login did not finish")
+    gateway.stop()  # a running gateway started before the login: the next stage starts it with the login
+
+
+@main.group("keys")
+def keys_group() -> None:
+    """The providers' API keys, in ~/.q3tui/keys.env (mode 600; never in q3tui.yaml)."""
+
+
+@keys_group.command("list")
+def keys_list() -> None:
+    """Which keys are set (never their values)."""
+    from q3tui.core import keys
+
+    for name, what in keys.KNOWN.items():
+        console.print(f"{'[green]✔[/green]' if keys.is_set(name) else '✖'} {name} — {what}")
+    console.print(f"[dim]{keys.path()}[/dim]")
+
+
+@keys_group.command("set")
+@click.argument("name")
+def keys_set(name: str) -> None:
+    """Save a key (asked for without echo), e.g. `q3tui keys set OPENAI_API_KEY`."""
+    from q3tui.core import keys
+
+    value = click.prompt(name, hide_input=True)
+    try:
+        path = keys.set_key(name, value)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+    console.print(f"[green]✔[/green] {name} saved to {path}")
+
+
+@keys_group.command("clear")
+@click.argument("name")
+def keys_clear(name: str) -> None:
+    """Remove a key from ~/.q3tui/keys.env."""
+    from q3tui.core import keys
+
+    console.print(f"[green]✔[/green] {name} removed" if keys.clear(name) else f"{name} was not in {keys.path()}")
 
 
 @main.group("tools")

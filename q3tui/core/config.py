@@ -46,11 +46,16 @@ STEP_LLM_KEYS = tuple(StepModels.model_fields)
 
 
 def uses_effort(model: str) -> bool:
-    """Haiku 4.5 has no effort setting (its thinking is capped by llm.thinking_budget instead)."""
-    return not model.startswith("claude-haiku-4")
+    """Claude models take an effort, but Haiku 4.5 (its thinking is capped by llm.thinking_budget instead); models of other
+    providers (llm.provider) think as their provider decides."""
+    return model.startswith("claude-") and not model.startswith("claude-haiku-4")
 
 
 class LLMConfig(_Strict):
+    # where the stages' requests go (q3tui/llm/provider.py): claude = the Claude Code login; claude_api = the Claude API or an
+    # endpoint that speaks it; openai = a ChatGPT subscription; openai_api = the OpenAI API or an endpoint that speaks it
+    provider: Literal["claude", "claude_api", "openai", "openai_api"] = "claude"
+    api_base: str | None = None  # claude_api / openai_api: the endpoint (null = the official API); keys: ~/.q3tui/keys.env
     model: str = "claude-sonnet-5-5"
     fallback_model: str | None = None
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = "high"  # null for models without effort (Haiku 4.5)

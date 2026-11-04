@@ -11,7 +11,8 @@
 #
 # Needs: bash, curl or an existing `uv` (the script can install uv for you), network access for the Python packages
 # (or an internal PyPI mirror: UV_INDEX_URL=...). Python >= 3.12 is fetched by uv when the system one is older.
-# Not installed by this script: any EDA tool (yours: on PATH or loaded through tools.json) and Claude access.
+# Also installs the LLM gateway (LiteLLM, in its own uv environment) used by the OpenAI providers.
+# Not installed by this script: any EDA tool (yours: on PATH or loaded through tools.json) and LLM access (a login or a key).
 
 set -euo pipefail
 
@@ -98,6 +99,12 @@ args=(tool install --force --python "$PYTHON_REQ")
 if [ "$EDITABLE" = 1 ]; then args+=(--editable "$SOURCE"); else args+=("$SOURCE"); fi
 run uv "${args[@]}"
 
+# the gateway of the OpenAI providers (llm.provider: openai | openai_api): LiteLLM in its own uv environment, the same
+# requirement as q3tui/llm/gateway.py (LITELLM), so the first stage that needs it does not wait for the install
+say "installing the LLM gateway (LiteLLM, its own environment) for the OpenAI providers"
+run uv run --quiet --no-project --with 'litellm[proxy]>=1.108' -- python -c 'import litellm.proxy.proxy_cli' \
+  || warn "the LLM gateway did not install now; Q3TUI installs it on first use (only needed for the OpenAI providers)"
+
 BIN_DIR="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH" ;;
@@ -118,9 +125,9 @@ fi
 
 # --- what the script cannot do for you --------------------------------------------------------------------------------
 if command -v claude >/dev/null 2>&1; then
-  ok "Claude Code found: $(command -v claude) (Q3TUI uses the Claude Agent SDK: log in with 'claude' once, or set ANTHROPIC_API_KEY)"
+  ok "Claude Code found: $(command -v claude) (log in with 'claude' once; or pick another provider: Settings → Provider, 'q3tui gateway status')"
 else
-  warn "Claude Code CLI not found — Q3TUI's LLM calls go through the Claude Agent SDK: install Claude Code and log in, or set ANTHROPIC_API_KEY"
+  warn "Claude Code CLI not found — Q3TUI's LLM calls go through the Claude Agent SDK: install Claude Code and log in, or pick another provider (Settings → Provider)"
 fi
 if command -v module >/dev/null 2>&1 || [ -f /etc/profile.d/modules.sh ]; then
   ok "environment modules available (EDA tools can be loaded through tools.json 'modules')"

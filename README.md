@@ -39,7 +39,9 @@ How it behaves:
 ## Install
 
 You need [`uv`](https://docs.astral.sh/uv/) (the installer offers to install it; it also fetches Python ≥ 3.12 when yours is
-older) and access to Claude (a Claude Code login, `ANTHROPIC_API_KEY`, or a Bedrock / Vertex / gateway setup).
+older) and LLM access: a Claude Code login (the default), or another provider — the Claude API or an endpoint that speaks
+it, a ChatGPT subscription (the Codex models), the OpenAI API or an endpoint that speaks it (Settings → Provider;
+[user guide](docs/user_guide.md#provider)).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nguyenquanicd/VLSIT_Q3TUI_ASIC_AI_FLOW/main/install.sh | bash

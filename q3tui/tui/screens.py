@@ -145,6 +145,8 @@ class SettingsScreen(Dialog[dict | None]):
                                     yield self._widget(st)
                                 if st.help:
                                     yield Static(st.help, classes="set-help", markup=False)
+                            if tab.id == "provider":
+                                yield from self._provider_extra()
                     if tab.id == "general" and self.gates:
                         yield from self._gates_pane()
             yield Static("", id="settings-error")
@@ -152,6 +154,47 @@ class SettingsScreen(Dialog[dict | None]):
             with Horizontal(classes="modal-buttons"):
                 yield Button("Apply (ctrl+s)", id="apply", variant="success")
                 yield Button("Cancel (esc)", id="cancel")
+
+    def _provider_extra(self):
+        """The Provider tab's ChatGPT login (llm.provider: openai): a button, then the link and code LiteLLM prints."""
+        from q3tui.llm import gateway
+
+        with Horizontal(classes="set-row"):
+            yield Label("ChatGPT login", classes="set-label")
+            yield Button("Log in to ChatGPT", id="chatgpt-login")
+        yield Static(("✔ logged in" if gateway.logged_in() else "not logged in") + " — for OpenAI subscription. The login "
+                     "shows a link and a code: open the link, enter the code; Q3TUI keeps the login in ~/.q3tui/gateway/.",
+                     id="chatgpt-login-out", classes="set-help", markup=False)
+
+    async def _chatgpt_login(self) -> None:
+        import asyncio
+        import os
+
+        from q3tui.llm import gateway
+
+        out = self.query_one("#chatgpt-login-out", Static)
+        try:
+            cmd = gateway.login_cmd()
+        except gateway.GatewayError as exc:
+            out.update(str(exc))
+            return
+        out.update("starting the login (the first time installs LiteLLM, about a minute)…")
+        proc = await asyncio.create_subprocess_exec(*cmd, env={**os.environ, **gateway.env()}, stdin=asyncio.subprocess.DEVNULL,
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        lines: list[str] = []
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            if line.strip():
+                lines.append(line)
+                out.update("\n".join(lines[-8:]))
+        await proc.wait()
+        if gateway.logged_in():
+            gateway.stop()  # a gateway started before the login: the next stage starts it with the login
+            lines.append("✔ logged in")
+        else:
+            lines.append(f"✖ the login did not finish (exit {proc.returncode})")
+        out.update("\n".join(lines[-8:]))
 
     def _gates_pane(self):
         """Gates tab: the mode of every step's review gate in this flow."""
@@ -201,6 +244,13 @@ class SettingsScreen(Dialog[dict | None]):
             area = TextArea("\n".join(value or []), id=wid, soft_wrap=True)
             area.styles.height = 12
             return area
+        if st.kind == "secret":  # a provider key: never shown, only whether it is set
+            from q3tui.core import keys
+            from q3tui.core.settings import KEYS
+
+            name = st.path[len(KEYS):]
+            return Input(value="", password=True, id=wid,
+                         placeholder="✔ set — type a new one to replace it" if keys.is_set(name) else "not set — paste the key")
         kind = {"int": "integer", "float": "number"}.get(st.kind, "text")
         return Input(value="" if value is None else str(value), type=kind, id=wid,
                      placeholder="empty = none" if st.nullable else "")
@@ -259,6 +309,9 @@ class SettingsScreen(Dialog[dict | None]):
             self.action_apply()
         elif event.button.id == "cancel":
             self.dismiss(None)
+        elif event.button.id == "chatgpt-login":
+            event.stop()
+            self.run_worker(self._chatgpt_login(), exclusive=True, group="chatgpt-login")
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -306,7 +359,9 @@ class ModelScreen(Dialog[dict | None]):
         model = custom or (pressed.name if pressed else self.model)
         eff_btn = self.query_one("#effort-set", RadioSet).pressed_button
         effort = eff_btn.name if eff_btn else self.effort
-        if model.startswith("claude-haiku-4"):
+        from q3tui.core.config import uses_effort
+
+        if not uses_effort(model):
             effort = None
         return {"model": model, "effort": effort, "save": self.query_one("#model-save", Checkbox).value}
 

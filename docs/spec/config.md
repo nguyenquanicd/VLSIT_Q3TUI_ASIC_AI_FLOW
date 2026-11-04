@@ -24,9 +24,11 @@ still carry: they are dropped on load (`config._legacy`). Strings expand `~` and
 
 ```yaml
 llm:
-  model: claude-sonnet-5-5          # any model id accepted by the Claude Agent SDK
+  provider: claude                # where the requests go ("Providers" below): claude | claude_api | openai | openai_api
+  api_base: null                  # claude_api / openai_api: the endpoint (null = the official API)
+  model: claude-sonnet-5-5          # any model id the provider knows (gpt-5.3-codex, … for the OpenAI providers)
   fallback_model: null
-  effort: high                    # low | medium | high | xhigh | max | null (Haiku 4.5). Like Claude Code: thinking
+  effort: high                    # low | medium | high | xhigh | max | null (Haiku 4.5, other providers' models). Like Claude Code: thinking
                                   # is never cut short and the effort never lowered (runaway_thinking_tokens /
                                   # runaway_seconds are ignored); no turn or time limit either
   thinking_budget: 6000           # only when effort is null: cap extended thinking (0 = off, null = model default)
@@ -40,7 +42,7 @@ llm:
     parse:  {model: claude-haiku-4-5}               # effort: default | none | low … max ("none" for Haiku)
     # keys: spec parse config rtl assistant (any other flow's step ids are accepted too)
   timeout_s: null                 # per LLM stage: null = no limit (like Claude Code); a number only if you want one
-  env: {}                         # passed to the SDK, e.g. ANTHROPIC_BASE_URL. Q3TUI sets ENABLE_CLAUDEAI_MCP_SERVERS=false by default (the account's
+  env: {}                         # passed to the SDK, after the provider's (a value here wins), e.g. ANTHROPIC_BASE_URL. Q3TUI sets ENABLE_CLAUDEAI_MCP_SERVERS=false by default (the account's
                                   # claude.ai connectors added 100–200k tokens to every stage that used a tool); "true" here turns them back on
 
 project:                          # folder names inside the project (docs/spec/project-layout.md); all relative to its root
@@ -128,3 +130,30 @@ mcp_servers: []                   # extra MCP servers available to LLM stages
 
 Tools run as `bash -c 'source <setup_script> && source <modules_init> && module load <tools.modules + role modules> && exec <cmd>'`.
 An example config is in [`q3tui.example.yaml`](../../q3tui.example.yaml).
+
+## Providers
+
+Every LLM stage runs on the Claude Agent SDK; `llm.provider` decides where its requests go (`q3tui/llm/provider.py`):
+
+| `llm.provider` | Requests go to | Needs |
+|---|---|---|
+| `claude` (default) | Anthropic, with the Claude Code login (the Claude subscription) | a Claude Code login |
+| `claude_api` | the Claude API, or any endpoint that speaks it (`llm.api_base`) | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI with a ChatGPT login (the subscription; the Codex models), through the gateway | `q3tui gateway login` |
+| `openai_api` | the OpenAI API, or any endpoint that speaks it (`llm.api_base`: vLLM, Ollama, a company endpoint), through the gateway | `OPENAI_API_KEY` |
+
+- **The gateway** (`q3tui/llm/gateway.py`): a LiteLLM proxy on 127.0.0.1 that takes the SDK's Anthropic-format requests and
+  forwards them to the OpenAI provider; every model name goes to the provider as it is. Q3TUI starts it when a stage needs
+  it and keeps it running between runs (`q3tui gateway status | start | stop`); another project's provider settings
+  restart it with that config. It runs LiteLLM in its own environment (`uv run --no-project --with litellm[proxy]`;
+  LiteLLM's proxy pins an older `rich` than Textual), installed by uv on first use and pre-installed by `install.sh`.
+  Its files: `~/.q3tui/gateway/` (`config.yaml`, `state.json`, `token` — the proxy's key, mode 600, `chatgpt/` — the
+  ChatGPT login, `gateway.log`).
+- **Keys** (`q3tui/core/keys.py`): `~/.q3tui/keys.env` (mode 600), set with `q3tui keys set NAME` or the settings
+  dialog's Provider tab; an environment variable of the same name wins. Never in `q3tui.yaml`: the dialog and `ops`
+  write them only to that file and never read a value back.
+- **Models of other providers** take no `effort` and no `thinking_budget` (they think as their provider decides); the
+  SDK's small background calls go to the same model (`ANTHROPIC_DEFAULT_*_MODEL`). Switching the provider in the
+  settings switches a model the new provider does not have (to `gpt-5.5`, or back to the default Claude model).
+- **Cost**: Claude Code prices only the models it knows: for another provider's model a stage may report $0.
+- A provider that cannot serve (no key, no login, the gateway did not start) fails the stage with what is missing.

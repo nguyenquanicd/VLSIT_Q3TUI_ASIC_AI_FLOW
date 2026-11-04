@@ -306,6 +306,14 @@ def build_options(stage: Stage, cfg: Config, emit: StepEmitter | None = None) ->
     llm = cfg.llm.for_stage(emit.step if emit is not None else None, stage.name)
     if stage.effort and llm.effort:  # (only for models that take an effort)
         llm = llm.model_copy(update={"effort": stage.effort})
+    from q3tui.llm import provider
+
+    if not provider.is_claude_model(llm.model):  # another provider's model: it thinks as its provider decides
+        llm = llm.model_copy(update={"effort": None, "thinking_budget": None})
+    try:
+        provider_env = provider.stage_env(cfg, llm.model)  # where the requests go (llm.provider)
+    except provider.ProviderError as exc:
+        raise StageError(f"{stage.name}: {exc}", 0.0) from None
     thinking = None
     if llm.effort is None and llm.thinking_budget is not None:  # effort steers thinking when it is set
         budget = llm.thinking_budget
@@ -330,7 +338,8 @@ def build_options(stage: Stage, cfg: Config, emit: StepEmitter | None = None) ->
         # a tool may run for minutes (the architect's `delegate` runs sub-architects): wait as long as the stage may
         # (no claude.ai connectors of the account: with them every stage that used a tool carried ~100–200k tokens of connector tool
         # lists, measured ~$1.5 for one Read; `llm.env: {ENABLE_CLAUDEAI_MCP_SERVERS: "true"}` turns them back on)
-        env={"MCP_TOOL_TIMEOUT": str((cfg.llm.timeout_s or 7 * 24 * 3600) * 1000), "ENABLE_CLAUDEAI_MCP_SERVERS": "false", **cfg.llm.env},
+        env={"MCP_TOOL_TIMEOUT": str((cfg.llm.timeout_s or 7 * 24 * 3600) * 1000), "ENABLE_CLAUDEAI_MCP_SERVERS": "false", **provider_env,
+             **cfg.llm.env},
         setting_sources=[],  # isolate from the user's own Claude Code settings/CLAUDE.md
         resume=stage.resume,
         fork_session=bool(stage.fork and stage.resume),
@@ -442,6 +451,12 @@ async def run_stage(stage: Stage, cfg: Config, emit: StepEmitter) -> StageResult
     If the structured output does not validate, the same session is resumed with the
     validation errors (up to OUTPUT_RETRIES times) before giving up.
     """
+    from q3tui.llm import provider
+
+    try:  # the gateway of an OpenAI provider: started (once) in a thread, not in the event loop
+        await anyio.to_thread.run_sync(provider.prepare, cfg)
+    except provider.ProviderError as exc:
+        raise StageError(f"{stage.name}: {exc}", 0.0) from None
     options = build_options(stage, cfg, emit)
     emit("stage", name=stage.name, status="llm_start", model=cfg.llm.model)
     try:
