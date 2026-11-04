@@ -124,7 +124,6 @@ class SettingsScreen(Dialog[dict | None]):
         super().__init__()
         self.values, self.initial_tab, self.tabs = values, initial_tab, tabs
         self.gates = gates or []  # (step, title, mode) of the flow's steps: the Gates tab
-        self._login_proc = None  # the ChatGPT login running from the Provider tab
 
     def compose(self) -> ComposeResult:
         from textual.containers import VerticalScroll
@@ -163,67 +162,14 @@ class SettingsScreen(Dialog[dict | None]):
         with Horizontal(classes="set-row"):
             yield Label("ChatGPT login", classes="set-label")
             yield Button("Log in to ChatGPT", id="chatgpt-login")
-        yield Static(("✔ logged in" if gateway.logged_in() else "not logged in") + " — for OpenAI subscription. The login "
-                     "shows a link and a code: open the link, enter the code; Q3TUI keeps the login in ~/.q3tui/gateway/.",
-                     id="chatgpt-login-out", classes="set-help", markup=False)
+        yield Static(self._login_note(), id="chatgpt-login-out", classes="set-help", markup=False)
 
-    async def _chatgpt_login(self) -> None:
-        """One login at a time: the button cancels a running one; closing the dialog stops it too (on_unmount)."""
-        import asyncio
-        import os
-
+    @staticmethod
+    def _login_note() -> str:
         from q3tui.llm import gateway
 
-        out = self.query_one("#chatgpt-login-out", Static)
-        button = self.query_one("#chatgpt-login", Button)
-        lines: list[str] = []
-
-        def show(line: str) -> None:
-            lines.append(line)
-            out.update("\n".join(lines[-8:]))
-
-        button.label = "Cancel login"
-        try:
-            if not gateway.installed():
-                show(f"installing LiteLLM into {gateway.venv()} (once; a few minutes)…")
-            await asyncio.to_thread(gateway.install)
-            proc = self._login_proc = await asyncio.create_subprocess_exec(
-                *gateway.login_cmd(), env={**os.environ, **gateway.env()}, stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
-            assert proc.stdout is not None
-            async for raw in proc.stdout:
-                line = raw.decode(errors="replace").rstrip()
-                if line.strip():
-                    show(line)
-            await proc.wait()
-            if gateway.logged_in():
-                gateway.stop()  # a gateway started before the login: the next stage starts it with the login
-                show("✔ logged in")
-            elif proc.returncode is not None and proc.returncode < 0:
-                show("login cancelled")
-            else:
-                show(f"✖ the login did not finish (exit {proc.returncode})")
-        except gateway.GatewayError as exc:
-            show(str(exc))
-        finally:
-            self._login_proc = None
-            button.label = "Log in to ChatGPT"
-
-    def _stop_login(self) -> bool:
-        import os
-        import signal
-
-        proc = getattr(self, "_login_proc", None)
-        if proc is None or proc.returncode is not None:
-            return False
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except OSError:
-            pass
-        return True
-
-    def on_unmount(self) -> None:
-        self._stop_login()
+        return (("✔ logged in" if gateway.logged_in() else "not logged in") + " — for OpenAI subscription. The login "
+                "shows a link and a code: open the link, enter the code; Q3TUI keeps the login in ~/.q3tui/gateway/.")
 
     def _gates_pane(self):
         """Gates tab: the mode of every step's review gate in this flow."""
@@ -340,14 +286,133 @@ class SettingsScreen(Dialog[dict | None]):
             self.dismiss(None)
         elif event.button.id == "chatgpt-login":
             event.stop()
-            if self._stop_login():  # a login is running: the button cancels it
-                return
-            if any(w.group == "chatgpt-login" and w.is_running for w in self.workers):
-                return  # (still installing LiteLLM: one login at a time)
-            self.run_worker(self._chatgpt_login(), group="chatgpt-login")
+            self.app.push_screen(LoginScreen(), lambda _: self.query_one("#chatgpt-login-out", Static).update(self._login_note()))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class LoginScreen(Dialog[bool]):
+    """The ChatGPT login (llm.provider: openai): installs LiteLLM's environment when it is missing, runs LiteLLM's
+    device-code login, shows its link and code large, and waits until they were entered. Cancel (or closing it) stops
+    the login; dismisses True when the login was saved."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = """
+    LoginScreen .modal-box { width: 90; height: auto; }
+    LoginScreen #login-status { margin: 1 0 0 0; }
+    LoginScreen #login-link { margin: 1 0 0 0; text-style: bold; color: $accent; }
+    LoginScreen #login-code { margin: 1 0 0 0; text-style: bold; color: $success; height: 3; content-align: center middle;
+                              border: round $success; }
+    LoginScreen #login-log { margin: 1 0 0 0; color: $text-muted; height: auto; max-height: 6; }
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.proc = None
+        self.link: str | None = None
+        self.code: str | None = None
+        self.done = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-box"):
+            yield Label("Log in to ChatGPT", classes="modal-title")
+            yield Static("starting…", id="login-status", markup=False)
+            yield Static("", id="login-link", markup=False)
+            code = Static("", id="login-code", markup=False)
+            code.display = False
+            yield code
+            yield Static("", id="login-log", markup=False)
+            with Horizontal(classes="modal-buttons"):
+                yield Button("Copy link", id="login-copy-link", disabled=True)
+                yield Button("Copy code", id="login-copy-code", disabled=True)
+                yield Button("Cancel (esc)", id="login-cancel")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._login(), group="chatgpt-login")
+
+    def _status(self, text: str) -> None:
+        self.query_one("#login-status", Static).update(text)
+
+    async def _login(self) -> None:
+        import asyncio
+        import os
+        import re
+
+        from q3tui.llm import gateway
+
+        log: list[str] = []
+        try:
+            if not gateway.installed():
+                self._status(f"Installing LiteLLM into {gateway.venv()} — once, a few minutes…")
+            await asyncio.to_thread(gateway.install)
+            self._status("Loading LiteLLM (about half a minute)…")
+            self.proc = await asyncio.create_subprocess_exec(
+                *gateway.login_cmd(), env={**os.environ, **gateway.env()}, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+            assert self.proc.stdout is not None
+            async for raw in self.proc.stdout:
+                line = raw.decode(errors="replace").strip()
+                if not line or line.startswith("loading LiteLLM"):
+                    continue
+                url = re.search(r"https?://\S+", line)
+                code = re.search(r"code:\s*(\S+)", line, re.I)
+                if url and not self.link:
+                    self.link = url.group(0).rstrip(".,)")
+                    self.query_one("#login-link", Static).update(f"1. Open  {self.link}")
+                    self.query_one("#login-copy-link", Button).disabled = False
+                if code and not self.code:
+                    self.code = code.group(1)
+                    box = self.query_one("#login-code", Static)
+                    box.update(f"2. Enter the code:   {self.code}")
+                    box.display = True
+                    self.query_one("#login-copy-code", Button).disabled = False
+                if self.link or self.code:
+                    self._status("Open the link in a browser, sign in, enter the code. This waits until you did.")
+                if not url and not code:
+                    log.append(line)
+                    self.query_one("#login-log", Static).update("\n".join(log[-6:]))
+            await self.proc.wait()
+            if gateway.logged_in():
+                gateway.stop()  # a gateway started before the login: the next stage starts it with the login
+                self.done = True
+                self._status("✔ Logged in. Q3TUI keeps the login in ~/.q3tui/gateway/.")
+            elif self.proc.returncode is not None and self.proc.returncode < 0:
+                self._status("Login cancelled.")
+            else:
+                self._status(f"✖ The login did not finish (exit {self.proc.returncode}); see the lines below.")
+        except gateway.GatewayError as exc:
+            self._status(f"✖ {exc}")
+        finally:
+            self.query_one("#login-cancel", Button).label = "Close (esc)"
+
+    def _stop(self) -> None:
+        import os
+        import signal
+
+        if self.proc is not None and self.proc.returncode is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    def on_unmount(self) -> None:
+        self._stop()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "login-copy-link" and self.link:
+            self.app.copy_to_clipboard(self.link)
+            self.notify("link copied")
+        elif event.button.id == "login-copy-code" and self.code:
+            self.app.copy_to_clipboard(self.code)
+            self.notify("code copied")
+        elif event.button.id == "login-cancel":
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self._stop()
+        self.dismiss(self.done)
 
 
 class ModelScreen(Dialog[dict | None]):

@@ -204,17 +204,20 @@ def test_litellm_has_one_environment_made_once(monkeypatch):
     assert not gateway.installed()
 
 
-async def test_the_chatgpt_login_runs_once_and_can_be_cancelled(tmp_path, monkeypatch):
+async def test_the_chatgpt_login_has_its_own_dialog_and_can_be_cancelled(tmp_path, monkeypatch):
     import sys
 
     from textual.widgets import Button, Static
 
     from q3tui.tui.app import Q3TUIApp
+    from q3tui.tui.screens import LoginScreen, SettingsScreen
 
     monkeypatch.setattr(runtime, "run_stage", FakeLLM())
     monkeypatch.setattr(gateway, "install", lambda log=None: None)
     monkeypatch.setattr(gateway, "login_cmd", lambda: [sys.executable, "-u", "-c",
-                                                        "import time; print('1) Visit https://x 2) Enter code: AB-12', flush=True); time.sleep(60)"])
+                                                        "import time; print('loading LiteLLM…'); print('Sign in with ChatGPT using device code:');"
+                                                        "print('1) Visit https://auth.openai.com/codex/device'); print('2) Enter code: AB12-CD34', "
+                                                        "flush=True); time.sleep(60)"])
     use_test_flow(tmp_path)
     (tmp_path / "spec").mkdir()
     (tmp_path / "spec" / "intent.md").write_text("A two-stage FIFO\n")
@@ -222,19 +225,23 @@ async def test_the_chatgpt_login_runs_once_and_can_be_cancelled(tmp_path, monkey
     async with app.run_test(size=(160, 50)) as pilot:
         await pilot.press("comma")
         await pilot.pause()
-        screen = app.screen
-        screen.query_one("#chatgpt-login", Button).press()
+        app.screen.query_one("#chatgpt-login", Button).press()
+        await pilot.pause()
+        login = app.screen
+        assert isinstance(login, LoginScreen)
         for _ in range(100):
             await pilot.pause(0.05)
-            if "Enter code" in str(screen.query_one("#chatgpt-login-out", Static).render()):
+            if login.code:
                 break
-        assert "Enter code: AB-12" in str(screen.query_one("#chatgpt-login-out", Static).render())
-        assert str(screen.query_one("#chatgpt-login", Button).label) == "Cancel login"
-        proc = screen._login_proc
-        screen.query_one("#chatgpt-login", Button).press()          # the same button cancels it
+        assert login.link == "https://auth.openai.com/codex/device" and login.code == "AB12-CD34"
+        assert "AB12-CD34" in str(login.query_one("#login-code", Static).render())
+        assert not login.query_one("#login-copy-code", Button).disabled
+        proc = login.proc
+        login.query_one("#login-cancel", Button).press()             # cancel: the login process stops, back to the settings
+        await pilot.pause()
         for _ in range(100):
-            await pilot.pause(0.05)
-            if screen._login_proc is None:
+            if proc.returncode is not None:
                 break
-        assert proc.returncode is not None and "login cancelled" in str(screen.query_one("#chatgpt-login-out", Static).render())
-        assert str(screen.query_one("#chatgpt-login", Button).label) == "Log in to ChatGPT"
+            await pilot.pause(0.05)
+        assert proc.returncode is not None and isinstance(app.screen, SettingsScreen)
+        assert "not logged in" in str(app.screen.query_one("#chatgpt-login-out", Static).render())
