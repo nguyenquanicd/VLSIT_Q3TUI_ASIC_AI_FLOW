@@ -304,12 +304,13 @@ def build_options(stage: Stage, cfg: Config, emit: StepEmitter | None = None) ->
 
     # the step's own model / effort when one is set (llm.steps.<step>), else the global ones
     llm = cfg.llm.for_stage(emit.step if emit is not None else None, stage.name)
-    if stage.effort and llm.effort:  # (only for models that take an effort)
-        llm = llm.model_copy(update={"effort": stage.effort})
     from q3tui.llm import provider
+    from q3tui.llm.models import efforts_for, fit_effort
 
-    if not provider.is_claude_model(llm.model):  # another provider's model: it thinks as its provider decides
-        llm = llm.model_copy(update={"effort": None, "thinking_budget": None})
+    if stage.effort and llm.effort:  # (only for models that take an effort; a level the model lacks: its highest below)
+        llm = llm.model_copy(update={"effort": fit_effort(stage.effort, efforts_for(cfg.llm.provider, llm.model)[0])})
+    if not provider.is_claude_model(llm.model):  # thinking_budget is Claude's (models without an effort setting)
+        llm = llm.model_copy(update={"thinking_budget": None})
     try:
         provider_env = provider.stage_env(cfg, llm.model)  # where the requests go (llm.provider)
     except provider.ProviderError as exc:

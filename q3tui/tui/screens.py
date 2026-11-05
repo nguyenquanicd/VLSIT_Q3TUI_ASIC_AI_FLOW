@@ -163,6 +163,107 @@ class SettingsScreen(Dialog[dict | None]):
             yield Label("ChatGPT login", classes="set-label")
             yield Button("Log in to ChatGPT", id="chatgpt-login")
         yield Static(self._login_note(), id="chatgpt-login-out", classes="set-help", markup=False)
+        yield Static("", id="provider-models-note", classes="set-help", markup=False)
+
+    # -- the models of the provider, the efforts of each model (llm/models.py) -------------------------------------
+    def on_mount(self) -> None:
+        self._listed: tuple | None = None  # (provider, api_base) the model lists were made for
+        self._start_provider = self.values.get("llm.provider") or "claude"
+        if self._has("llm.provider"):
+            self.run_worker(self._reload_models(), group="models", exclusive=True)
+
+    def _has(self, path: str) -> bool:
+        return bool(self.query(f"#{self._wid(path)}"))
+
+    def _now(self, path: str):
+        """A field's value as the dialog has it now (not yet applied)."""
+        from textual.widgets import Select
+
+        if not self._has(path):
+            return self.values.get(path)
+        w = self.query_one(f"#{self._wid(path)}")
+        value = w.value
+        if isinstance(w, Select):
+            return None if value in (_NONE, Select.BLANK) else value
+        return value.strip() or None if isinstance(value, str) else value
+
+    def _model_paths(self) -> list[str]:
+        return [p for p in self._by_path() if p == "llm.model" or (p.startswith("llm.steps.") and p.endswith(".model"))]
+
+    async def _reload_models(self) -> None:
+        import asyncio
+
+        from textual.widgets import Select
+
+        from q3tui.llm import models
+
+        provider, base = self._now("llm.provider") or "claude", self._now("llm.api_base")
+        if self._listed == (provider, base):
+            return
+        self._listed = (provider, base)
+        note = self.query_one("#provider-models-note", Static)
+        note.update(f"listing the models of {provider}…")
+        found, why = await asyncio.to_thread(models.list_models, provider, base)
+        if self._listed != (provider, base):  # (the provider changed again meanwhile)
+            return
+        names = [m for m, _ in found]
+        for path in self._model_paths():
+            st, sel = self._by_path()[path], self.query_one(f"#{self._wid(path)}", Select)
+            current = self._now(path)
+            if path == "llm.model" and provider != self._start_provider and current not in names and names:
+                current = names[0]  # the model of the provider left behind: the new provider's first
+            options = [(label if label != m else m, m) for m, label in found]
+            if current is not None and current not in names:
+                options.append((f"current: {current}", current))
+            if st.nullable:
+                options.append((st.none_label, _NONE))
+            sel.set_options(options)
+            sel.value = _NONE if current is None else current
+        note.update(f"Models: {len(found)} from {provider}" + (f" — {why}" if why else ""))
+        self._refresh_efforts()
+
+    def _refresh_efforts(self) -> None:
+        """Each effort list shows the levels its model takes; a value the model does not take moves to the nearest."""
+        from textual.widgets import Select
+
+        from q3tui.llm.models import efforts_for, fit_effort
+
+        provider = self._now("llm.provider") or "claude"
+        main = self._now("llm.model") or self.values.get("llm.model")
+        notes = []
+        for path in self._model_paths():
+            epath = path[: -len("model")] + "effort"
+            if not self._has(epath):
+                continue
+            model = self._now(path) or main
+            levels, why = efforts_for(provider, model)
+            sel = self.query_one(f"#{self._wid(epath)}", Select)
+            current = self._now(epath)
+            if epath == "llm.effort":
+                fitted = fit_effort(current or ("high" if levels else None), levels) if current or levels else None
+                options = [(e, e) for e in levels] + [("none", _NONE)]
+            else:  # a step's: default / none / the levels
+                fitted = current if current in ("default", "none") else fit_effort(current, levels) or "none"
+                options = [("default", "default"), ("none", "none")] + [(e, e) for e in levels]
+            sel.set_options(options)
+            sel.value = _NONE if fitted is None else fitted
+            if current not in (None, "default", "none") and fitted != current:
+                notes.append(f"{epath}: {current} → {fitted or 'none'} ({model} takes {', '.join(levels) or 'no effort'})")
+            if why and epath == "llm.effort":
+                notes.append(why)
+        if notes:
+            self.notify("\n".join(notes[:4]), title="Effort", timeout=6)
+
+    def on_select_changed(self, event) -> None:
+        wid = event.select.id or ""
+        if wid == self._wid("llm.provider"):
+            self.run_worker(self._reload_models(), group="models", exclusive=True)
+        elif wid in {self._wid(p) for p in self._model_paths()}:
+            self._refresh_efforts()
+
+    def on_input_submitted(self, event) -> None:
+        if event.input.id == self._wid("llm.api_base"):
+            self.run_worker(self._reload_models(), group="models", exclusive=True)
 
     @staticmethod
     def _login_note() -> str:
@@ -459,7 +560,8 @@ class ModelScreen(Dialog[dict | None]):
         effort = eff_btn.name if eff_btn else self.effort
         from q3tui.core.config import uses_effort
 
-        if not uses_effort(model):
+        project = getattr(self.app, "project", None)
+        if not uses_effort(model, project.cfg.llm.provider if project is not None else "claude"):
             effort = None
         return {"model": model, "effort": effort, "save": self.query_one("#model-save", Checkbox).value}
 

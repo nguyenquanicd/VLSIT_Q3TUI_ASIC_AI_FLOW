@@ -355,10 +355,14 @@ Where the LLM stages' requests go (Settings → **Provider**, or `llm.provider` 
   needs it. The installer sets it up (`q3tui gateway install`: once, a few minutes); a start then takes about half a
   minute (LiteLLM loads slowly). `q3tui gateway status` shows the provider, the gateway, the login and the keys;
   `q3tui gateway stop` stops it.
-- Switching the provider also switches the model when the new provider does not have it. Any model name the provider
-  knows works: pick one in the LLM tab, type it in the model dialog (`m`), or set `llm.model`.
-- Other providers' models take no effort setting, and their cost may show as $0 (Claude Code prices only Claude models).
-  How well they follow the flows' tool use and structured answers varies by model.
+- The **Model** lists show the provider's own models: asked from the endpoint for the two API providers (cached 10
+  minutes), the Codex models for OpenAI subscription, the Claude models for Claude subscription. Changing the provider
+  in the dialog reloads them and switches a model the new provider does not have. Any other name the provider knows
+  still works: type it in the model dialog (`m`) or set `llm.model`. `q3tui gateway models` prints the list.
+- The **Effort** lists show the levels the chosen model takes (e.g. gpt-5.5: low … xhigh); a level it lacks becomes
+  its highest one below.
+- Other providers' models may show a cost of $0 (Claude Code prices only Claude models). How well they follow the
+  flows' tool use and structured answers varies by model.
 
 ### Models per step
 
@@ -506,7 +510,7 @@ are recognised only to keep them out of the RTL; they are not taken yet. Nothing
 | `loop` | CDC / RDC fix loop, with `--flow sanity`. |
 | `import PATH` | Import your own spec / RTL files. |
 | `history …` | The project's versions. |
-| `gateway status` / `start` / `stop` / `login` / `install` | The LLM provider, the local gateway of the OpenAI providers, the ChatGPT login ([Provider](#provider)). |
+| `gateway status` / `models` / `start` / `stop` / `login` / `install` | The LLM provider, the local gateway of the OpenAI providers, the ChatGPT login ([Provider](#provider)). |
 | `keys list` / `set NAME` / `clear NAME` | The providers' API keys, in `~/.q3tui/keys.env`. |
 | `tools init` / `tools check` | Write `config/tools.json` from a preset / check which tool roles are configured. |
 | `act [NAME key=value …]` | The flow's add-on actions (`q3tui act` lists them), e.g. `rtl_rules_init`, `csr_tool_install`. |

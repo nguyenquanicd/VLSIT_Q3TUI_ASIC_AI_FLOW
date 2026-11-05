@@ -390,8 +390,13 @@ class Ops:
                 values["llm.model"] = Config().llm.model
                 if cfg.llm.effort is None and "llm.effort" not in changes:
                     values["llm.effort"] = Config().llm.effort
-        if "llm.model" in values and not uses_effort(str(values["llm.model"])) and "llm.effort" not in changes:
-            values["llm.effort"] = None  # Haiku 4.5 and other providers' models take no effort setting
+        if "llm.model" in values and "llm.effort" not in changes:  # an effort the new model does not take: its nearest
+            from q3tui.llm.models import efforts_for, fit_effort
+
+            levels = efforts_for(values.get("llm.provider") or cfg.llm.provider, str(values["llm.model"]))[0]
+            fitted = fit_effort(cfg.llm.effort if cfg.llm.effort or not levels else Config().llm.effort, levels)
+            if fitted != cfg.llm.effort:
+                values["llm.effort"] = fitted
         values = {p: v for p, v in values.items()
                   if (self._step_option(p) if settings.is_step_option(p) else settings.get_value(cfg, p)) != v}
         note = f"saved {', '.join(saved_keys)} to {keys.path()}" if saved_keys else ""
@@ -433,8 +438,12 @@ class Ops:
         llm = self.project.cfg.llm
         if model:
             llm.model = model
-            if not uses_effort(model):
+            if not uses_effort(model, llm.provider):
                 llm.effort = None
+            elif effort is False:  # an effort the new model does not take: its nearest
+                from q3tui.llm.models import efforts_for, fit_effort
+
+                llm.effort = fit_effort(llm.effort, efforts_for(llm.provider, model)[0])
         if effort is not False:
             if effort not in (None, "low", "medium", "high", "xhigh", "max"):
                 raise EngineError(f"unknown effort '{effort}'")

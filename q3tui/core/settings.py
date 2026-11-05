@@ -9,19 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from q3tui.llm.models import CLAUDE_MODELS
 from q3tui.llm.provider import PROVIDERS
 
-MODELS = [
-    ("claude-opus-5-5", "Opus 5.5 — best quality"),
-    ("claude-sonnet-5-5", "Sonnet 5.5 — fast, cheaper (default)"),
-    ("claude-haiku-5-5", "Haiku 5.5 — cheap and fast; thinks at length before it answers"),
-    ("claude-haiku-4-5", "Haiku 4.5 — cheapest, for trying the flow (no effort setting)"),
-    ("claude-fable-5-1", "Fable 5.1 — most capable, most expensive"),
-    # the OpenAI providers' (llm.provider: openai / openai_api); any other name: the model dialog (m) or q3tui.yaml
-    ("gpt-5.5", "GPT-5.5 — OpenAI providers"),
-    ("gpt-5.3-codex", "GPT-5.3 Codex — OpenAI providers"),
-    ("gpt-5.1-codex-mini", "GPT-5.1 Codex mini — OpenAI providers, cheaper"),
-]
+MODELS = list(CLAUDE_MODELS)  # the static list; the settings dialog asks the provider for its own (llm/models.py)
 KEYS = "keys."  # + NAME: a provider key (core/keys.py) — saved to ~/.q3tui/keys.env, never q3tui.yaml
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 GATES = ["spec", "parse", "config", "rtl", "tb"]

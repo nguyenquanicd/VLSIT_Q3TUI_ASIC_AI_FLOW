@@ -45,10 +45,12 @@ class StepModels(_Strict):
 STEP_LLM_KEYS = tuple(StepModels.model_fields)
 
 
-def uses_effort(model: str) -> bool:
-    """Claude models take an effort, but Haiku 4.5 (its thinking is capped by llm.thinking_budget instead); models of other
-    providers (llm.provider) think as their provider decides."""
-    return model.startswith("claude-") and not model.startswith("claude-haiku-4")
+def uses_effort(model: str, provider: str = "claude") -> bool:
+    """Whether the model takes an effort (llm/models.py): Claude models but Haiku 4.5 (its thinking is capped by
+    llm.thinking_budget instead); another provider's model when it reasons."""
+    from q3tui.llm.models import efforts_for
+
+    return bool(efforts_for(provider, model)[0])
 
 
 class LLMConfig(_Strict):
@@ -82,14 +84,16 @@ class LLMConfig(_Strict):
         entries = [entry] if isinstance(entry, StepLLM) else []
         model = next((e.model for e in entries if e.model), None) or self.model
         effort_set = next((e.effort for e in entries if e.effort != "default"), None)
+        from q3tui.llm.models import efforts_for, fit_effort
+
+        levels = efforts_for(self.provider, model)[0]
         if effort_set is not None:
             effort = None if effort_set == "none" else effort_set
         elif model != self.model:  # another model, effort not set for it: what that model supports
-            effort = (self.effort or "high") if uses_effort(model) else None
+            effort = (self.effort or "high") if levels else None
         else:
             effort = self.effort
-        if not uses_effort(model):
-            effort = None
+        effort = fit_effort(effort, levels)  # a level the model does not take: its highest one below
         if model == self.model and effort == self.effort:
             return self
         return self.model_copy(update={"model": model, "effort": effort})

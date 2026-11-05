@@ -152,8 +152,17 @@ Every LLM stage runs on the Claude Agent SDK; `llm.provider` decides where its r
 - **Keys** (`q3tui/core/keys.py`): `~/.q3tui/keys.env` (mode 600), set with `q3tui keys set NAME` or the settings
   dialog's Provider tab; an environment variable of the same name wins. Never in `q3tui.yaml`: the dialog and `ops`
   write them only to that file and never read a value back.
-- **Models of other providers** take no `effort` and no `thinking_budget` (they think as their provider decides); the
-  SDK's small background calls go to the same model (`ANTHROPIC_DEFAULT_*_MODEL`). Switching the provider in the
-  settings switches a model the new provider does not have (to `gpt-5.5`, or back to the default Claude model).
+- **Models** (`q3tui/llm/models.py`, `q3tui gateway models`): the Claude subscription has a fixed list (no API lists
+  the models of a Claude Code login); `claude_api` asks `{api_base}/v1/models`, `openai_api` asks `{api_base}/models`
+  (non-chat models left out), with the key; `openai` offers LiteLLM's `chatgpt/*` models. Asked lists are cached 10
+  minutes in `~/.q3tui/models/`; an endpoint that cannot be asked gives the suggested names and a note. The settings
+  dialog fills the model lists from the provider and reloads them when the provider changes; switching the provider
+  switches a model the new provider does not have. The SDK's small background calls go to the same model
+  (`ANTHROPIC_DEFAULT_*_MODEL`).
+- **Efforts**: Claude Code sends `effort` for any model; the gateway turns it into OpenAI's `reasoning_effort`. A Claude
+  model takes `low … max` but Haiku 4.5 (none); another provider's model takes `low · medium · high`, plus `xhigh` /
+  `max` when LiteLLM's model data says it supports them, none when it does not reason. A level the model lacks
+  becomes its highest one below (`max` → `xhigh` on gpt-5.5), at the stage and in the dialog (whose effort lists
+  follow each model). `thinking_budget` is for Claude models only.
 - **Cost**: Claude Code prices only the models it knows: for another provider's model a stage may report $0.
 - A provider that cannot serve (no key, no login, the gateway did not start) fails the stage with what is missing.

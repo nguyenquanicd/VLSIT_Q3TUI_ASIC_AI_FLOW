@@ -679,6 +679,24 @@ def gateway_stop() -> None:
     console.print("[green]✔[/green] gateway stopped" if gateway.stop() else "no gateway was running")
 
 
+@gateway_group.command("models")
+@click.option("--refresh", is_flag=True, help="Ask the provider again (the list is cached for 10 minutes).")
+@pass_ctx
+def gateway_models(c: Ctx, refresh: bool) -> None:
+    """The models the project's provider offers, with the efforts each takes."""
+    from q3tui.llm import models
+
+    cfg = c.project.cfg.llm
+    found, note = models.list_models(cfg.provider, cfg.api_base, refresh)
+    console.print(f"[bold]{cfg.provider}[/bold]{' · ' + cfg.api_base if cfg.api_base else ''}: {len(found)} models")
+    for m, label in found:
+        levels, _ = models.efforts_for(cfg.provider, m)
+        mark = "[green]●[/green]" if m == cfg.model else " "
+        console.print(f"{mark} {m}{'  — ' + label if label != m else ''}  [dim]effort: {', '.join(levels) or 'none'}[/dim]")
+    if note:
+        console.print(f"[yellow]{note}[/yellow]")
+
+
 @gateway_group.command("install")
 def gateway_install() -> None:
     """Make the gateway's LiteLLM environment (~/.q3tui/gateway/venv) now; once, a few minutes."""
