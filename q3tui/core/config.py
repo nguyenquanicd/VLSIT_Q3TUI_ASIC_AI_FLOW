@@ -50,7 +50,26 @@ def uses_effort(model: str) -> bool:
     return not model.startswith("claude-haiku-4")
 
 
+class CodexConfig(_Strict):
+    """The Codex CLI backend (`llm.backend: codex`; docs/spec/codex-backend.md). Model, effort and price are Codex's own:
+    llm.model / llm.steps.<step>.model name Claude models and are not used; a step's effort is."""
+
+    bin: str = "codex"
+    model: str | None = None  # null = the Codex CLI's own default (its config.toml / login)
+    effort: Literal["minimal", "low", "medium", "high", "xhigh"] | None = None  # null = the CLI's default; a step's effort overrides it
+    sandbox: Literal["read-only", "workspace-write"] = "read-only"  # files are changed through Q3TUI's own write tools
+    extra_args: list[str] = Field(default_factory=list)  # appended to `codex exec` (e.g. ["--profile", "q3tui"])
+    config: dict[str, Any] = Field(default_factory=dict)  # `-c key=value` overrides (dotted keys, TOML values)
+    startup_timeout_s: int = Field(30, ge=1)  # the Q3TUI tool endpoint must be reachable by then
+    # Codex reports tokens, not money: USD per million tokens as {model: {input, cached_input, output}}; "*" = any model.
+    # Unset → the cost is reported as 0 and the tokens still count (`q3tui stats`)
+    prices: dict[str, dict[str, float]] = Field(default_factory=dict)
+    shell: bool = False  # keep Codex's own shell tool (it can read any file: breaks the stage's folder confinement)
+
+
 class LLMConfig(_Strict):
+    backend: Literal["claude", "codex"] = "claude"  # which agent runs the stages; the TUI and the flows are the same
+    codex: CodexConfig = Field(default_factory=CodexConfig)
     model: str = "claude-sonnet-5-5"
     fallback_model: str | None = None
     effort: Literal["low", "medium", "high", "xhigh", "max"] | None = "high"  # null for models without effort (Haiku 4.5)

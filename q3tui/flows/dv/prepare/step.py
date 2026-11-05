@@ -131,7 +131,7 @@ class PrepareStep(VlsitStep):
         state = {"prog_dir": Path(old.get("prog_dir") or "build/tb/programs")}
 
         def tools_fn():
-            from claude_agent_sdk import tool
+            from q3tui.llm.tooldef import tool
 
             @tool("build", "Build src/sw with its Makefile into PROG_DIR (make, the RISC-V GCC and Spike) and list the errors and the files still missing. "
                            "Argument prog_dir: the folder the testbench reads, relative to the project.", {"prog_dir": str})

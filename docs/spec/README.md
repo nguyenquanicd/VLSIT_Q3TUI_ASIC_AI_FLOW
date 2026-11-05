@@ -20,7 +20,9 @@ Testbench, assertions, verification and the final document were removed.
 | [tui.md](tui.md) | Terminal UI: pipeline dashboard, gates, questions, assistant |
 | [architecture.md](architecture.md) | Runtime layers: LLM stages, tools by role, HDL layer |
 | [config.md](config.md) | `q3tui.yaml` |
+| [codex-backend.md](codex-backend.md) | Running the stages on the Codex CLI instead of the Claude Agent SDK (`llm.backend`) |
 | [team.md](team.md) | Team mode: persistent role sessions — init once, forks, compaction |
+| [multi_model_orchestration.md](multi_model_orchestration.md) | Proposed provider/model routing, TUI selection, and bounded parallel worker orchestration |
 | [history.md](history.md) | The project's versions: one per finished step and per flow that passed (`passed/<flow>`), Q3TUI's own, never pushed; what the dv triage compares against |
 
 ## The pipeline

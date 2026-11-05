@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from q3tui.core.compat import group_kwargs, kill_group, stop_group
 from q3tui.hdl.filelist import Filelist
 
 ROLES = ("syntax", "simulator", "lint", "debug")
@@ -133,7 +134,6 @@ def run_command(
     with a note saying so). Returns (rc, output = the log, seconds, timed_out); a timeout kills the whole process tree, and so
     does `stop` (a threading.Event) once it is set: rc None, not timed out."""
     import collections
-    import signal
     import threading
 
     workdir.mkdir(parents=True, exist_ok=True)
@@ -144,7 +144,7 @@ def run_command(
         log.write(f"$ {shlex.join(cmd)}\n".encode())
         try:
             proc = subprocess.Popen(argv, cwd=workdir, env={**os.environ, **(env or {})}, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, start_new_session=True)
+                                    stderr=subprocess.STDOUT, **group_kwargs())
         except FileNotFoundError as exc:
             log.write(f"command not found: {exc.filename}\n".encode())
             rc, timed_out = 127, False
@@ -178,12 +178,9 @@ def run_command(
                 rc, timed_out = _wait(proc, timeout_s, stop), False
             except (subprocess.TimeoutExpired, _Stopped) as why:
                 rc, timed_out, stopped = None, isinstance(why, subprocess.TimeoutExpired), isinstance(why, _Stopped)
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                kill_group(proc.pid)
                 proc.wait()
-            left = _reap_group(proc.pid)  # (what the tool started and left running: a server whose client crashed, a background job)
+            left = stop_group(proc.pid)  # (what the tool started and left running: a server whose client crashed, a background job)
             reader.join(timeout=30)
             if st["omitted"]:
                 log.write(f"\n[q3tui: {st['omitted']} bytes of output left out here]\n".encode())
@@ -201,41 +198,6 @@ def run_command(
     elapsed = time.monotonic() - start
     text = log_path.read_text(errors="replace")
     return rc, text.split("\n", 1)[1] if "\n" in text else "", elapsed, timed_out
-
-
-def _reap_group(pgid: int, grace_s: float = 3.0) -> int:
-    """Stop what is left of a tool's process group once the tool is done (it runs in a session of its own): VC Static's server kept 25 GB after its shell crashed (rv32iv_sm). Gently first, then for sure. Returns how many were left."""
-    import signal
-
-    def alive() -> list[int]:
-        out = []
-        for d in Path("/proc").iterdir() if Path("/proc").is_dir() else []:
-            if d.name.isdigit():
-                try:
-                    if os.getpgid(int(d.name)) == pgid:
-                        out.append(int(d.name))
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-        return out
-
-    try:
-        os.killpg(pgid, 0)
-    except (ProcessLookupError, PermissionError):
-        return 0
-    left = len(alive()) or 1
-    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 1.0)):
-        try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError):
-            return left
-        end = time.monotonic() + wait
-        while time.monotonic() < end:
-            try:
-                os.killpg(pgid, 0)
-            except (ProcessLookupError, PermissionError):
-                return left
-            time.sleep(0.1)
-    return left
 
 
 class _Stopped(Exception):

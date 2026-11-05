@@ -188,17 +188,21 @@ def check_tool_paths(stage: Stage, tool_input: dict[str, Any], tool_name: str | 
     return None
 
 
+def guard_reason(stage: Stage, name: str | None, tool_input: dict[str, Any]) -> str | None:
+    """Why a file tool call is denied (None = allowed): the stage's folders, its writable files, the role's task tools.
+    Shared by the Claude hook and the Codex backend's file tools (llm/codex/files.py)."""
+    target = tool_input.get("file_path")
+    if stage.notes_file is not None and name in WRITE_TOOLS | {"Read"} and isinstance(target, str) \
+            and (stage.cwd / Path(target).expanduser()).resolve() == stage.notes_file.resolve():
+        return None
+    if stage.task_tools is not None and name not in stage.task_tools and not str(name).startswith("mcp__"):
+        return f"{name} is not available in this task (it has: {', '.join(stage.task_tools) or 'no file tools'})"
+    return check_tool_paths(stage, tool_input, name)
+
+
 def _path_guard(stage: Stage, emit: StepEmitter | None):
     async def hook(hook_input, tool_use_id, context):
-        name = hook_input.get("tool_name")
-        target = (hook_input.get("tool_input") or {}).get("file_path")
-        if stage.notes_file is not None and name in WRITE_TOOLS | {"Read"} and isinstance(target, str) \
-                and (stage.cwd / Path(target).expanduser()).resolve() == stage.notes_file.resolve():
-            return {}
-        if stage.task_tools is not None and name not in stage.task_tools and not str(name).startswith("mcp__"):
-            reason = f"{name} is not available in this task (it has: {', '.join(stage.task_tools) or 'no file tools'})"
-        else:
-            reason = check_tool_paths(stage, hook_input.get("tool_input") or {}, name)
+        reason = guard_reason(stage, hook_input.get("tool_name"), hook_input.get("tool_input") or {})
         if reason is None:
             return {}
         if emit is not None:
@@ -232,7 +236,7 @@ def safe_glob(stage: Stage, pattern: str, path: str | None = None, limit: int = 
 
 
 def _glob_tool(stage: Stage):
-    from claude_agent_sdk import tool
+    from q3tui.llm.tooldef import tool  # (neutral: the Codex backend serves it too)
 
     @tool("glob", "Find files by glob pattern (e.g. \"**/*.md\", \"model/tests/test_*.py\"), optionally under a directory "
                   "(`path`). Lists only files this task may use.", {"pattern": str, "path": str})
@@ -286,7 +290,9 @@ def build_options(stage: Stage, cfg: Config, emit: StepEmitter | None = None) ->
     mcp_servers: dict[str, Any] = {}
     builtin = [t for t in stage.builtin_tools if t != "Glob"]  # replaced by the filtered glob below
     sdk_tools = list(stage.sdk_tools) + ([_glob_tool(stage)] if "Glob" in stage.builtin_tools else [])
-    sdk_tools = [capped(t, cfg.llm.tool_output_limit) for t in sdk_tools]
+    from q3tui.llm.tooldef import to_sdk
+
+    sdk_tools = [to_sdk(capped(t, cfg.llm.tool_output_limit)) for t in sdk_tools]
     allowed = list(builtin)
     if sdk_tools:
         mcp_servers[Q3TUI_MCP] = create_sdk_mcp_server(Q3TUI_MCP, tools=sdk_tools)
@@ -415,6 +421,7 @@ def _summary_only(model) -> bool:
 def _validate(stage: Stage, result: ResultMessage, texts: list[str]) -> tuple[BaseModel | None, str | None]:
     """Return (output, error). error is a message suitable to send back to the model."""
     data = result.structured_output
+    json_block = stage.text_json or getattr(result, "json_block", False)  # (Codex: the result is the reply's JSON)
     if data is None:
         try:
             data = _extract_json(result.result or "\n".join(texts))
@@ -425,13 +432,13 @@ def _validate(stage: Stage, result: ResultMessage, texts: list[str]) -> tuple[Ba
                 # the text is the summary — re-asking would re-send the whole session for nothing
                 return stage.output_model(summary=text[-2000:]), None
             return None, ("No JSON block was found. Reply with the complete result as one JSON object in a ```json block."
-                          if stage.text_json else
+                          if json_block else
                           "No structured output was returned. Call the StructuredOutput tool with the complete result.")
     try:
         return stage.output_model.model_validate(data), None
     except ValidationError as exc:
         problems = "; ".join(f"{'.'.join(map(str, e['loc'])) or '(root)'}: {e['msg']}" for e in exc.errors()[:20])
-        how = "Reply again with the complete, corrected object in a ```json block" if stage.text_json else \
+        how = "Reply again with the complete, corrected object in a ```json block" if json_block else \
             "Call StructuredOutput again with the complete, corrected object"
         return None, f"The structured output failed schema validation ({problems}). {how} — every required field present."
 
@@ -442,8 +449,14 @@ async def run_stage(stage: Stage, cfg: Config, emit: StepEmitter) -> StageResult
     If the structured output does not validate, the same session is resumed with the
     validation errors (up to OUTPUT_RETRIES times) before giving up.
     """
-    options = build_options(stage, cfg, emit)
-    emit("stage", name=stage.name, status="llm_start", model=cfg.llm.model)
+    codex = cfg.llm.backend == "codex"
+    if codex:
+        from q3tui.llm.codex import runner as codex_runner
+
+        options = codex_runner.build_options(stage, cfg, emit)
+    else:
+        options = build_options(stage, cfg, emit)
+    emit("stage", name=stage.name, status="llm_start", model=(options.model or "codex") if codex else cfg.llm.model)
     try:
         return await _run_stage(stage, cfg, emit, options)
     except StageError as exc:
@@ -483,20 +496,27 @@ newline as \\n and a double quote as \\". Schema:
 
 
 async def _run_stage(stage: Stage, cfg: Config, emit: StepEmitter, options) -> StageResult:
-    from claude_agent_sdk import ClaudeSDKError
+    codex = cfg.llm.backend == "codex"
+    if codex:
+        from q3tui.llm.codex.runner import CodexError as ClaudeSDKError, query_once  # (the backend's own error type)
+    else:
+        from claude_agent_sdk import ClaudeSDKError
+
+        query_once = _query_once
 
     total_cost, turns, prompt = 0.0, 0, stage.prompt
-    base = session_totals(options.resume)  # what the resumed session had already reported
+    # (Codex reports each query's own usage; Claude's resumed sessions report running totals)
+    base = None if codex else session_totals(options.resume)  # what the resumed session had already reported
     with anyio.fail_after(stage.timeout_s or cfg.llm.timeout_s):
         for attempt in range(OUTPUT_RETRIES + 1):
             try:
-                result, texts, last_uuid = await _query_once(prompt, options, stage, emit)
+                result, texts, last_uuid = await query_once(prompt, options, stage, emit)
             except ClaudeSDKError as exc:  # e.g. max turns reached, CLI process failure
                 raise StageError(f"{stage.name}: {str(exc).splitlines()[0]}", total_cost) from exc
             if result is None:
                 raise StageError(f"{stage.name}: agent ended without a result message", total_cost)
             cost, model_usage = _delta(result, base)
-            if result.session_id:
+            if result.session_id and not codex:
                 base = _TOTALS[result.session_id] = {"cost": result.total_cost_usd or 0.0,
                                                      "model_usage": getattr(result, "model_usage", None) or {}}
             total_cost += cost

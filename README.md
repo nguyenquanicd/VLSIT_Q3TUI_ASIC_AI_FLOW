@@ -1,4 +1,6 @@
-# Q3TUI
+<h1 align="center">
+  <img src="docs/images/q3tui-logo.svg" alt="Q3TUI — AI ASIC Design Flow" width="420">
+</h1>
 
 **Q3 = Quality · Quick · Quorum.** A terminal UI and CLI that takes a hardware IP block from an intent or a spec to
 checked, synthesizable RTL, a testbench, and CDC / PPA results — through gated, agentic flows built on the

@@ -251,12 +251,12 @@ class Engine:
                 self.bus.emit("warning", None, message=f"a run of {self.flow.name} is going on in another process (pid {other['pid']}): "
                                                        "watching only — nothing is saved here until it ends")
             return
-        import fcntl
+        from q3tui.core.compat import lock_file
 
         self.project.ensure_state_dir()
         mine = self.state.model_dump(mode="json")
         with open(self.project.state_dir / "pipeline.lock", "a") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)  # (one writer at a time: read, merge, write)
+            lock_file(fh)  # (one writer at a time: read, merge, write)
             try:
                 disk = json.loads(self.state_path.read_text()) if self.state_path.is_file() else None
             except ValueError:
@@ -990,10 +990,10 @@ class Engine:
 
     def _design_lock(self):
         """Held while a run looks at the others and says what it does with the design: the two are one step for every run."""
-        import fcntl
+        from q3tui.core.compat import lock_file
 
         fh = open(self.project.state_dir / "design.lock", "a")
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        lock_file(fh)
         return fh
 
     async def _take_design(self, step: StepDef) -> _Turn | None:

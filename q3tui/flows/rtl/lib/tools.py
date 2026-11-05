@@ -20,7 +20,7 @@ def _text(s: str) -> dict:
 
 def tools_tool(ts, roles: list[str]):
     """`tools_available`: the tool roles this stage may use, found or not (`eda.tools.status_text`): the stage learns what is missing instead of guessing."""
-    from claude_agent_sdk import tool
+    from q3tui.llm.tooldef import tool
 
     from q3tui.eda.tools import status_text
 
@@ -33,7 +33,7 @@ def tools_tool(ts, roles: list[str]):
 
 def verible_tools(ts, work: Path, project_root: Path, rtl_files, flags_file: Path | None = None) -> list:
     """`rtl_files`: a callable giving the RTL files now (they change as fixes land). `flags_file`: the flags `verible_lint` uses by default."""
-    from claude_agent_sdk import tool
+    from q3tui.llm.tooldef import tool
 
     @tool("verible_help", "Verible's own documentation of its lint rules: rule='all' lists them, a rule name explains it and its parameters "
                           "(the exact syntax of a rule's configuration). Rule names and parameters differ between Verible versions: ask, do not remember.",
@@ -83,7 +83,7 @@ def verible_tools(ts, work: Path, project_root: Path, rtl_files, flags_file: Pat
 def smoke_tools(ts, project_root: Path, work: Path, rtl_files, tb: Path) -> list:
     """`smoke_compile` / `smoke_run`: compile the testbench with the RTL and run it, as the flow will. The writer of the testbench never reads
     the RTL; these tools are how it learns whether its testbench fits the design (a compile error names what differs)."""
-    from claude_agent_sdk import tool
+    from q3tui.llm.tooldef import tool
 
     from q3tui.flows.rtl.lib import smoke
 
@@ -114,7 +114,7 @@ def csr_tools(ts, tool: Path | None, work: Path) -> list:
     module it makes (the exact names the integrator will connect to)."""
     import shutil
 
-    from claude_agent_sdk import tool as sdk_tool
+    from q3tui.llm.tooldef import tool as sdk_tool
 
     from q3tui.flows.rtl.lib import csr
     from q3tui.flows.rtl.lib.models import CsrMap

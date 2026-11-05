@@ -7,11 +7,12 @@ instances of a `q3tui tui` session."""
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from q3tui.core.compat import group_kwargs, interrupt, kill_group
 
 
 class Runner:
@@ -35,7 +36,7 @@ class Runner:
         for this session only is not in q3tui.yaml)."""
         cfg = project.cfg
         cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--flow", flow,
-               "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "run"]
+               "--backend", cfg.llm.backend, "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "run"]
         for flag, value in (("--from", start), ("--to", stop), ("--only", only)):
             if value:
                 cmd += [flag, value]
@@ -54,7 +55,7 @@ class Runner:
     def start_auto(self, project) -> int:
         """`q3tui auto` (core/chain.py), key `auto`: the TUI follows its flow runs like any other run (run.<flow>.lock, runs/*/events.jsonl)."""
         cfg = project.cfg
-        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "auto"]
+        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--backend", cfg.llm.backend, "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "auto"]
         return self._spawn(project, "auto", cmd)
 
     def _spawn(self, project, key: str, cmd: list[str]) -> int:
@@ -63,7 +64,7 @@ class Runner:
         log = project.ensure_state_dir() / "tui" / f"run.{key}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         with log.open("ab") as out:
-            self.children[key] = subprocess.Popen(cmd, cwd=project.root, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True,
+            self.children[key] = subprocess.Popen(cmd, cwd=project.root, stdin=subprocess.DEVNULL, stdout=out, stderr=out, **group_kwargs(),
                                                   env={**os.environ, "NO_COLOR": "1", "COLUMNS": "200"})
         return self.children[key].pid
 
@@ -71,7 +72,7 @@ class Runner:
         """Ctrl-C to `flow`'s run (None: every run): it cancels the step (its tools are killed by the step) and records the run as cancelled."""
         keys = [k for k in (self.children if flow is None else [flow]) if self.alive(k)]
         for k in keys:
-            os.kill(self.children[k].pid, signal.SIGINT)
+            interrupt(self.children[k].pid)
         return bool(keys)
 
     def shutdown(self, wait: float = 20.0) -> None:
@@ -84,10 +85,7 @@ class Runner:
             time.sleep(0.2)
         for c in self.children.values():
             if c.poll() is None:
-                try:
-                    os.killpg(c.pid, signal.SIGKILL)  # (its own session: Vivado and friends go too)
-                except ProcessLookupError:
-                    pass
+                kill_group(c.pid)  # (its own session / group: Vivado and friends go too)
                 c.wait()
 
 

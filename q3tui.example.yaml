@@ -11,6 +11,8 @@
 llm:
   model: claude-sonnet-5-5
   effort: high
+  # backend: codex       # run the stages on the Codex CLI instead (docs/spec/codex-backend.md)
+  # codex: {model: null, effort: medium, prices: {"*": {input: 1.25, cached_input: 0.125, output: 10.0}}}
 
 tools:
   modules_init: /usr/share/modules/init/bash   # default: $MODULESHOME/init/bash

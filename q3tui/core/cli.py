@@ -79,11 +79,14 @@ pass_ctx = click.make_pass_decorator(Ctx)
 @click.option("-m", "--model", "llm_model", help="LLM model for this invocation (overrides llm.model), e.g. claude-sonnet-5-5.")
 @click.option("--effort", type=click.Choice(["low", "medium", "high", "xhigh", "max", "none"]), help="Reasoning effort for this invocation.")
 @click.option("--flow", "flow_ref", help="Flow for this invocation (overrides pipeline.flow): a name or a flow file; see `q3tui flow list`.")
+@click.option("--backend", type=click.Choice(["claude", "codex"]), help="Agent that runs the LLM stages for this invocation (overrides llm.backend).")
 @click.pass_context
 def main(ctx: click.Context, config_path: Path | None, project_dir: Path | None, llm_model: str | None, effort: str | None,
-         flow_ref: str | None = None) -> None:
+         flow_ref: str | None = None, backend: str | None = None) -> None:
     """Q3TUI — from intent to verified RTL. Without a command, opens the TUI."""
     llm: dict = {}
+    if backend:
+        llm["backend"] = backend
     if llm_model:
         llm["model"] = llm_model
         if llm_model.startswith("claude-haiku-4") and not effort:
@@ -809,6 +812,10 @@ def design_check(c: Ctx, top: str, top_module_file: Path | None, filelist: Path 
 
 
 def run_cli() -> None:
+    from q3tui.core.compat import ensure_utf8_mode, install_interrupt_handler
+
+    ensure_utf8_mode()  # (Windows: text files are UTF-8)
+    install_interrupt_handler()  # (Windows: Ctrl-Break from the TUI = Ctrl-C)
     try:
         main(standalone_mode=True)
     except (EngineError, FilelistError, FileNotFoundError, ValueError) as exc:

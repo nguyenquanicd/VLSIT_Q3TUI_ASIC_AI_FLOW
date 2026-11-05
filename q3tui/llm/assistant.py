@@ -121,7 +121,7 @@ def _schema(props: dict[str, tuple[str, str]], required: list[str]) -> dict:
 
 
 def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
-    from claude_agent_sdk import tool  # loaded on the first chat message, not at TUI start
+    from q3tui.llm.tooldef import tool
 
     eng, ops = host.engine, host.ops
     tools: list[SdkMcpTool] = []

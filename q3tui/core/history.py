@@ -7,7 +7,7 @@ if any, is not touched (its own folder, its own index, none of your git settings
 
 from __future__ import annotations
 
-import fcntl
+from q3tui.core.compat import lock_file, unlock_file
 import functools
 import os
 import shutil
@@ -85,11 +85,11 @@ def _lock(project) -> Iterator[None]:
     """One writer at a time (runs of several flows finish steps at once)."""
     folder(project).mkdir(parents=True, exist_ok=True)
     with open(folder(project) / "q3tui.lock", "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        lock_file(fh)
         try:
             yield
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            unlock_file(fh)
 
 
 def _init(project) -> None:
