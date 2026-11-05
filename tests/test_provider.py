@@ -411,3 +411,39 @@ async def test_settings_dialog_shows_the_providers_models(monkeypatch):
         assert "2 from openai_api" in str(scr.query_one("#provider-models-note", Static).render())
         efforts = [n for n in app._notifications if n.title == "Effort"]  # (was: one per model field, ~10)
         assert len(efforts) == 1 and "m-two: not in LiteLLM's model data" in efforts[0].message
+
+
+def test_claude_api_models_from_a_gateway_that_lists_them_beside_its_anthropic_path(monkeypatch, tmp_path):
+    """A gateway serving the Claude API under `…/anthropic` lists its models at `…/v1/models` (OpenAI style, Bearer);
+    a base given with /v1 is not asked at /v1/v1; every request names its client (Cloudflare refuses Python's)."""
+    import urllib.error
+
+    from q3tui.core import keys
+    from q3tui.llm import models
+
+    monkeypatch.setattr(keys, "get", lambda name: "k-123")
+    monkeypatch.setattr(keys, "home", lambda: tmp_path)
+    assert models.claude_model_urls("https://gw/go/anthropic/v1/") == [
+        ("https://gw/go/anthropic/v1/models?limit=1000", False), ("https://gw/go/v1/models", True)]
+    assert models.claude_model_urls(None) == [("https://api.anthropic.com/v1/models?limit=1000", False)]
+    asked = []
+
+    class Resp:
+        def __init__(self, body): self.body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self.body
+
+    def urlopen(req, timeout=None):
+        h = {k.lower(): v for k, v in req.header_items()}
+        asked.append((req.full_url, h))
+        if req.full_url.startswith("https://gw/go/anthropic/"):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+        return Resp(json.dumps({"object": "list", "data": [{"id": "glm-5.3"}, {"id": "kimi-k3"}]}).encode())
+
+    monkeypatch.setattr(models.urllib.request, "urlopen", urlopen)
+    found, note = models.list_models("claude_api", "https://gw/go/anthropic", refresh=True)
+    assert found == [("glm-5.3", "glm-5.3"), ("kimi-k3", "kimi-k3")] and note == ""
+    assert [u for u, _ in asked] == ["https://gw/go/anthropic/v1/models?limit=1000", "https://gw/go/v1/models"]
+    assert asked[0][1]["x-api-key"] == "k-123" and asked[1][1]["authorization"] == "Bearer k-123"
+    assert all(h["user-agent"] == "q3tui" for _, h in asked)

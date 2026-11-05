@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import urllib.error
 import urllib.request
 
 from q3tui.core import keys
@@ -67,9 +68,21 @@ def _key_name(provider: str) -> str | None:
 
 
 def _get_json(url: str, headers: dict) -> dict:
-    req = urllib.request.Request(url, headers={"accept": "application/json", **headers})
+    # (a named client: Cloudflare-fronted endpoints refuse Python's default User-Agent, error 1010)
+    req = urllib.request.Request(url, headers={"accept": "application/json", "user-agent": "q3tui", **headers})
     with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
         return json.loads(r.read().decode())
+
+
+def claude_model_urls(base: str | None) -> list[tuple[str, bool]]:
+    """Where a Claude-API endpoint may list its models, as (url, OpenAI-style auth): `{base}/v1/models`; for a gateway
+    serving the Claude API under `…/anthropic`, also its sibling `…/v1/models` (the gateway's own list)."""
+    root = (base or CLAUDE_API_BASE).rstrip("/")
+    root = root[: -len("/v1")] if root.endswith("/v1") else root  # (a base given with /v1: not /v1/v1/models)
+    urls = [(root + "/v1/models?limit=1000", False)]
+    if root.endswith("/anthropic"):
+        urls.append((root[: -len("/anthropic")] + "/v1/models", True))
+    return urls
 
 
 def _ask(provider: str, base: str | None) -> list[tuple[str, str]]:
@@ -78,8 +91,15 @@ def _ask(provider: str, base: str | None) -> list[tuple[str, str]]:
         key = keys.get("ANTHROPIC_API_KEY")
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
-        data = _get_json((base or CLAUDE_API_BASE).rstrip("/") + "/v1/models?limit=1000",
-                         {"x-api-key": key, "anthropic-version": "2023-06-01"})
+        urls = claude_model_urls(base)
+        for i, (url, bearer) in enumerate(urls):
+            try:
+                data = _get_json(url, {"authorization": f"Bearer {key}"} if bearer
+                                 else {"x-api-key": key, "anthropic-version": "2023-06-01"})
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404 or i == len(urls) - 1:
+                    raise
         return [(m["id"], m.get("display_name") or m["id"]) for m in data.get("data", []) if m.get("id")]
     key = keys.get("OPENAI_API_KEY")
     if not key:
