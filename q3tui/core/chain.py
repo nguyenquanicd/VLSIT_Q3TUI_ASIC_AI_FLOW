@@ -123,7 +123,7 @@ def tool_failure(project: Project, since: str):
 def _tools_for_fix(ops) -> list:
     import json
 
-    from q3tui.llm.tooldef import tool
+    from claude_agent_sdk import tool
 
     def text(s: str) -> dict:
         return {"content": [{"type": "text", "text": s}]}

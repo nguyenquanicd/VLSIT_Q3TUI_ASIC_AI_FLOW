@@ -296,7 +296,7 @@ def tools(engine, project, t: Template, rtl_files, done: list[str]) -> list:
     """The porter's in-process tools (`mcp__q3tui__*`): `mem_image` (an image into the file the RTL names, in src/fpga/), `synth_setting`
     (fpga_synth's top / defines / synth_args), `port_scan` (the scan again, after a change)."""
     import anyio
-    from q3tui.llm.tooldef import tool
+    from claude_agent_sdk import tool
 
     def text(s: str) -> dict:
         return {"content": [{"type": "text", "text": s}]}

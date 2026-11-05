@@ -57,12 +57,10 @@ class _Turn:
 
 def _alive(pid: int) -> bool:
     """A process that is running (a run that ended and was not reaped yet, a zombie, has ended)."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    from q3tui.core.compat import pid_alive
+
+    if not pid_alive(pid):
         return False
-    except PermissionError:
-        return True
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
     except (OSError, IndexError):

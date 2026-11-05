@@ -36,7 +36,7 @@ class Runner:
         for this session only is not in q3tui.yaml)."""
         cfg = project.cfg
         cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--flow", flow,
-               "--backend", cfg.llm.backend, "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "run"]
+               "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "run"]
         for flag, value in (("--from", start), ("--to", stop), ("--only", only)):
             if value:
                 cmd += [flag, value]
@@ -55,7 +55,7 @@ class Runner:
     def start_auto(self, project) -> int:
         """`q3tui auto` (core/chain.py), key `auto`: the TUI follows its flow runs like any other run (run.<flow>.lock, runs/*/events.jsonl)."""
         cfg = project.cfg
-        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--backend", cfg.llm.backend, "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "auto"]
+        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "auto"]
         return self._spawn(project, "auto", cmd)
 
     def _spawn(self, project, key: str, cmd: list[str]) -> int:

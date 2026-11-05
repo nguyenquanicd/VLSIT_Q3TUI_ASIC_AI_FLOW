@@ -123,7 +123,7 @@ class Probe:
 
     def sdk_tools(self) -> list:
         import anyio
-        from q3tui.llm.tooldef import tool
+        from claude_agent_sdk import tool
 
         @tool("sim_probe", "Run one failing test again with a waveform dump of the instances you name (hierarchical instance paths from the testbench top, "
                            "e.g. tb_top.u_dut.u_core.u_alu; `depth` 1: the signals of those instances, 0: everything below them; `until_ns`: stop the run there). "

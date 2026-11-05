@@ -188,21 +188,17 @@ def check_tool_paths(stage: Stage, tool_input: dict[str, Any], tool_name: str | 
     return None
 
 
-def guard_reason(stage: Stage, name: str | None, tool_input: dict[str, Any]) -> str | None:
-    """Why a file tool call is denied (None = allowed): the stage's folders, its writable files, the role's task tools.
-    Shared by the Claude hook and the Codex backend's file tools (llm/codex/files.py)."""
-    target = tool_input.get("file_path")
-    if stage.notes_file is not None and name in WRITE_TOOLS | {"Read"} and isinstance(target, str) \
-            and (stage.cwd / Path(target).expanduser()).resolve() == stage.notes_file.resolve():
-        return None
-    if stage.task_tools is not None and name not in stage.task_tools and not str(name).startswith("mcp__"):
-        return f"{name} is not available in this task (it has: {', '.join(stage.task_tools) or 'no file tools'})"
-    return check_tool_paths(stage, tool_input, name)
-
-
 def _path_guard(stage: Stage, emit: StepEmitter | None):
     async def hook(hook_input, tool_use_id, context):
-        reason = guard_reason(stage, hook_input.get("tool_name"), hook_input.get("tool_input") or {})
+        name = hook_input.get("tool_name")
+        target = (hook_input.get("tool_input") or {}).get("file_path")
+        if stage.notes_file is not None and name in WRITE_TOOLS | {"Read"} and isinstance(target, str) \
+                and (stage.cwd / Path(target).expanduser()).resolve() == stage.notes_file.resolve():
+            return {}
+        if stage.task_tools is not None and name not in stage.task_tools and not str(name).startswith("mcp__"):
+            reason = f"{name} is not available in this task (it has: {', '.join(stage.task_tools) or 'no file tools'})"
+        else:
+            reason = check_tool_paths(stage, hook_input.get("tool_input") or {}, name)
         if reason is None:
             return {}
         if emit is not None:
@@ -228,7 +224,7 @@ def safe_glob(stage: Stage, pattern: str, path: str | None = None, limit: int = 
         rp = p.resolve()
         if not p.is_file() or _within(rp, denied) or "__pycache__" in p.parts or any(part.startswith(".") for part in p.relative_to(base).parts):
             continue
-        found.append(str(p.relative_to(stage.cwd)) if p.is_relative_to(stage.cwd) else str(p))
+        found.append((p.relative_to(stage.cwd) if p.is_relative_to(stage.cwd) else p).as_posix())
         if len(found) >= limit:
             found.append(f"… (first {limit} shown; narrow the pattern)")
             break
@@ -236,7 +232,7 @@ def safe_glob(stage: Stage, pattern: str, path: str | None = None, limit: int = 
 
 
 def _glob_tool(stage: Stage):
-    from q3tui.llm.tooldef import tool  # (neutral: the Codex backend serves it too)
+    from claude_agent_sdk import tool
 
     @tool("glob", "Find files by glob pattern (e.g. \"**/*.md\", \"model/tests/test_*.py\"), optionally under a directory "
                   "(`path`). Lists only files this task may use.", {"pattern": str, "path": str})
@@ -290,9 +286,7 @@ def build_options(stage: Stage, cfg: Config, emit: StepEmitter | None = None) ->
     mcp_servers: dict[str, Any] = {}
     builtin = [t for t in stage.builtin_tools if t != "Glob"]  # replaced by the filtered glob below
     sdk_tools = list(stage.sdk_tools) + ([_glob_tool(stage)] if "Glob" in stage.builtin_tools else [])
-    from q3tui.llm.tooldef import to_sdk
-
-    sdk_tools = [to_sdk(capped(t, cfg.llm.tool_output_limit)) for t in sdk_tools]
+    sdk_tools = [capped(t, cfg.llm.tool_output_limit) for t in sdk_tools]
     allowed = list(builtin)
     if sdk_tools:
         mcp_servers[Q3TUI_MCP] = create_sdk_mcp_server(Q3TUI_MCP, tools=sdk_tools)
@@ -310,8 +304,17 @@ def build_options(stage: Stage, cfg: Config, emit: StepEmitter | None = None) ->
 
     # the step's own model / effort when one is set (llm.steps.<step>), else the global ones
     llm = cfg.llm.for_stage(emit.step if emit is not None else None, stage.name)
-    if stage.effort and llm.effort:  # (only for models that take an effort)
-        llm = llm.model_copy(update={"effort": stage.effort})
+    from q3tui.llm import provider
+    from q3tui.llm.models import efforts_for, fit_effort
+
+    if stage.effort and llm.effort:  # (only for models that take an effort; a level the model lacks: its highest below)
+        llm = llm.model_copy(update={"effort": fit_effort(stage.effort, efforts_for(cfg.llm.provider, llm.model)[0])})
+    if not provider.is_claude_model(llm.model):  # thinking_budget is Claude's (models without an effort setting)
+        llm = llm.model_copy(update={"thinking_budget": None})
+    try:
+        provider_env = provider.stage_env(cfg, llm.model)  # where the requests go (llm.provider)
+    except provider.ProviderError as exc:
+        raise StageError(f"{stage.name}: {exc}", 0.0) from None
     thinking = None
     if llm.effort is None and llm.thinking_budget is not None:  # effort steers thinking when it is set
         budget = llm.thinking_budget
@@ -336,7 +339,8 @@ def build_options(stage: Stage, cfg: Config, emit: StepEmitter | None = None) ->
         # a tool may run for minutes (the architect's `delegate` runs sub-architects): wait as long as the stage may
         # (no claude.ai connectors of the account: with them every stage that used a tool carried ~100–200k tokens of connector tool
         # lists, measured ~$1.5 for one Read; `llm.env: {ENABLE_CLAUDEAI_MCP_SERVERS: "true"}` turns them back on)
-        env={"MCP_TOOL_TIMEOUT": str((cfg.llm.timeout_s or 7 * 24 * 3600) * 1000), "ENABLE_CLAUDEAI_MCP_SERVERS": "false", **cfg.llm.env},
+        env={"MCP_TOOL_TIMEOUT": str((cfg.llm.timeout_s or 7 * 24 * 3600) * 1000), "ENABLE_CLAUDEAI_MCP_SERVERS": "false", **provider_env,
+             **cfg.llm.env},
         setting_sources=[],  # isolate from the user's own Claude Code settings/CLAUDE.md
         resume=stage.resume,
         fork_session=bool(stage.fork and stage.resume),
@@ -421,7 +425,6 @@ def _summary_only(model) -> bool:
 def _validate(stage: Stage, result: ResultMessage, texts: list[str]) -> tuple[BaseModel | None, str | None]:
     """Return (output, error). error is a message suitable to send back to the model."""
     data = result.structured_output
-    json_block = stage.text_json or getattr(result, "json_block", False)  # (Codex: the result is the reply's JSON)
     if data is None:
         try:
             data = _extract_json(result.result or "\n".join(texts))
@@ -432,13 +435,13 @@ def _validate(stage: Stage, result: ResultMessage, texts: list[str]) -> tuple[Ba
                 # the text is the summary — re-asking would re-send the whole session for nothing
                 return stage.output_model(summary=text[-2000:]), None
             return None, ("No JSON block was found. Reply with the complete result as one JSON object in a ```json block."
-                          if json_block else
+                          if stage.text_json else
                           "No structured output was returned. Call the StructuredOutput tool with the complete result.")
     try:
         return stage.output_model.model_validate(data), None
     except ValidationError as exc:
         problems = "; ".join(f"{'.'.join(map(str, e['loc'])) or '(root)'}: {e['msg']}" for e in exc.errors()[:20])
-        how = "Reply again with the complete, corrected object in a ```json block" if json_block else \
+        how = "Reply again with the complete, corrected object in a ```json block" if stage.text_json else \
             "Call StructuredOutput again with the complete, corrected object"
         return None, f"The structured output failed schema validation ({problems}). {how} — every required field present."
 
@@ -449,14 +452,14 @@ async def run_stage(stage: Stage, cfg: Config, emit: StepEmitter) -> StageResult
     If the structured output does not validate, the same session is resumed with the
     validation errors (up to OUTPUT_RETRIES times) before giving up.
     """
-    codex = cfg.llm.backend == "codex"
-    if codex:
-        from q3tui.llm.codex import runner as codex_runner
+    from q3tui.llm import provider
 
-        options = codex_runner.build_options(stage, cfg, emit)
-    else:
-        options = build_options(stage, cfg, emit)
-    emit("stage", name=stage.name, status="llm_start", model=(options.model or "codex") if codex else cfg.llm.model)
+    try:  # the gateway of an OpenAI provider: started (once) in a thread, not in the event loop
+        await anyio.to_thread.run_sync(provider.prepare, cfg)
+    except provider.ProviderError as exc:
+        raise StageError(f"{stage.name}: {exc}", 0.0) from None
+    options = build_options(stage, cfg, emit)
+    emit("stage", name=stage.name, status="llm_start", model=cfg.llm.model)
     try:
         return await _run_stage(stage, cfg, emit, options)
     except StageError as exc:
@@ -496,27 +499,20 @@ newline as \\n and a double quote as \\". Schema:
 
 
 async def _run_stage(stage: Stage, cfg: Config, emit: StepEmitter, options) -> StageResult:
-    codex = cfg.llm.backend == "codex"
-    if codex:
-        from q3tui.llm.codex.runner import CodexError as ClaudeSDKError, query_once  # (the backend's own error type)
-    else:
-        from claude_agent_sdk import ClaudeSDKError
-
-        query_once = _query_once
+    from claude_agent_sdk import ClaudeSDKError
 
     total_cost, turns, prompt = 0.0, 0, stage.prompt
-    # (Codex reports each query's own usage; Claude's resumed sessions report running totals)
-    base = None if codex else session_totals(options.resume)  # what the resumed session had already reported
+    base = session_totals(options.resume)  # what the resumed session had already reported
     with anyio.fail_after(stage.timeout_s or cfg.llm.timeout_s):
         for attempt in range(OUTPUT_RETRIES + 1):
             try:
-                result, texts, last_uuid = await query_once(prompt, options, stage, emit)
+                result, texts, last_uuid = await _query_once(prompt, options, stage, emit)
             except ClaudeSDKError as exc:  # e.g. max turns reached, CLI process failure
                 raise StageError(f"{stage.name}: {str(exc).splitlines()[0]}", total_cost) from exc
             if result is None:
                 raise StageError(f"{stage.name}: agent ended without a result message", total_cost)
             cost, model_usage = _delta(result, base)
-            if result.session_id and not codex:
+            if result.session_id:
                 base = _TOTALS[result.session_id] = {"cost": result.total_cost_usd or 0.0,
                                                      "model_usage": getattr(result, "model_usage", None) or {}}
             total_cost += cost

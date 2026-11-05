@@ -11,7 +11,8 @@
 #
 # Needs: bash, curl or an existing `uv` (the script can install uv for you), network access for the Python packages
 # (or an internal PyPI mirror: UV_INDEX_URL=...). Python >= 3.12 is fetched by uv when the system one is older.
-# Not installed by this script: any EDA tool (yours: on PATH or loaded through tools.json) and Claude access.
+# Also installs the LLM gateway (LiteLLM, in its own uv environment) used by the OpenAI providers.
+# Not installed by this script: any EDA tool (yours: on PATH or loaded through tools.json) and LLM access (a login or a key).
 
 set -euo pipefail
 
@@ -118,9 +119,9 @@ fi
 
 # --- what the script cannot do for you --------------------------------------------------------------------------------
 if command -v claude >/dev/null 2>&1; then
-  ok "Claude Code found: $(command -v claude) (Q3TUI uses the Claude Agent SDK: log in with 'claude' once, or set ANTHROPIC_API_KEY)"
+  ok "Claude Code found: $(command -v claude) (log in with 'claude' once; or pick another provider: Settings → Provider, 'q3tui gateway status')"
 else
-  warn "Claude Code CLI not found — Q3TUI's LLM calls go through the Claude Agent SDK: install Claude Code and log in, or set ANTHROPIC_API_KEY"
+  warn "Claude Code CLI not found — Q3TUI's LLM calls go through the Claude Agent SDK: install Claude Code and log in, or pick another provider (Settings → Provider)"
 fi
 if command -v module >/dev/null 2>&1 || [ -f /etc/profile.d/modules.sh ]; then
   ok "environment modules available (EDA tools can be loaded through tools.json 'modules')"
@@ -135,6 +136,10 @@ if [ "$DRY" != 1 ]; then
   command -v q3tui >/dev/null 2>&1 || die "the q3tui command is not on PATH yet (see the PATH note above)"
   q3tui --version
   q3tui flow list
+  # the gateway of the OpenAI providers (llm.provider: openai | openai_api): LiteLLM in its own environment
+  # (~/.q3tui/gateway/venv), made now so the first stage or login that needs it does not wait for the install
+  say "installing the LLM gateway (LiteLLM) for the OpenAI providers"
+  q3tui gateway install || warn "the LLM gateway did not install now; Q3TUI installs it on first use (only the OpenAI providers need it)"
 fi
 
 cat <<EOF

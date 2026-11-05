@@ -228,8 +228,7 @@ class Team:
         # team.fork: parallel tasks (independent units of one level) fork the session at its last idle point — they know
         # everything the role knew then, never an unfinished task; without a known idle point they queue
         # (the flow's one engineer works one task at a time, like one conversation: parallel tasks queue)
-        # (Codex cannot fork a session: parallel tasks of a role queue)
-        if on_main and not nested and (role == "flow" or not cfg.team.fork or st.idle_at is None or cfg.llm.backend == "codex"):
+        if on_main and not nested and (role == "flow" or not cfg.team.fork or st.idle_at is None):
             while self.busy[role]:
                 await anyio.sleep(0.2)
         fork = on_main and self.busy[role]
@@ -313,7 +312,7 @@ class Team:
             st.idle_at = result.last_uuid or st.idle_at
             self._register_products(role, st, cfg)
             st.totals = runtime.session_totals(st.session) or st.totals
-            if cfg.team.max_context and cfg.llm.backend != "codex" and result.context_tokens > cfg.team.max_context:  # opted in: compact it now (Codex compacts itself)
+            if cfg.team.max_context and result.context_tokens > cfg.team.max_context:  # opted in: compact it now
                 await self._compact(role, stage.cwd, result.context_tokens, cfg, emit)
         elif fork:
             st.forks += 1
@@ -456,7 +455,7 @@ def set_section(doc: str, section: str, text: str) -> str:
 
 
 def _notes_tool(path: Path):
-    from q3tui.llm.tooldef import tool
+    from claude_agent_sdk import tool
 
     @tool("notes", "Your NOTES.md (decisions, conventions, open issues — short). It is read again after your session is "
                    "compacted. `section` (e.g. a block or topic name): sets just that section — added when new, replaced "
@@ -477,7 +476,7 @@ def _notes_tool(path: Path):
 
 
 def _submit_tool(box: dict, model):
-    from q3tui.llm.tooldef import tool
+    from claude_agent_sdk import tool
     from pydantic import ValidationError
 
     @tool("submit", "Return this task's result: `result` = a JSON object of the schema given in the task. It is checked "

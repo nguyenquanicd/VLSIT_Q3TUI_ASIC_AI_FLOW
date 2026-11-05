@@ -17,7 +17,7 @@ def _text(s: str) -> dict:
 
 
 def design_tools(design: ParsedDesign) -> list[SdkMcpTool]:
-    from q3tui.llm.tooldef import tool
+    from claude_agent_sdk import tool
 
     @tool(
         "design_summary",

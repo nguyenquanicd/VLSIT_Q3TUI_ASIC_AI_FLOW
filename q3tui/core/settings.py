@@ -9,13 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-MODELS = [
-    ("claude-opus-5-5", "Opus 5.5 — best quality"),
-    ("claude-sonnet-5-5", "Sonnet 5.5 — fast, cheaper (default)"),
-    ("claude-haiku-5-5", "Haiku 5.5 — cheap and fast; thinks at length before it answers"),
-    ("claude-haiku-4-5", "Haiku 4.5 — cheapest, for trying the flow (no effort setting)"),
-    ("claude-fable-5-1", "Fable 5.1 — most capable, most expensive"),
-]
+from q3tui.llm.models import CLAUDE_MODELS
+from q3tui.llm.provider import PROVIDERS
+
+MODELS = list(CLAUDE_MODELS)  # the static list; the settings dialog asks the provider for its own (llm/models.py)
+KEYS = "keys."  # + NAME: a provider key (core/keys.py) — saved to ~/.q3tui/keys.env, never q3tui.yaml
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 GATES = ["spec", "parse", "config", "rtl", "tb"]
 STEP_LABELS = (("spec", "Spec"), ("parse", "Parse"), ("config", "Config"), ("rtl", "RTL"), ("tb", "TB"), ("assistant", "Assistant"))
@@ -25,7 +23,7 @@ STEP_LABELS = (("spec", "Spec"), ("parse", "Parse"), ("config", "Config"), ("rtl
 class Setting:
     path: str
     label: str
-    kind: str  # bool | int | float | text | lines | choice | multi
+    kind: str  # bool | int | float | text | lines | choice | multi | secret (a key: shown as set / not set, never its value)
     help: str = ""
     choices: tuple = ()  # (value, label) for choice / multi
     nullable: bool = False  # empty / "none" = null
@@ -90,6 +88,19 @@ TABS: tuple[Tab, ...] = (
         Setting("llm.timeout_s", "Stage timeout (s)", "int", "Wall-clock limit per LLM stage (empty: none, like Claude Code).",
                 nullable=True, none_label="no limit"),
         Setting("llm.fallback_model", "Fallback model", "text", "Used when the model is overloaded (empty = none).", nullable=True),
+    )),
+    Tab("provider", "Provider", (
+        Setting("llm.provider", "Provider", "choice",
+                "Where the LLM stages' requests go. The OpenAI providers run through a local LiteLLM gateway that Q3TUI starts "
+                "(`q3tui gateway status`). Switching provider also switches a model the new one does not have.",
+                PROVIDERS),
+        Setting("llm.api_base", "API base", "text",
+                "Claude API / OpenAI API compatible: the endpoint, e.g. https://my-gateway/v1 (empty = the official API).",
+                nullable=True),
+        Setting(KEYS + "ANTHROPIC_API_KEY", "Claude API key", "secret",
+                "For Claude API compatible. Saved to ~/.q3tui/keys.env (mode 600), never to q3tui.yaml; empty = unchanged.", nullable=True),
+        Setting(KEYS + "OPENAI_API_KEY", "OpenAI API key", "secret",
+                "For OpenAI API compatible. Saved to ~/.q3tui/keys.env (mode 600), never to q3tui.yaml; empty = unchanged.", nullable=True),
     )),
     Tab("team", "Team", (
         Setting("team.enabled", "Team mode", "bool",
@@ -195,7 +206,8 @@ def get_value(cfg, path: str) -> Any:
 
 
 def current(cfg, tabs: tuple[Tab, ...] | None = None) -> dict[str, Any]:
-    return {s.path: get_value(cfg, s.path) for t in (tabs or TABS) for s in t.settings}
+    """Every setting's value; a key (kind secret) is never read back: None (the dialog shows whether it is set)."""
+    return {s.path: None if s.kind == "secret" else get_value(cfg, s.path) for t in (tabs or TABS) for s in t.settings}
 
 
 def coerce(setting: Setting, raw: Any) -> Any:

@@ -225,13 +225,12 @@ _BAD = ("FAIL", "TIMEOUT", "BLOCKED", "ERROR", "NOT_RUN")
 def _alive(pid) -> bool:
     import os
 
+    from q3tui.core.compat import pid_alive
+
     try:
-        os.kill(int(pid), 0)
-    except PermissionError:
-        return True
-    except (OSError, TypeError, ValueError):
+        return pid_alive(int(pid))
+    except (TypeError, ValueError):
         return False
-    return True
 
 
 def _runs(app: "Q3TUIApp") -> list[dict]:

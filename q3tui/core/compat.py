@@ -130,3 +130,43 @@ def ensure_utf8_mode() -> None:
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     argv = [sys.executable, "-X", "utf8", "-m", "q3tui.core.cli", *sys.argv[1:]]  # (the console script is an .exe: not a script to pass on)
     raise SystemExit(subprocess.call(argv, env=env))
+
+
+# -- is a process running? ---------------------------------------------------------------------------------------------
+
+
+def pid_alive(pid: int | None) -> bool:
+    """Whether process `pid` exists. (`os.kill(pid, 0)` is the Linux test; on Windows any signal but Ctrl-C ends the process.)"""
+    if not pid:
+        return False
+    if not IS_WINDOWS:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return kernel32.GetLastError() == 5  # access denied: it exists
+    try:
+        code = ctypes.c_ulong()
+        return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def terminate_group(pid: int) -> None:
+    """End the process `pid` started with `group_kwargs()` (and its children). Linux: SIGTERM, so it can clean up; Windows has no
+    such request for a process without a window: it is ended at once."""
+    if IS_WINDOWS:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass

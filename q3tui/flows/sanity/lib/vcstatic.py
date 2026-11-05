@@ -71,12 +71,9 @@ def clear_stale_lock(work: Path) -> str | None:
     here = {socket.gethostname(), socket.gethostname().split(".")[0]}
     if host and host.group(1) and host.group(1) not in here and host.group(1).split(".")[0] not in here:
         return None
-    try:
-        os.kill(int(pid.group(1)), 0)
-        return None  # (alive: a session that is really running)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        return None  # (another user's live process)
+    from q3tui.core.compat import pid_alive
+
+    if pid_alive(int(pid.group(1))):
+        return None  # (alive: a session that is really running, or another user's)
     lock.unlink()
     return f"removed a stale VC Static lock ({lock.name}: session {pid.group(1)} is not running here; a run that crashed left it)"

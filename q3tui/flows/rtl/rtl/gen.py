@@ -277,7 +277,7 @@ class RtlGenStep(VlsitStep):
 
         def tools():
             import anyio
-            from q3tui.llm.tooldef import tool
+            from claude_agent_sdk import tool
 
             @tool("check", "Run Q3TUI's checks on the module of this task (RTL rules, REQ trace tags, lint). "
                            "Returns the problems, or 'clean'.", {})

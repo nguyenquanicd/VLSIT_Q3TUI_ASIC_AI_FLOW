@@ -118,9 +118,8 @@ class StepContext:
         files = _readable_digest(stage) if {"Read", "Grep", "Glob"} & set(stage.builtin_tools) else ""
         if files is None:
             return None
-        who = llm.model if self.cfg.llm.backend == "claude" else f"codex:{self.cfg.llm.codex.model}:{self.cfg.llm.codex.effort}"
         h = hashlib.sha256("\0".join([stage.name, stage.system_prompt, stage.prompt, ",".join(sorted(stage.builtin_tools)),
-                                      str(stage.max_turns), who, str(llm.effort), schema, files]).encode()).hexdigest()[:24]
+                                      str(stage.max_turns), llm.model, str(llm.effort), schema, files]).encode()).hexdigest()[:24]
         return checkpoint_dir(self.project, self.emit.step) / f"{h}.json"
 
 
