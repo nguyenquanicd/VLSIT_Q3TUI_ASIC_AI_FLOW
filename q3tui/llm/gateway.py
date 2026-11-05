@@ -32,6 +32,7 @@ from q3tui.core import keys
 LITELLM = "litellm[proxy]>=1.108"  # what `install` puts into the gateway's own environment
 OPENAI_API_BASE = "https://api.openai.com/v1"
 START_TIMEOUT_S = 240  # LiteLLM's import is slow on a network home
+PROXY = Path(__file__).with_name("gateway_proxy.py")  # LiteLLM's proxy with Q3TUI's fixes to its requests
 HEALTH_TTL_S = 30.0  # a gateway found healthy is not checked again for this long
 _healthy: dict[str, float] = {}  # config hash → when it was last found healthy
 
@@ -244,7 +245,7 @@ def check(provider: str) -> None:
 def ensure(provider: str, api_base: str | None) -> str:
     """The gateway's URL for this provider, started (or restarted with this config) when needed."""
     text = config_text(provider, api_base)
-    h = _hash(text + json.dumps(sorted(env().items())))  # a changed key restarts it too
+    h = _hash(text + json.dumps(sorted(env().items())) + PROXY.read_text())  # a changed key or proxy restarts it too
     st = _state()
     if st.get("hash") == h and time.monotonic() - _healthy.get(h, -1e9) < HEALTH_TTL_S:
         return f"http://127.0.0.1:{st['port']}"
@@ -259,7 +260,7 @@ def ensure(provider: str, api_base: str | None) -> str:
         cfg_path.write_text(text)
         port = _free_port()
         log = open(home() / "gateway.log", "ab")
-        proc = subprocess.Popen(python_cmd("-m", "litellm.proxy.proxy_cli", "--config", str(cfg_path), "--host", "127.0.0.1",
+        proc = subprocess.Popen(python_cmd("-I", str(PROXY), "--config", str(cfg_path), "--host", "127.0.0.1",
                                            "--port", str(port)),
                                 env={**os.environ, **env()}, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                 start_new_session=True, cwd=home())

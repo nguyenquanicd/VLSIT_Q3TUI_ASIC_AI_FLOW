@@ -360,3 +360,16 @@ async def test_the_dialog_lists_the_providers_models_and_each_models_efforts(tmp
         await pilot.pause()
         cfg = app.project.cfg.llm
         assert (cfg.provider, cfg.model, cfg.effort) == ("openai", "gpt-5.1-codex-mini", "high")
+
+
+def test_gateway_proxy_sends_system_messages_as_developer():
+    """The ChatGPT backend refuses `system` input messages: the gateway's proxy sends them as `developer` ones."""
+    from q3tui.llm import gateway, gateway_proxy
+
+    req = {"instructions": "top", "input": [{"type": "message", "role": "system", "content": [{"type": "input_text", "text": "s"}]},
+                                            {"type": "message", "role": "user", "content": "u"}, "raw"]}
+    out = gateway_proxy.developer_roles(req)
+    assert [i["role"] if isinstance(i, dict) else i for i in out["input"]] == ["developer", "user", "raw"]
+    assert out["input"][0]["content"] == [{"type": "input_text", "text": "s"}]
+    assert gateway_proxy.developer_roles({"input": "text"}) == {"input": "text"}
+    assert gateway.PROXY.is_file()

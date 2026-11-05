@@ -149,6 +149,9 @@ Every LLM stage runs on the Claude Agent SDK; `llm.provider` decides where its r
   proxy pins an older `rich` than Textual), made once with uv by `q3tui gateway install` (run by `install.sh`, or by
   the first start or login that needs it) and used directly afterwards. Its files: `~/.q3tui/gateway/` (`venv/`,
   `config.yaml`, `state.json`, `token` — the proxy's key, mode 600, `chatgpt/` — the ChatGPT login, `gateway.log`).
+- **The proxy** runs as `q3tui/llm/gateway_proxy.py` (LiteLLM's proxy plus Q3TUI's fixes to its requests): for
+  ChatGPT, the `system` messages Claude Code adds within a conversation are sent as `developer` messages (the
+  backend refuses `system` input: "System messages are not allowed").
 - **Keys** (`q3tui/core/keys.py`): `~/.q3tui/keys.env` (mode 600), set with `q3tui keys set NAME` or the settings
   dialog's Provider tab; an environment variable of the same name wins. Never in `q3tui.yaml`: the dialog and `ops`
   write them only to that file and never read a value back.
