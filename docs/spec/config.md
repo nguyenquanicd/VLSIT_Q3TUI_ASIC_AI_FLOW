@@ -164,9 +164,11 @@ Every LLM stage runs on the Claude Agent SDK; `llm.provider` decides where its r
   dialog fills the model lists from the provider and reloads them when the provider changes; switching the provider
   switches a model the new provider does not have. The SDK's small background calls go to the same model
   (`ANTHROPIC_DEFAULT_*_MODEL`).
-- **Efforts**: Claude Code sends `effort` for any model; the gateway turns it into OpenAI's `reasoning_effort`. A Claude
-  model takes `low … max` but Haiku 4.5 (none); another provider's model takes `low · medium · high`, plus `xhigh` /
-  `max` when LiteLLM's model data says it supports them, none when it does not reason. A level the model lacks
+- **Efforts**: Claude Code sends `effort` for any model (`output_config.effort`, with adaptive thinking). A Claude
+  model takes `low … max` but Haiku 4.5 (none). With `claude_api` any model takes `low … max`: the request goes to
+  the endpoint as is and the endpoint maps the level (e.g. opencode). Through the gateway (`openai`, `openai_api`)
+  LiteLLM turns it into OpenAI's `reasoning_effort`: a model takes `low · medium · high`, plus `xhigh` / `max` when
+  LiteLLM's model data says it supports them, none when it does not reason. A level the model lacks
   becomes its highest one below (`max` → `xhigh` on gpt-5.5), at the stage and in the dialog (whose effort lists
   follow each model). `thinking_budget` is for Claude models only.
 - **Cost**: Claude Code prices only the models it knows: for another provider's model a stage may report $0.

@@ -447,3 +447,13 @@ def test_claude_api_models_from_a_gateway_that_lists_them_beside_its_anthropic_p
     assert [u for u, _ in asked] == ["https://gw/go/anthropic/v1/models?limit=1000", "https://gw/go/v1/models"]
     assert asked[0][1]["x-api-key"] == "k-123" and asked[1][1]["authorization"] == "Bearer k-123"
     assert all(h["user-agent"] == "q3tui" for _, h in asked)
+
+
+def test_claude_api_models_take_every_effort():
+    """With claude_api the effort goes to the endpoint as is (output_config.effort): no LiteLLM to limit it."""
+    from q3tui.llm.models import EFFORTS, efforts_for
+
+    assert efforts_for("claude_api", "glm-5.3") == (EFFORTS, "")
+    assert efforts_for("claude_api", "claude-haiku-4-5") == ((), "")
+    levels, note = efforts_for("openai_api", "glm-5.3-not-in-litellm")
+    assert levels == ("low", "medium", "high") and "LiteLLM" in note
