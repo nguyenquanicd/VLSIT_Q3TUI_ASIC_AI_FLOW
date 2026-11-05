@@ -28,7 +28,7 @@ checked against, every setting, and every command/key you use day to day. The de
 | | |
 |---|---|
 | [`uv`](https://docs.astral.sh/uv/) | The installer can install `uv` for you; `uv` fetches a newer Python when yours is older. |
-| Claude access | The Claude Agent SDK's normal auth: an existing Claude Code login, `ANTHROPIC_API_KEY`, or a gateway / Bedrock / Vertex through `llm.env` in `q3tui.yaml`. |
+| LLM access | A Claude Code login (the default), or another provider: the Claude API or an endpoint that speaks it, a ChatGPT subscription (the Codex models), the OpenAI API or an endpoint that speaks it ([Providers](#provider)). |
 | EDA tools (optional, yours) | Q3TUI ships none. A linter and formatter for the rtl flow, a simulator for smoke / dv, lint, synthesis and CDC tools for the later flows: bring the ones your site uses (see below). A role with no tool configured is reported **N/A**, never silently skipped. |
 
 ```bash
@@ -304,7 +304,7 @@ assistant (`get_settings` / `set_settings`). Add `--save` to a `/command` form, 
 session" unticked in the dialog, to persist a change to `q3tui.yaml`; leave it ticked (or omit `--save`) to
 try something for this session only.
 
-The dialog has one tab per area: **General**, **Gates**, **LLM**, **Models per step**, **Spec**, **RTL**.
+The dialog has one tab per area: **General**, **Gates**, **LLM**, **Provider**, **Models per step**, **Spec**, **RTL**.
 
 ### General
 
@@ -337,6 +337,32 @@ pressing `g` on a step, or `/gate <step> <mode>` — this tab just shows every s
 | `llm.stage_token_budget` | int, nullable | Warn when one stage reads more input tokens than this (cache included; empty = never warn). |
 | `llm.timeout_s` | int, nullable | Wall-clock limit per LLM stage (empty = none, same as Claude Code). |
 | `llm.fallback_model` | text, nullable | Used when the primary model is overloaded (empty = none). |
+
+### Provider
+
+Where the LLM stages' requests go (Settings → **Provider**, or `llm.provider` in `q3tui.yaml`):
+
+| Provider | What you need |
+|---|---|
+| **Claude subscription** (default) | Your Claude Code login. Nothing to set. |
+| **Claude API compatible** | A Claude API key (`ANTHROPIC_API_KEY`). **API base**: empty for the Claude API, or the URL of an endpoint that speaks it. |
+| **OpenAI subscription** | A ChatGPT login: **Log in to ChatGPT** in the Provider tab (or `q3tui gateway login`), open the link it shows and enter the code. Models: `gpt-5.5`, `gpt-5.3-codex`, … |
+| **OpenAI API compatible** | An OpenAI API key (`OPENAI_API_KEY`). **API base**: empty for the OpenAI API, or the URL of any endpoint that speaks it (vLLM, Ollama, a company gateway). |
+
+- **Keys** go to `~/.q3tui/keys.env` (only you can read it), never to the project's `q3tui.yaml`. Type one in the
+  Provider tab (it shows only whether a key is set) or run `q3tui keys set OPENAI_API_KEY`.
+- The two **OpenAI** providers run through a small local gateway (LiteLLM) that Q3TUI starts by itself when a stage
+  needs it. The installer sets it up (`q3tui gateway install`: once, a few minutes); a start then takes about half a
+  minute (LiteLLM loads slowly). `q3tui gateway status` shows the provider, the gateway, the login and the keys;
+  `q3tui gateway stop` stops it.
+- The **Model** lists show the provider's own models: asked from the endpoint for the two API providers (cached 10
+  minutes), the Codex models for OpenAI subscription, the Claude models for Claude subscription. Changing the provider
+  in the dialog reloads them and switches a model the new provider does not have. Any other name the provider knows
+  still works: type it in the model dialog (`m`) or set `llm.model`. `q3tui gateway models` prints the list.
+- The **Effort** lists show the levels the chosen model takes (e.g. gpt-5.5: low … xhigh); a level it lacks becomes
+  its highest one below.
+- Other providers' models may show a cost of $0 (Claude Code prices only Claude models). How well they follow the
+  flows' tool use and structured answers varies by model.
 
 ### Models per step
 
@@ -484,6 +510,8 @@ are recognised only to keep them out of the RTL; they are not taken yet. Nothing
 | `loop` | CDC / RDC fix loop, with `--flow sanity`. |
 | `import PATH` | Import your own spec / RTL files. |
 | `history …` | The project's versions. |
+| `gateway status` / `models` / `start` / `stop` / `login` / `install` | The LLM provider, the local gateway of the OpenAI providers, the ChatGPT login ([Provider](#provider)). |
+| `keys list` / `set NAME` / `clear NAME` | The providers' API keys, in `~/.q3tui/keys.env`. |
 | `tools init` / `tools check` | Write `config/tools.json` from a preset / check which tool roles are configured. |
 | `act [NAME key=value …]` | The flow's add-on actions (`q3tui act` lists them), e.g. `rtl_rules_init`, `csr_tool_install`. |
 | `design parse` / `design check` | Parse and compile-check a design, no LLM. |
@@ -498,7 +526,7 @@ Settings come from `./q3tui.yaml` over `~/.q3tui/q3tui.yaml` ([§6](#6-settings)
 | Symptom | What to do |
 |---|---|
 | A step says a tool role is **N/A** or waits "for role X" | `q3tui tools check`, then `q3tui tools init` or edit `config/tools.json` (and `tools.modules`). The step never passes without the tool. |
-| LLM stage fails to start / authentication error | Log in with Claude Code, set `ANTHROPIC_API_KEY`, or set `llm.env` for your gateway. |
+| LLM stage fails to start / authentication error | `q3tui gateway status`: the provider and what it still needs. Claude subscription: log in with Claude Code. Others: the key (`q3tui keys set …`) or the ChatGPT login (`q3tui gateway login`); the gateway's log is `~/.q3tui/gateway/gateway.log`. |
 | A second run does not start, or waits | One run per flow per project folder (`.q3tui/run.<flow>.lock`); a step another run is executing is waited for. Use the TUI as a watcher meanwhile. |
 | A gate will not approve | Open the Questions tab (`o`) and unconfirmed review items ([§4](#4-gates-and-review)); `/approve --force` only when you have judged it fine. |
 | A step re-ran something you did not expect | Everything is content-hashed: check what changed (`q3tui history diff`). `format` asks before touching a file you edited. |

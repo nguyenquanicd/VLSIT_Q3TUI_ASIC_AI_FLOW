@@ -359,11 +359,19 @@ class Ops:
         """Validate and apply {"llm.effort": "low", ...}; `save` also writes them to q3tui.yaml."""
         from pydantic import ValidationError
 
-        from q3tui.core import settings
-        from q3tui.core.config import Config
+        from q3tui.core import keys, settings
+        from q3tui.core.config import Config, uses_effort
+        from q3tui.llm import provider as P
 
         cfg = self.project.cfg
         values: dict = {}
+        saved_keys = []
+        for path, raw in list(changes.items()):  # provider keys: ~/.q3tui/keys.env, never q3tui.yaml (core/keys.py)
+            if path.startswith(settings.KEYS):
+                if raw is not None and str(raw).strip():
+                    keys.set_key(path[len(settings.KEYS):], str(raw))
+                    saved_keys.append(path[len(settings.KEYS):])
+                changes = {p: v for p, v in changes.items() if p != path}
         for path, raw in changes.items():
             setting = settings.find(path, self.engine.flow.settings)
             if setting is None:
@@ -372,12 +380,28 @@ class Ops:
                 values[path] = settings.coerce(setting, raw)
             except ValueError as exc:
                 raise EngineError(str(exc)) from None
-        if str(values.get("llm.model", "")).startswith("claude-haiku-4") and "llm.effort" not in changes:
-            values["llm.effort"] = None  # Haiku 4.5 has no effort setting
+        new_provider = values.get("llm.provider")
+        if new_provider and new_provider != cfg.llm.provider and "llm.model" not in changes:
+            # a model of the provider left behind: the new provider's first suggestion (any name it knows can be set after)
+            model = cfg.llm.model
+            if new_provider in P.MODEL_HINTS and P.is_claude_model(model):
+                values["llm.model"] = P.MODEL_HINTS[new_provider][0]
+            elif new_provider in ("claude", "claude_api") and not P.is_claude_model(model):
+                values["llm.model"] = Config().llm.model
+                if cfg.llm.effort is None and "llm.effort" not in changes:
+                    values["llm.effort"] = Config().llm.effort
+        if "llm.model" in values and "llm.effort" not in changes:  # an effort the new model does not take: its nearest
+            from q3tui.llm.models import efforts_for, fit_effort
+
+            levels = efforts_for(values.get("llm.provider") or cfg.llm.provider, str(values["llm.model"]))[0]
+            fitted = fit_effort(cfg.llm.effort if cfg.llm.effort or not levels else Config().llm.effort, levels)
+            if fitted != cfg.llm.effort:
+                values["llm.effort"] = fitted
         values = {p: v for p, v in values.items()
                   if (self._step_option(p) if settings.is_step_option(p) else settings.get_value(cfg, p)) != v}
+        note = f"saved {', '.join(saved_keys)} to {keys.path()}" if saved_keys else ""
         if not values:
-            return "settings unchanged"
+            return self._log(None, note) if note else "settings unchanged"
         try:  # validate against the real schema before touching the live config
             from q3tui.core.config import _merge
 
@@ -401,15 +425,25 @@ class Ops:
         msg = f"settings: {shown}"
         if save:
             msg += f" (saved to {self.project.rel(self.project.save_config_values(settings.nested(values)))})"
+        if note:
+            msg += f"; {note}"
+        if "llm.provider" in values or "llm.api_base" in values:
+            msg += f" — {P.describe(cfg)}"
         return self._log(None, msg)
 
     def set_model(self, model: str | None = None, effort: str | None | bool = False, save: bool = False) -> str:
         """Change the LLM for subsequent stages; `effort=False` leaves effort unchanged."""
+        from q3tui.core.config import uses_effort
+
         llm = self.project.cfg.llm
         if model:
             llm.model = model
-            if model.startswith("claude-haiku-4"):
+            if not uses_effort(model, llm.provider):
                 llm.effort = None
+            elif effort is False:  # an effort the new model does not take: its nearest
+                from q3tui.llm.models import efforts_for, fit_effort
+
+                llm.effort = fit_effort(llm.effort, efforts_for(llm.provider, model)[0])
         if effort is not False:
             if effort not in (None, "low", "medium", "high", "xhigh", "max"):
                 raise EngineError(f"unknown effort '{effort}'")
@@ -711,6 +745,28 @@ class Ops:
             mode = modes.get(v.name)
             lines.append(f"  {v.name:<12} {mode or 'no gate':<12} {v.gate if mode else ''}")
         return "\n".join(lines)
+
+    def gateway(self, action: str = "status") -> str:
+        """The LiteLLM gateway of the OpenAI providers: status | start | stop (blocking: start may take a minute)."""
+        from q3tui.llm import gateway, provider
+
+        cfg = self.project.cfg
+        if action == "stop":
+            return self._log(None, "gateway stopped" if gateway.stop() else "no gateway was running")
+        if action == "start":
+            if not gateway.uses_gateway(cfg.llm.provider):
+                raise EngineError(f"llm.provider is {cfg.llm.provider}: it needs no gateway (openai / openai_api do)")
+            try:
+                url = gateway.ensure(cfg.llm.provider, cfg.llm.api_base)
+            except gateway.GatewayError as exc:
+                raise EngineError(str(exc)) from None
+            return self._log(None, f"gateway at {url} for {cfg.llm.provider}")
+        if action != "status":
+            raise EngineError(f"unknown gateway action '{action}' (status | start | stop)")
+        st = gateway.status()
+        keys_txt = ", ".join(f"{k} {'set' if v else 'not set'}" for k, v in st["keys"].items())
+        return (f"{provider.describe(cfg)}; gateway {'running at ' + st['url'] if st['running'] else 'not running'}; "
+                f"ChatGPT login {'saved' if st['chatgpt_login'] else 'none'}; {keys_txt}")
 
     def cost_text(self) -> str:
         s = self.engine.cost_summary()
