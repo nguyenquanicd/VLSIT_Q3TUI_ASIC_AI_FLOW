@@ -168,6 +168,7 @@ class SettingsScreen(Dialog[dict | None]):
     # -- the models of the provider, the efforts of each model (llm/models.py) -------------------------------------
     def on_mount(self) -> None:
         self._listed: tuple | None = None  # (provider, api_base) the model lists were made for
+        self._told: set[str] = set()  # the effort notes shown already
         self._start_provider = self.values.get("llm.provider") or "claude"
         if self._has("llm.provider"):
             self.run_worker(self._reload_models(), group="models", exclusive=True)
@@ -251,6 +252,8 @@ class SettingsScreen(Dialog[dict | None]):
                 notes.append(f"{epath}: {current} → {fitted or 'none'} ({model} takes {', '.join(levels) or 'no effort'})")
             if why and epath == "llm.effort":
                 notes.append(why)
+        notes = [n for n in dict.fromkeys(notes) if n not in self._told]  # (each once: setting the model lists
+        self._told.update(notes)                                          #  changes every model field, each calls this)
         if notes:
             self.notify("\n".join(notes[:4]), title="Effort", timeout=6)
 

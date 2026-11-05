@@ -409,3 +409,5 @@ async def test_settings_dialog_shows_the_providers_models(monkeypatch):
         sel = scr.query_one("#" + scr._wid("llm.model"), Select)
         assert [o[1] for o in sel._options][:2] == ["m-one", "m-two"] and sel.value == "m-two"
         assert "2 from openai_api" in str(scr.query_one("#provider-models-note", Static).render())
+        efforts = [n for n in app._notifications if n.title == "Effort"]  # (was: one per model field, ~10)
+        assert len(efforts) == 1 and "m-two: not in LiteLLM's model data" in efforts[0].message
