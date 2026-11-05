@@ -501,6 +501,15 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
     async def _stats(a):
         return ops.stats_text()
 
+    @add("gateway", "The LLM provider and the LiteLLM gateway of the OpenAI providers (llm.provider openai / openai_api): "
+         "status (provider, gateway, ChatGPT login, which keys are set), start, stop. Keys and the ChatGPT login are the "
+         "user's: the Provider tab of the settings (,) or `q3tui keys set` / `q3tui gateway login`.",
+         _schema({"action": ("string", "status | start | stop")}, ["action"]))
+    async def _gateway(a):
+        import anyio
+
+        return await anyio.to_thread.run_sync(ops.gateway, str(a.get("action") or "status"))
+
     @add("show_cost", "LLM cost recorded for this project and this session.", none)
     async def _cost(a):
         return ops.cost_text()
