@@ -4,9 +4,11 @@
   and the OpenAI API (or an endpoint that speaks either) are asked (`/v1/models`, `/models`); the OpenAI subscription
   offers what LiteLLM routes there (its `chatgpt/*` models). Asked lists are cached for CACHE_TTL_S in
   `$Q3TUI_HOME/models/`; an endpoint that cannot be asked gives the suggested names and a note, never an error.
-- Efforts: Claude Code sends `low | medium | high | xhigh | max` for any model; the gateway turns it into the OpenAI
-  `reasoning_effort`. A Claude model takes them all but Haiku 4.5 (none); another model takes low · medium · high and
-  xhigh / max when LiteLLM's model data says it supports them; a model that does not reason takes none.
+- Efforts: Claude Code sends `low | medium | high | xhigh | max` for any model (`output_config.effort`). A Claude model
+  takes them all but Haiku 4.5 (none); with `claude_api` any model takes them all (the endpoint maps them: no LiteLLM
+  between); through the gateway (`openai`, `openai_api`) LiteLLM turns it into the OpenAI `reasoning_effort`, so a
+  model takes low · medium · high and xhigh / max when LiteLLM's model data says it supports them, none when it does
+  not reason.
 """
 
 from __future__ import annotations
@@ -166,6 +168,8 @@ def efforts_for(provider: str, model: str | None) -> tuple[tuple[str, ...], str]
     model = model or ""
     if model.startswith("claude-"):
         return (() if model.startswith("claude-haiku-4") else EFFORTS), ""
+    if provider == "claude_api":  # (no LiteLLM between: Claude Code sends output_config.effort as is, the endpoint maps it)
+        return EFFORTS, ""
     info = _model_info(provider, model)
     if info is None:
         return BASE_EFFORTS, f"{model}: not in LiteLLM's model data — the usual levels"
