@@ -198,14 +198,14 @@ class SettingsScreen(Dialog[dict | None]):
         from q3tui.llm import models
 
         provider, base = self._now("llm.provider") or "claude", self._now("llm.api_base")
-        if self._listed == (provider, base):
+        if self._listed == (provider, base):  # (set only once a list was applied: a cancelled listing is done again)
             return
-        self._listed = (provider, base)
         note = self.query_one("#provider-models-note", Static)
         note.update(f"listing the models of {provider}…")
         found, why = await asyncio.to_thread(models.list_models, provider, base)
-        if self._listed != (provider, base):  # (the provider changed again meanwhile)
+        if (self._now("llm.provider") or "claude", self._now("llm.api_base")) != (provider, base):  # (changed meanwhile)
             return
+        self._listed = (provider, base)
         names = [m for m, _ in found]
         for path in self._model_paths():
             st, sel = self._by_path()[path], self.query_one(f"#{self._wid(path)}", Select)

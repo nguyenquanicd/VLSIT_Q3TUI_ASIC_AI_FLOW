@@ -4,6 +4,7 @@ config (llm/gateway.py). No gateway is started and no LLM is called."""
 import json
 import os
 import stat
+import time
 
 import pytest
 
@@ -373,3 +374,38 @@ def test_gateway_proxy_sends_system_messages_as_developer():
     assert out["input"][0]["content"] == [{"type": "input_text", "text": "s"}]
     assert gateway_proxy.developer_roles({"input": "text"}) == {"input": "text"}
     assert gateway.PROXY.is_file()
+
+
+async def test_settings_dialog_shows_the_providers_models(monkeypatch):
+    """The listing started at open was cancelled by the provider field's first change event and never done again:
+    the dialog kept the Claude list."""
+    from textual.app import App
+    from textual.widgets import Select, Static
+
+    from q3tui.core import settings
+    from q3tui.llm import models
+    from q3tui.tui.screens import SettingsScreen
+
+    def slow_list(provider, base=None, refresh=False):  # (asking takes a while: the change event comes meanwhile)
+        time.sleep(0.3)
+        return [("m-one", "m-one"), ("m-two", "m-two")], ""
+
+    monkeypatch.setattr(models, "list_models", slow_list)
+    from q3tui.core.config import Config
+
+    values = {s.path: settings.get_value(Config(), s.path) for t in settings.tabs_for() for s in t.settings
+              if not s.path.startswith(settings.KEYS)}
+    values |= {"llm.provider": "openai_api", "llm.api_base": "http://x/v1", "llm.model": "m-two", "llm.effort": "high"}
+
+    class Host(App):
+        def on_mount(self):
+            self.push_screen(SettingsScreen(values, tabs=settings.tabs_for()))
+
+    app = Host()
+    async with app.run_test(size=(160, 50)) as pilot:
+        for _ in range(30):
+            await pilot.pause(0.05)
+        scr = app.screen
+        sel = scr.query_one("#" + scr._wid("llm.model"), Select)
+        assert [o[1] for o in sel._options][:2] == ["m-one", "m-two"] and sel.value == "m-two"
+        assert "2 from openai_api" in str(scr.query_one("#provider-models-note", Static).render())
