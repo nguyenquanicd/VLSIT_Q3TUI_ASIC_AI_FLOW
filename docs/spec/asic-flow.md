@@ -6,15 +6,16 @@ Formality. It is the "ASIC synthesis" box of the flow map (ASIC port → ASIC sy
 share `constraints/sdc/` (the same files the FPGA flow writes) and hand work to each other through change requests.
 
 ```
-asic_port [gate: human] ─┐
-                         ├─► asic_synth [gate: human] ─► asic_lec [gate: human]
-sdc ─────────────────────┘
+sdc ─► asic_port [gate: human] ─► asic_macro [gate: human] ─► asic_synth [gate: human] ─► asic_lec [gate: human]
 ```
+
+The SDC comes first: its clock decides which memory macros are fast enough and goes to a memory compiler that takes one.
 
 | Step | Kind | Does | Writes |
 |---|---|---|---|
-| `asic_port` | `asic.asic_port` | code scan of `src/rtl/` for what an ASIC cannot take, then the porter (one read-only LLM stage, `rules/asic_port_rules.md`): the porting work the scan cannot do (SRAM wrappers, synchronizer cells, ICGs, …) as work orders for the RTL | `schemas/asic_port.json` |
 | `sdc` | `asic.sdc` | the FPGA flow's SDC step: `constraints/sdc/sdc.json` → `constraints/sdc/*.tcl` | `constraints/sdc/*.tcl` |
+| `asic_port` | `asic.asic_port` | code scan of `src/rtl/` for what an ASIC cannot take, then the porter (one read-only LLM stage, `rules/asic_port_rules.md`): the porting work the scan cannot do (SRAM wrappers, synchronizer cells, ICGs, …) as work orders for the RTL | `schemas/asic_port.json` |
+| `asic_macro` | `asic.asic_macro` | the memory wrappers (`*_sram` / `*_rf` / `*_rom`) as memory macros of the PDK: a memory compiler (tool role `mem_compile`), else a tiling of pre-generated macros, else flip-flops; the ASIC body by code, `.lib` → `.db` (tool role `lib_compile`), a lock-step check against the behavioural wrapper (tool roles `sim` + `run`) | `build/syn/asic/macros/<wrapper>.sv`, `build/syn/asic/macros/db/*.db`, `schemas/asic_macro.json` |
 | `asic_synth` | `asic.asic_synth` | Tcl script (code) + tool role `asic_synth` (`dc_shell -f`): compile, netlist, reports, numbers against targets | `build/syn/asic/synth.tcl`, `build/syn/asic/netlist/<top>.{v,ddc,sdc,svf}`, `build/syn/asic/reports/*.rpt`, `schemas/asic_synth.json` |
 | `asic_lec` | `asic.asic_lec` | Tcl script (code) + tool role `asic_lec` (`fm_shell -f`): RTL vs netlist | `build/syn/asic/lec.tcl`, `build/syn/asic/reports/lec.rpt`, `schemas/asic_lec.json` |
 
@@ -51,8 +52,67 @@ and only the files whose text changed (or all of them, when a rule file or optio
 
 The gate is your review. `options.waive: [rule ids]` ignores rules (both parts), `options.min_mem_words` sets the memory threshold. **Hand-off**
 (`asic_handoff`, the Findings tab's `h` / `H` — they also move the TUI to that flow, `q3tui act asic_handoff [ids=P1,P2]`, the
-assistant): every finding goes to the flow that owns the RTL (`options.handoff_flow`, default `rtl`) as a scoped change request of its
-`rtl` step: `[rtl:<module>] ASIC port (<file>:<line>, <rule title>): <code> — <fix>`. Run that flow to apply them; this flow's steps are then stale and run again.
+assistant): every finding goes to the flow that owns the RTL (`options.handoff_flow`, default `rtl`). An order with a `wrapper` adds a module
+to the design, which only the spec can do (parse puts it in the structured spec, the rtl step's plan then writes its file and the parent
+instantiates it): all of them go to that flow's `spec` step as one change request (`port.spec_text`: the wrapper, its parent, its function,
+ports and latency — no macro or technology). The rest are changes in place: a scoped change request of its `rtl` step each,
+`[rtl:<module>] ASIC port (<file>:<line>, <rule title>): <code> — <fix>` (`port.handoff_step` picks). Run that flow to apply them; this flow's steps are then stale and run again.
+Unattended (`pipeline.auto_answer`, the gate's mode `auto_answer`, `q3tui auto`) the step does it itself: it hands off every error and every
+finding the porter wrote an order for, runs the owner flow from `spec` when a wrapper went there, else from `rtl` (… → rtl → format → style_lint → smoke), and the asic flow runs again on the
+new RTL; a scan warning the porter left without an order (it saw nothing to port, e.g. a wire array) stays for you. A finding is sent once.
+The scan does not report the array inside a memory wrapper (`*_sram` / `*_rf` / `*_rom`): that is where the macro goes. `asic` is not in the
+default `pipeline.chain`; add it after `fpga` to have `q3tui auto` run it (it then counts as a checking flow: an RTL change it makes runs dv,
+sanity and fpga again).
+
+## Memory macros (`asic_macro`)
+
+Code in `lib/macro.py`, the step in `asic_macro/step.py`, its stage prompts in `asic_macro/md/skill.md` (`SPEC`, `PINS`, `COMPILER`). TUI: the step's **Macros** tab (`panels.py`): one row per wrapper — how (macros / compiled / flops), the macro, the grid, the area, the check — and, for the highlighted one, its memory, the PDK, corner and clock, the files, why the others were not taken and the compiler's verdict.
+
+- **Wrappers.** The modules of `src/rtl/` named like the port rule file's memory wrappers (`*_sram`, `*_rf`, `*_rom`). Their ports and
+  widths as instantiated come from the elaborated design (pyslang); what the memory is — words, bits, each access port (rw / r / w: clock,
+  address, data, enable, write enable, byte enables and polarities), the read latency — from a read-only LLM stage (`MemSpec`), checked
+  by code against those ports (`spec_problems`: the names exist, the words fit the address, the data widths match).
+- **The PDK.** `options.pdk_root`, or the parent of the `asic_synth` library that has a memory folder (`MEMORY`, `SRAM`, …). The corner is
+  `options.corner` or the library's (`…tt0p9v25c.db` → `tt0p9v25c`). Code walks the memory folders: every Liberty file with a
+  `memory ()` group is a macro (cell, words, bits, address bits, area), one file per cell — the corner's when there is one — with its
+  Verilog model and LEF; the catalog is cached in `.q3tui/asic/asic_macro/catalog.json`. Executables under a `Compiler` folder are the
+  memory compilers.
+- **A compiler** (`options.prefer: compiler`, the default) is judged by a read-only LLM stage that reads its kit (`CompilerPlan`: usable or
+  what is missing; the command, the input file for this memory with the clock target, where the views land). It runs only as the tool role
+  `mem_compile` of `config/tools.json`; without that role the proposal is recorded (`compiler` in the JSON, a warning) and the step goes on
+  with the macros.
+- **Pre-generated macros.** Code ranks the tilings (rows × columns of one macro for the words × bits) by total area, then fewer macros;
+  a macro whose words are not a power of two can only be one row. For the 12 smallest, the macro's Liberty pins and the `minimum_period` of
+  its clock pin are read; a macro slower than the fastest SDC clock (its ASIC frequency) is out. The pins of a macro family (one map per
+  set of pin names) come from a read-only LLM stage that reads the Verilog model (`PinMap`: the functional ports, the polarities, every
+  other input tied to its normal-operation constant), checked by code (`pinmap_problems`: every pin exists with the right direction and
+  width, every input mapped or tied) and against the wrapper (`fits`: the same port kinds, a bit write mask for byte enables).
+- **None fits** (more ports than any macro, a read latency other than 1, a clock no macro meets, `options.flops`): flip-flops, with why.
+- **A large memory left as flip-flops is a question.** A wrapper of 4 KB or more (`macro.REVIEW_BYTES`) that ended up as flip-flops (not by
+  `options.flops`) goes to a read-only LLM stage (`REVIEW`) with the code's notes (every family it rejected and why) and the kept pin maps.
+  It judges each reason: `check_wrong` (a code check rejected a macro that is right), `mismatch` (true, but a change of the design would
+  remove it) or `intended` (kept with the wrapper, no question, not judged again until the wrapper changes). The first two become a blocking
+  `design_choice` question (`schemas/questions/asic_macro.*`, ids `MAC<n>`): **use `<macro>` anyway** (that family's pin check is overridden;
+  the lock-step check still has to pass), **keep flip-flops**, **change the design** (the stage's request, or your own text, goes once to the
+  spec step of the flow that owns the RTL). An answer is an input of the step: it runs again and applies it; answered questions stay as
+  decisions (`asks` in the JSON).
+- **The ASIC body** (`build/syn/asic/macros/<wrapper>.sv`, code): the wrapper file with the wrapper's header kept (parameters, ports) and
+  its body replaced by the macros, the address split (low bits to the macros, high bits select the row), the byte enables expanded to the
+  bit mask, padding for a word that is not a multiple of the macro width, and the read mux on the row registered with the access (latency 1).
+  `src/rtl/` is never changed.
+- **`.db`.** The macros' Liberty files are written as `.db` by Library Compiler (tool role `lib_compile`, `lc_shell -f`; the script by
+  code); without the role the step fails and says so.
+- **The check.** The body (renamed) and the behavioural wrapper in lock-step with the macro's Verilog model (tool roles `sim` + `run`):
+  every test address written in full, then random reads and writes with random masks, the read data compared; `fail` fails the step, no
+  simulator or model is `n/a`, never a pass.
+- **Updates.** A wrapper whose text, ports, corner, PDK folder, clock and options did not change keeps its macro, body and check (no LLM,
+  no tool); a changed text asks for its `MemSpec` again, a new macro family for its `PinMap` (kept in the JSON).
+
+`asic_synth`, the quick estimate and `asic_lec` read the RTL with each mapped wrapper's file replaced by its body (`AsicStep.synth_files`),
+the macros' `.db` in the link library only (`link_library`, never `target_library`: logic is not mapped onto them; Formality's `read_db`
+of both containers) and the macro cells `dont_touch`. A change of the macros makes the synthesis stale (`asic_macro.json` is one of its
+inputs). Not done yet: per-wrapper clocks (every wrapper is held to the fastest SDC clock), several wrappers in one file (give each its own),
+read latencies other than 1, a choice of threshold voltage (equal areas go by name).
 
 ## Synthesis (`asic_synth`)
 
@@ -74,6 +134,18 @@ reports `area`, `timing` (the worst paths), `qor`, `power`, `constraints` (`-all
 `schemas/asic_synth.json` has the numbers and the verdict (`timing`, `area`, `constraints`, `overall`). There is no wire-load model or
 placement: these are post-synthesis numbers, and power has no switching activity (the default estimate).
 
+### Waivers
+
+What the synthesis report flags can be waived, each with its reason, in `reviews/asic_synth_waivers.json` (yours: kept on reset;
+`lib/waivers.py`): a constraint group of `report_constraint -all_violators` (`min_delay/hold`, `max_transition`, …; a timing group only up to
+`max_ns` of violation — the TUI takes the group's worst violation now, so a worse one later is open again), one violation
+(`<group>:<endpoint>`) or a warning code of check_design and the Design Compiler log (`LINT-28`, `VER-318`, …). A waived violation does
+not fail the `constraints` verdict; a waived code no longer asks for a look. The step's **Waivers** tab lists every group and code with its
+count, worst slack and state (`w` waive with a reason, `u` remove); the actions `asic_waive` / `asic_unwaive` do the same from the
+assistant or `q3tui act`. The waiver file is an input of `asic_synth`; when the script, the RTL, the SDC and the libraries are those of the
+last run (`dc_key` in the JSON), the step scores its reports again without running Design Compiler (a target or a waiver changed). Typical:
+the hold violations at the macro pins before placement (a few 10 ps: no wire or clock-tree delay yet) — waived as fixed in physical design.
+
 ## Equivalence (`asic_lec`)
 
 Formality reads the RTL as the reference and the netlist (with the library) as the implementation, sets the SVF, runs `match` and `verify`.
@@ -84,7 +156,9 @@ may leave an array), the step names the message: fix the RTL, or accept it with 
 ## Tools
 
 Template roles (`q3tui/eda/presets/flows/asic.json`, copied into the project's `config/tools.json` by `q3tui tools init`): `asic_synth` = `dc_shell -f {script}` with
-module `synopsys/syn` (log parser `dc`), `asic_lec` = `fm_shell -f {script}` with module `synopsys/formality`.
+module `synopsys/syn` (log parser `dc`), `asic_lec` = `fm_shell -f {script}` with module `synopsys/formality`, `lib_compile` = `lc_shell -f {script}`
+with module `synopsys/libraryCompiler` (the memory macros' `.lib` → `.db`). `mem_compile` (a memory compiler) has no template: `asic_macro`
+records the command its stage proposes for it. The check of `asic_macro` uses the simulation roles `sim` + `run`.
 Define your own `asic_synth` / `asic_lec` roles in `config/tools.json` / `tools.roles` for other versions or tools.
 
 ## Not built yet
@@ -95,5 +169,5 @@ tools (Genus, Yosys), multiple corners.
 ## Where the code is
 
 All of it under `q3tui/flows/asic/`: `FLOW.md`, one folder per step (`step.py`, `md/skill.md`), `lib/` (port rules, Design Compiler script and
-report readers, Formality script and reader), `addon.py` (settings, `asic_handoff`, the SDC actions), `panels.py` (TUI). The SDC
+report readers, Formality script and reader, `macro.py`: the memory macros), `addon.py` (settings, `asic_handoff`, the SDC actions), `panels.py` (TUI). The SDC
 step, its actions and its editor are the FPGA flow's. Core has only the flow-map box.

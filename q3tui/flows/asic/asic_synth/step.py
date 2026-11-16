@@ -6,6 +6,7 @@ A missing tool or library is a failed step ("not run"), never a pass."""
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ import anyio
 
 from q3tui.eda import tools as toolmod
 from q3tui.eda.base import ToolUnavailable
-from q3tui.flows.asic.lib import dc
+from q3tui.flows.asic.lib import dc, waivers
 from q3tui.flows.asic.lib.base import REPORTS, SYNTH_JSON, AsicStep
 from q3tui.flows.fpga.lib import hints
 from q3tui.flows.fpga.lib import sdc as sdcmod
@@ -28,16 +29,33 @@ def _version(log: str | None) -> str:
     return f"Design Compiler {m.group(1)}" if m else "Design Compiler"
 
 
+def _dc_key(script: Path, files: list, libs: list, mdbs: list, sdc: Path | None) -> str:
+    """What Design Compiler's result depends on: the script, the RTL files, the SDC files and the libraries (path, size, mtime)."""
+    import hashlib
+
+    h = hashlib.sha256(script.read_bytes())
+    sdcs = sorted(Path(sdc).parent.glob("*.tcl")) if sdc else []
+    for f in [*map(Path, files), *sdcs]:
+        h.update(str(f).encode() + (f.read_bytes() if f.is_file() else b"-"))
+    for f in map(Path, [*libs, *mdbs]):
+        st = f.stat() if f.is_file() else None
+        h.update(f"{f}:{st.st_size if st else 0}:{st.st_mtime_ns if st else 0}".encode())
+    return h.hexdigest()[:16]
+
+
 class Step(AsicStep):
     name = "asic_synth"
     title = "ASIC synthesis"
-    deps = ("asic_port", "sdc")
+    deps = ("asic_macro", "sdc")
     tool_roles = ("asic_synth",)
     hashed_options = ("library", "compile", "max_paths", "extra_tcl", "defines", "min_slack_ns", "max_area_um2")  # (staleness: these change the result)
 
     def inputs(self, engine) -> list[Path]:
         # (sdc.json too: the ASIC's own clock frequencies are in it, not in the shared Tcl files)
-        return [self.filelist(engine), *self.rtl_files(engine), *self.sdc_inputs(engine), sdcmod.config_path(engine.project)]
+        mac = self.artifact(engine, "asic_macro.json")  # (the memory macros: the ASIC bodies and .db the synthesis reads)
+        wv = waivers.path(engine.project)  # (your waivers: a change scores the reports again — no synthesis when nothing else changed)
+        return [self.filelist(engine), *self.rtl_files(engine), *self.sdc_inputs(engine), sdcmod.config_path(engine.project), *([mac] if mac.is_file() else []),
+                *([wv] if wv.is_file() else [])]
 
     def outputs(self, engine) -> list[Path]:
         rep, net = self.reports_dir(engine), self.netlist(engine)
@@ -79,6 +97,16 @@ class Step(AsicStep):
         missing = [x for x in libs if not Path(x).is_file()]
         if missing:
             raise StepFailed(f"ASIC synthesis not run: library not found: {', '.join(missing)} (Settings → asic_synth)")
+        locked = [x for x in libs if not os.access(x, os.R_OK)]
+        if locked:  # (a PDK file of a group you are not in: the tool would say only "Could not read the following target libraries")
+            raise StepFailed(f"ASIC synthesis not run: no read permission on the library: {', '.join(locked)} — ask for access, or set another "
+                             "library in Settings → asic_synth")
+        from q3tui.flows.asic.lib import macro
+
+        mdbs, files = self.macro_dbs(engine), self.synth_files(engine)
+        lost = [x for x in mdbs if not Path(x).is_file()]
+        if lost:
+            raise StepFailed(f"ASIC synthesis not run: memory macro library not found: {', '.join(lost)} (run asic_macro again)")
         try:
             tools = self.tools(engine)
             if not await anyio.to_thread.run_sync(lambda: toolmod.available(tools, "asic_synth")):
@@ -86,66 +114,86 @@ class Step(AsicStep):
         except ToolUnavailable as exc:
             raise StepFailed(f"ASIC synthesis not run: {exc}") from exc
         work = self.workdir(engine)
-        for n in (*REPORTS, "dc.log", "dc.out"):
-            (work / n).unlink(missing_ok=True)
         netlist = self.netlist(engine)
         script = self.asic_dir(engine) / "synth.tcl"
         script.parent.mkdir(parents=True, exist_ok=True)
         project.backup([script])
         sdc, overridden, sdc_cfg = self._constraints(ctx)
-        script.write_text(dc.script_text(self.rtl_files(engine), top, libs, sdc, work, netlist, self.options))
-        ctx.emit("log", message=f"synthesizing {top} with {Path(libs[0]).name}"
-                                + (f" at {', '.join(f'{n} {m:g} MHz' for n, m in overridden.items())} (its own ASIC clock)" if overridden else "") + "…")
-        t0 = time.monotonic()
-        done = anyio.Event()
-
-        async def watch() -> None:
-            """The tool writes {workdir}/dc.log as it goes: its phases are the progress; a quiet minute gets a heartbeat."""
-            tail, quiet = dc.LogTail(work / "dc.log"), 0.0
-            while not done.is_set():
-                with anyio.move_on_after(2):
-                    await done.wait()
-                shown = [p for p in map(dc.phase_line, tail.new()) if p]
-                for p in shown[-3:]:
-                    ctx.emit("log", message=f"dc: {p}")
-                quiet = 0.0 if shown else quiet + 2
-                if quiet >= 30:
-                    ctx.emit("log", message=f"dc: still running ({time.monotonic() - t0:.0f} s)…")
-                    quiet = 0.0
-
-        finished = False
-        try:
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(watch)
-                try:
-                    res = await anyio.to_thread.run_sync(lambda: toolmod.run_role(
-                        tools, "asic_synth", work, {"script": script, "top": top, "filelist": self.filelist(engine), "files": self.rtl_files(engine),
-                                                    "workdir": work}, log_name="dc.out"), abandon_on_cancel=True)
-                    finished = True
-                finally:
-                    done.set()
-        finally:
-            if not finished:  # stopped (x) or failed: the thread is let go, so the tool must not be left running
-                with anyio.CancelScope(shield=True):
-                    await anyio.to_thread.run_sync(lambda: subprocess.run(["pkill", "-TERM", "-f", str(script)], capture_output=True))
-        toolmod.check_broken(res, "asic_synth")
-        if not res.ok:
-            errs = "; ".join(d.message for d in res.errors[:3])
-            raise StepFailed(f"synthesis failed: {errs} (log: {res.log_path})")
+        script.write_text(dc.script_text(files, top, libs, sdc, work, netlist, self.options, mdbs, macro.macro_cells(self.macros(engine))))
         rep = self.reports_dir(engine)
-        rep.mkdir(parents=True, exist_ok=True)
-        for n in REPORTS:
-            if (work / n).is_file():
-                shutil.copy2(work / n, rep / n)
-        if not netlist.is_file() or not (rep / "area.rpt").is_file():
-            raise StepFailed(f"the tool finished but wrote no netlist / area report (log: {res.log_path})")
+        prev = self.read(engine, SYNTH_JSON, {}) or {}
+        key = _dc_key(script, files, libs, mdbs, sdc)
+        if prev.get("dc_key") == key and prev.get("status") == "pass" and netlist.is_file() and (rep / "area.rpt").is_file():
+            # (the same script on the same files as the last run: only a target or a waiver changed — the reports are scored again, no DC)
+            ctx.emit("log", message="ASIC: the design and the script are those of the last run — its reports are scored again (no synthesis)")
+            tool, log_rel, runtime = prev.get("tool"), prev.get("log"), prev.get("runtime_s")
+        else:
+            for n in (*REPORTS, "dc.log", "dc.out"):
+                (work / n).unlink(missing_ok=True)
+            ctx.emit("log", message=f"synthesizing {top} with {Path(libs[0]).name}"
+                                    + (f" at {', '.join(f'{n} {m:g} MHz' for n, m in overridden.items())} (its own ASIC clock)" if overridden else "") + "…")
+            t0 = time.monotonic()
+            done = anyio.Event()
+
+            async def watch() -> None:
+                """The tool writes {workdir}/dc.log as it goes: its phases are the progress; a quiet minute gets a heartbeat."""
+                tail, quiet = dc.LogTail(work / "dc.log"), 0.0
+                while not done.is_set():
+                    with anyio.move_on_after(2):
+                        await done.wait()
+                    shown = [p for p in map(dc.phase_line, tail.new()) if p]
+                    for p in shown[-3:]:
+                        ctx.emit("log", message=f"dc: {p}")
+                    quiet = 0.0 if shown else quiet + 2
+                    if quiet >= 30:
+                        ctx.emit("log", message=f"dc: still running ({time.monotonic() - t0:.0f} s)…")
+                        quiet = 0.0
+
+            finished = False
+            try:
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(watch)
+                    try:
+                        res = await anyio.to_thread.run_sync(lambda: toolmod.run_role(
+                            tools, "asic_synth", work, {"script": script, "top": top, "filelist": self.filelist(engine), "files": files,
+                                                        "workdir": work}, log_name="dc.out"), abandon_on_cancel=True)
+                        finished = True
+                    finally:
+                        done.set()
+            finally:
+                if not finished:  # stopped (x) or failed: the thread is let go, so the tool must not be left running
+                    with anyio.CancelScope(shield=True):
+                        await anyio.to_thread.run_sync(lambda: subprocess.run(["pkill", "-TERM", "-f", str(script)], capture_output=True))
+            toolmod.check_broken(res, "asic_synth")
+            if not res.ok:
+                errs = "; ".join(d.message for d in res.errors[:3])
+                raise StepFailed(f"synthesis failed: {errs} (log: {res.log_path})")
+            if not netlist.is_file() or not (rep / "area.rpt").is_file():
+                raise StepFailed(f"the tool finished but wrote no netlist / area report (log: {res.log_path})")
+            rep.mkdir(parents=True, exist_ok=True)
+            for n in REPORTS:
+                if (work / n).is_file():
+                    shutil.copy2(work / n, rep / n)
+            shutil.copy2(work / f"{top}.svf", self.asic_dir(engine) / "netlist" / f"{top}.svf") if (work / f"{top}.svf").is_file() else None
+            tool, log_rel, runtime = _version(res.log_path), project.rel(Path(res.log_path)), round(time.monotonic() - t0, 1)
 
         def text(name: str) -> str:
             f = rep / name
             return f.read_text(errors="replace") if f.is_file() else ""
 
         area, timing, qor, power = dc.parse_area(text("area.rpt")), dc.parse_timing(text("timing.rpt")), dc.parse_qor(text("qor.rpt")), dc.parse_power(text("power.rpt"))
-        viol, checks, unconstrained = dc.violations(text("constraints.rpt")), dc.check_design(text("check_design.rpt")), dc.unconstrained(text("check_timing.rpt"))
+        items, checks, unconstrained = dc.violation_items(text("constraints.rpt")), dc.check_design(text("check_design.rpt")), dc.unconstrained(text("check_timing.rpt"))
+        log_f = project.root / log_rel if log_rel else None
+        codes = waivers.warning_codes(text("check_design.rpt"), log_f.read_text(errors="replace") if log_f and log_f.is_file() else "")
+        open_items, waived, open_codes, waived_codes = waivers.apply(waivers.load(project), items, codes)
+        viol = [v["line"] for v in open_items]
+        by_group: dict[str, dict] = {}
+        for v in items:
+            e = by_group.setdefault(v["group"], {"count": 0, "open": 0, "worst_ns": None, "sample": v["line"][:160]})
+            e["count"] += 1
+            e["open"] += v in open_items
+            if v["slack_ns"] is not None and (e["worst_ns"] is None or v["slack_ns"] < e["worst_ns"]):
+                e["worst_ns"] = v["slack_ns"]
         min_slack = float(self.options.get("min_slack_ns") or 0.0)
         max_area = self.options.get("max_area_um2")
         slack = timing.get("slack_ns", qor.get("wns_ns"))
@@ -156,11 +204,12 @@ class Step(AsicStep):
         groups = dc.parse_groups(text("qor.rpt"), {c.name: c.period_ns for c in (sdc_cfg.clocks if sdc_cfg else [])})
         fmax = min((g["fmax_mhz"] for g in groups if g["fmax_mhz"]), default=None)  # the slowest clock limits what the design is good for
         self.write(engine, SYNTH_JSON, {
-            "tool": _version(res.log_path), "top": top, "library": libs, "status": "pass", "runtime_s": round(time.monotonic() - t0, 1),
-            "log": project.rel(Path(res.log_path)), "netlist": project.rel(netlist), "svf": project.rel(work / f"{top}.svf"),
+            "tool": tool, "top": top, "library": libs, "macro_libraries": mdbs, "status": "pass", "runtime_s": runtime, "dc_key": key,
+            "log": log_rel, "netlist": project.rel(netlist), "svf": project.rel(work / f"{top}.svf"),
             "clocks": [{"name": c.name, "period_ns": c.period_ns, "freq_mhz": c.freq_mhz} for c in (sdc_cfg.clocks if sdc_cfg else [])],
             "clock_override": overridden, "rtl_sha": hints.rtl_sha(project), "area": area, "timing": {**timing, **{k: v for k, v in qor.items() if k not in timing}, "fmax_mhz": fmax, "groups": groups}, "power": power,
-            "violation_count": len(viol), "violations": viol[:20], "check_design": checks, "unconstrained": unconstrained,
+            "violation_count": len(viol), "violations": viol[:20],
+            "groups_violated": by_group, "waived_count": len(waived), "warnings": {**open_codes, **{c: {**v, "waived": True} for c, v in waived_codes.items()}},
+            "check_design": checks, "unconstrained": unconstrained,
             "targets": {"min_slack_ns": min_slack, "max_area_um2": max_area}, "verdict": verdict})
-        shutil.copy2(work / f"{top}.svf", self.asic_dir(engine) / "netlist" / f"{top}.svf") if (work / f"{top}.svf").is_file() else None
         ctx.emit("log", message=f"ASIC: area {area.get('total_um2')} µm², {area.get('cells')} cells, slack {slack} ns{f' (expected Fmax {'≥' if all(g.get('bound') == 'at_least' for g in groups) else '≈'} {fmax:g} MHz in this library, target ' + ', '.join(f'{g["target_mhz"]:g}' for g in groups) + ' MHz)' if fmax else ''}, power {power.get('total_uw')} µW → {verdict['overall']}")

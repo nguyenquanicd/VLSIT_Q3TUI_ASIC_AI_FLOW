@@ -42,6 +42,41 @@ class Step(AsicStep):
             return f"the RTL is needed first ({engine.project.rel(self.filelist(engine))}; run the vlsit flow's rtl step)"
         return None
 
+    def _auto_ids(self, engine) -> list[str]:
+        """The findings an unattended run hands off: not handed off yet, and an error or one the porter wrote an order for (a scan warning the
+        porter left without an order is one it saw nothing to port in, e.g. a wire array: a person decides)."""
+        return [f["id"] for f in (self.read(engine, PORT_JSON, {}) or {}).get("findings", [])
+                if not f.get("handed_off") and (f["severity"] == "error" or f.get("order"))]
+
+    async def unattended(self, engine) -> bool:
+        """Auto-answer: hand the findings to the flow that owns the RTL and run it from its spec step when a wrapper went there, else from its
+        rtl step (the RTL is ported, formatted, linted and smoke-tested); then this flow runs again on the new RTL. Idempotent: a finding
+        handed off once is not sent again."""
+        ids = self._auto_ids(engine)
+        if not ids:
+            return False
+        from q3tui import flows
+        from q3tui.core.ops import Ops
+        from q3tui.flows.asic.addon import _handoff
+        from q3tui.pipeline.engine import Engine
+
+        try:
+            _handoff(Ops(engine), ",".join(ids))
+            owner = flows.load_flow(str(self.options.get("handoff_flow") or "rtl"), engine.project.root)
+            sent = {f["handed_off"]["step"] for f in (self.read(engine, PORT_JSON, {}) or {}).get("findings", []) if f["id"] in ids and f.get("handed_off")}
+            first = "spec" if "spec" in sent else "rtl"  # (a wrapper goes through the spec: spec → parse → … → rtl)
+            engine.bus.emit("log", self.name, message=f"ASIC port: running {owner.name} from {first} for {', '.join(ids)}…")
+            outcome = await Engine(engine.project, engine.bus, flow=owner).run(start=first, yes=True)
+            engine.reload()  # (that run wrote the same pipeline.json, and dropped the run lock)
+            engine._take_lock()
+        except Exception as exc:  # noqa: BLE001 - reported; the run ends here with the findings handed off
+            engine.bus.emit("warning", self.name, message=f"ASIC port: the unattended hand-off stopped ({exc})")
+            return False
+        if outcome != "complete":
+            engine.bus.emit("warning", self.name, message=f"ASIC port: {owner.name} ended '{outcome}': not going on; fix that, then run this flow again")
+            return False
+        return True
+
     async def run(self, ctx: StepContext) -> None:
         engine, project = ctx.engine, ctx.project
         files = self.rtl_files(engine)

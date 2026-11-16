@@ -1,5 +1,5 @@
 ---
-label: "4"
+label: "5"
 title: Logic equivalence check (Formality)
 deps: [asic_synth]
 gate: human

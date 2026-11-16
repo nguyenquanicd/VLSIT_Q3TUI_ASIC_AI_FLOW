@@ -1,5 +1,5 @@
 ---
-label: "2"
+label: "1"
 title: SDC constraints
 deps: []
 gate: none

@@ -9,12 +9,13 @@ by the full run). Written to `schemas/asic_estimate.json`; the full synthesis, w
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
 from q3tui.core.project import write_json
 from q3tui.eda import tools as toolmod
-from q3tui.flows.asic.lib import dc, pdks
+from q3tui.flows.asic.lib import dc, macro, pdks
 from q3tui.flows.fpga.lib import hints
 from q3tui.flows.fpga.lib import sdc as sdcmod
 
@@ -58,7 +59,7 @@ def compute(ops) -> str:
     if problem:
         raise EngineError(problem)
     libs = step.libraries(eng)
-    if not libs or any(not Path(x).is_file() for x in libs):
+    if not libs or any(not Path(x).is_file() or not os.access(x, os.R_OK) for x in libs):
         raise EngineError("no library: set `library` (the .db of the standard cells) in Settings → asic_synth")
     tools = step.tools(eng)
     if not toolmod.available(tools, "asic_synth"):
@@ -78,10 +79,11 @@ def compute(ops) -> str:
     for _ in range(MAX_PROBES):
         ran = used
         probe.write_text(probe_tcl(cfg, used))
-        script.write_text(dc.script_text(step.rtl_files(eng), top, libs, probe, work, work / "net" / f"{top}.v", {**step.options, "compile": QUICK_COMPILE, "max_paths": 1}))
+        script.write_text(dc.script_text(step.synth_files(eng), top, libs, probe, work, work / "net" / f"{top}.v", {**step.options, "compile": QUICK_COMPILE, "max_paths": 1},
+                                         [x for x in step.macro_dbs(eng) if Path(x).is_file()], macro.macro_cells(step.macros(eng))))
         for f in (*dc.REPORTS, "dc.out"):
             (work / f).unlink(missing_ok=True)
-        res = toolmod.run_role(tools, "asic_synth", work, {"script": script, "top": top, "filelist": step.filelist(eng), "files": step.rtl_files(eng), "workdir": work},
+        res = toolmod.run_role(tools, "asic_synth", work, {"script": script, "top": top, "filelist": step.filelist(eng), "files": step.synth_files(eng), "workdir": work},
                                log_name="dc.out")
         toolmod.check_broken(res, "asic_synth")
         if not res.ok or not (work / "qor.rpt").is_file():
