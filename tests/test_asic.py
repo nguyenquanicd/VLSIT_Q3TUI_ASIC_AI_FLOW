@@ -112,8 +112,8 @@ def _yaml(root: Path, fm_py: str = "fake_fm.py", extra: str = "") -> None:
 
 def test_flow_loads():
     flow = flows.load_flow("asic", Path.cwd())
-    assert [s.id for s in flow.steps] == ["asic_port", "sdc", "asic_synth", "asic_lec"]
-    assert flow.gates == {"asic_port": "human", "asic_synth": "human", "asic_lec": "human"}
+    assert [s.id for s in flow.steps] == ["sdc", "asic_port", "asic_macro", "asic_synth", "asic_lec"]  # (the SDC first: the clock picks the macros)
+    assert flow.gates == {"asic_port": "human", "asic_macro": "human", "asic_synth": "human", "asic_lec": "human"}
     assert {"asic_handoff", "sdc_set", "sdc_show"} <= set(flow.actions)
     assert {s.path for s in flow.settings} >= {"pipeline.step_options.asic_synth.library", "pipeline.step_options.asic_synth.min_slack_ns"}
 
@@ -257,7 +257,7 @@ async def test_the_port_findings_are_shown_and_waivable(proj):
     (proj.root / "src" / "rtl" / "mem_wrap.sv").write_text(DIRTY)
     (proj.root / "src" / "rtl" / "filelist.f").write_text("src/rtl/blk.sv\nsrc/rtl/mem_wrap.sv\n")
     eng = Engine(proj)
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
     p = json.loads((proj.schemas_dir / "asic_port.json").read_text())
     assert p["status"] == "fail" and p["errors"] >= 1 and p["warnings"] >= 3 and {f["module"] for f in p["findings"]} == {"mem_wrap"}
 
@@ -269,7 +269,7 @@ async def test_handoff_sends_the_findings_to_the_owning_flow(proj):
     (proj.root / "src" / "rtl" / "filelist.f").write_text("src/rtl/blk.sv\nsrc/rtl/mem_wrap.sv\n")
     _yaml(proj.root, extra="    asic_port:\n      handoff_flow: owner\n")
     eng = Engine(Project.open(proj.root))
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
     ops = Ops(eng)
     msg = ops.run_action("asic_handoff", ids="P1")
     assert "P1 → owner:rtl" in msg and "q3tui --flow owner run" in msg
@@ -282,6 +282,31 @@ async def test_handoff_sends_the_findings_to_the_owning_flow(proj):
     p = json.loads((proj.schemas_dir / "asic_port.json").read_text())
     assert all(f["handed_off"]["flow"] == "owner" for f in p["findings"])
     assert {v.name: v for v in Engine(Project.open(proj.root)).status()}["asic_port"].edited == []  # recording the hand-off is not a user edit
+
+
+async def test_unattended_hands_off_and_runs_the_owner(proj):
+    (proj.root / "flows").mkdir(exist_ok=True)
+    (proj.root / "flows" / "owner.yaml").write_text("name: owner\nsteps:\n  - {id: spec, kind: spec}\n  - {id: rtl, kind: reads, deps: [spec]}\n")
+    (proj.root / "src" / "rtl" / "mem_wrap.sv").write_text(DIRTY)
+    (proj.root / "src" / "rtl" / "filelist.f").write_text("src/rtl/blk.sv\nsrc/rtl/mem_wrap.sv\n")
+    _yaml(proj.root, extra="    asic_port:\n      handoff_flow: owner\n")
+    text = (proj.root / "q3tui.yaml").read_text().replace("pipeline:\n", "pipeline:\n  auto_answer: true\n")
+    (proj.root / "q3tui.yaml").write_text(text)
+    eng = Engine(Project.open(proj.root))
+    await eng.run(yes=True, stop="asic_port")
+    p = json.loads((proj.schemas_dir / "asic_port.json").read_text())
+    sent = [f for f in p["findings"] if f.get("handed_off")]
+    assert sent and all(f["severity"] == "error" for f in sent)  # (no porter orders here: only the errors go)
+    assert all(not f.get("handed_off") for f in p["findings"] if f["severity"] == "warn")
+    other = Engine(proj, flow=flows.load_flow("owner", proj.root))
+    assert "rtl" not in other.state.feedback  # (the owner's rtl step ran and took the requests)
+    assert {v.name: v.status for v in other.status()}["rtl"] == "done"
+
+
+def test_the_array_of_a_memory_wrapper_is_not_a_finding(tmp_path):
+    f = tmp_path / "m_buf_sram.sv"
+    f.write_text("module m_buf_sram (input i_clk);\n  logic [7:0] reg_mem [64];\nendmodule\n")
+    assert port.scan([f], tmp_path) == []
 
 
 # -- the porter (LLM) ----------------------------------------------------------------------------------------------------------
@@ -317,7 +342,7 @@ async def test_the_porter_adds_what_the_scan_cannot_see(proj, llm):
     _two_modules(proj)
     llm.plan = _plan(("mem_sram_wrapper", "m_fifo", 2), ("nope", "m_fifo", 2), ("sync_lib_cell", "ghost", 1))
     eng = Engine(proj)
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
     (stage,) = llm.stages
     assert stage.name == "asic_port" and set(stage.builtin_tools) == {"Read", "Grep", "Glob"} and "src/rtl/m_fifo.sv" in stage.prompt
     assert "## asic_port_rules.md" in stage.prompt and "mem_sram_wrapper" in stage.prompt and stage.output_model.__name__ == "PortPlan"
@@ -331,11 +356,11 @@ async def test_only_changed_files_are_ported_again(proj, llm):
     _two_modules(proj)
     llm.plan = _plan(("mem_sram_wrapper", "m_fifo", 2))
     eng = Engine(proj)
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
     assert len(llm.stages) == 1
     (proj.root / "src" / "rtl" / "blk.sv").write_text(RTL + "// changed\n")  # one file changes: only it goes back to the porter
     eng = Engine(Project.open(proj.root))
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
     assert len(llm.stages) == 2 and "src/rtl/blk.sv" in llm.stages[1].prompt and "src/rtl/m_fifo.sv" not in llm.stages[1].prompt.split("# This run")[1].split("All modules")[0]
     p = json.loads((proj.schemas_dir / "asic_port.json").read_text())
     assert [f["module"] for f in p["findings"]] == ["m_fifo"]  # (kept from the first run)
@@ -346,7 +371,7 @@ async def test_a_code_finding_is_not_ported_twice_and_the_porter_can_be_off(proj
     (proj.root / "src" / "rtl" / "filelist.f").write_text("src/rtl/blk.sv\nsrc/rtl/mem_wrap.sv\n")
     llm.plan = _plan(("memory_array", "mem_wrap", 2))  # the scan has a memory_array finding at that line: the order is its port
     eng = Engine(proj)
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
     p = json.loads((proj.schemas_dir / "asic_port.json").read_text())
     assert not [f for f in p["findings"] if f["source"] == "llm"] and any(f["source"] == "code" for f in p["findings"])
     mem = next(f for f in p["findings"] if f["rule"] == "memory_array")
@@ -355,7 +380,7 @@ async def test_a_code_finding_is_not_ported_twice_and_the_porter_can_be_off(proj
     _yaml(proj.root, extra="    asic_port:\n      port: false\n")
     llm.stages.clear()
     eng = Engine(Project.open(proj.root))
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
     assert llm.stages == []
 
 
@@ -366,10 +391,36 @@ async def test_a_port_order_is_handed_off_with_its_wrapper(proj, llm):
     llm.plan = _plan(("mem_sram_wrapper", "m_fifo", 2))
     _yaml(proj.root, extra="    asic_port:\n      handoff_flow: owner\n")
     eng = Engine(Project.open(proj.root))
-    await eng.run(yes=True, only="asic_port")
+    await eng.run(yes=True, stop="asic_port")
+    msg = Ops(eng).run_action("asic_handoff")
+    assert "→ owner:spec" in msg
+    fb = Engine(proj, flow=flows.load_flow("owner", proj.root)).state.feedback
+    assert "rtl" not in fb  # a new module is the spec's: spec → parse → the rtl step's plan
+    (req,) = fb["spec"]
+    assert req.startswith("ASIC port: add these wrapper modules") and "`m_m_fifo_sram`, instantiated by `m_fifo` (src/rtl/m_fifo.sv:2" in req
+    assert "make a wrapper" in req and "no `ifdef`" in req
+    p = json.loads((proj.schemas_dir / "asic_port.json").read_text())
+    assert p["findings"][0]["handed_off"]["step"] == "spec"
+
+
+async def test_wrapper_orders_go_to_the_spec_in_one_request_the_rest_to_rtl(proj, llm):
+    (proj.root / "flows").mkdir(exist_ok=True)
+    (proj.root / "flows" / "owner.yaml").write_text("name: owner\nsteps:\n  - {id: spec, kind: spec}\n  - {id: rtl, kind: reads, deps: [spec]}\n")
+    _two_modules(proj)
+    (proj.root / "src" / "rtl" / "mem_wrap.sv").write_text(DIRTY)
+    (proj.root / "src" / "rtl" / "filelist.f").write_text((proj.root / "src" / "rtl" / "filelist.f").read_text() + "src/rtl/mem_wrap.sv\n")
+    llm.plan = _plan(("mem_sram_wrapper", "m_fifo", 2), ("memory_array", "mem_wrap", 2))  # (the second: an order for the scan's finding)
+    _yaml(proj.root, extra="    asic_port:\n      handoff_flow: owner\n")
+    eng = Engine(Project.open(proj.root))
+    await eng.run(yes=True, stop="asic_port")
     Ops(eng).run_action("asic_handoff")
-    (req,) = Engine(proj, flow=flows.load_flow("owner", proj.root)).state.feedback["rtl"]
-    assert req.startswith("[rtl:m_fifo] ASIC port (src/rtl/m_fifo.sv:2, ") and "make a wrapper" in req and "Create the wrapper module `m_m_fifo_sram`" in req
+    fb = Engine(proj, flow=flows.load_flow("owner", proj.root)).state.feedback
+    (spec_req,) = fb["spec"]
+    assert "`m_m_fifo_sram`" in spec_req and "`m_mem_wrap_sram`" in spec_req
+    p = json.loads((proj.schemas_dir / "asic_port.json").read_text())
+    in_place = [f for f in p["findings"] if not f.get("wrapper")]
+    assert in_place and len(fb["rtl"]) == len(in_place) and all(r.startswith("[rtl:mem_wrap]") for r in fb["rtl"])
+    assert {f["handed_off"]["step"] for f in p["findings"] if f.get("wrapper")} == {"spec"}
 
 
 # -- Settings and the TUI -----------------------------------------------------------------------------------------------------------
@@ -415,7 +466,7 @@ async def test_the_panels(proj):
         await pilot.pause()
         from q3tui.flows.asic import panels
 
-        assert [t.id for t in panels._tabs_for("asic.asic_synth")] == ["qor"] and [t.id for t in panels._tabs_for("asic.sdc")] == ["sdc"]
+        assert [t.id for t in panels._tabs_for("asic.asic_synth")] == ["qor", "waivers"] and [t.id for t in panels._tabs_for("asic.sdc")] == ["sdc"]
         rows = {r[0]: r for r in panels._synth_rows(app)}
         assert rows["slack"][1] == "Worst setup slack (ns)" and rows["area"][2] == "228625.692253"
         assert [r[0] for r in panels._lec_rows(app)][0] == "status"
@@ -785,3 +836,14 @@ def test_a_projects_catalog_adds_its_libraries(proj):
     ids = [p.id for p in pdks.catalog(proj)]
     assert "proj65" in ids  # (the built-in open-source ones stay when they exist here: no "only")
     assert "proj65" not in [p.id for p in pdks.catalog()] and "proj65" not in pdks.BUILTIN.read_text()  # (and the repo never lists it)
+
+
+async def test_an_unreadable_library_says_so(proj):
+    (proj.root / "lib.db").chmod(0)
+    try:
+        eng = Engine(Project.open(proj.root))
+        await eng.run(yes=True)
+        st = {v.name: v for v in eng.status()}
+        assert st["asic_synth"].status == "failed" and "no read permission" in st["asic_synth"].detail
+    finally:
+        (proj.root / "lib.db").chmod(0o644)

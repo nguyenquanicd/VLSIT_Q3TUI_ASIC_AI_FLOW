@@ -58,6 +58,7 @@ _MEM = re.compile(r"^\s*(?:logic|reg|bit|byte|wire)\b(?:\s*\[[^\]]+\])*\s*(\w+)\
 _OFF = re.compile(r"(?://|/\*)\s*(?:synopsys|pragma|synthesis)\s+translate_off")
 _ON = re.compile(r"(?://|/\*)\s*(?:synopsys|pragma|synthesis)\s+translate_on")
 _MODULE = re.compile(r"^\s*module\s+(\w+)")
+_WRAPPER = re.compile(r"_(?:sram|rf|rom)$")  # a memory wrapper of the rule file (m_<name>_sram / _rf / _rom): its array is the macro's place
 
 
 def _strip(line: str, in_block: bool) -> tuple[str, bool]:
@@ -125,7 +126,7 @@ def scan_file(path: Path, root: Path, min_words: int = 16, waive: tuple[str, ...
             if rx.search(code):
                 found.append((rid, code.strip()))
         mm = _MEM.match(re.sub(r"\(\*.*?\*\)\s*", "", code))  # (a synthesis attribute may come first)
-        if mm:
+        if mm and not _WRAPPER.search(module):
             depth = _depth(mm.group(2), params)
             if depth is None or depth >= min_words:
                 found.append(("memory_array", code.strip() + (f"  ({depth} words)" if depth else "  (depth is a parameter)")))
@@ -141,6 +142,23 @@ def scan(files: list[Path], root: Path, min_words: int = 16, waive: tuple[str, .
     """The findings of all files, numbered P1, P2, … in file / line order."""
     found = [f for p in files for f in scan_file(p, root, min_words, waive)]
     return [{"id": f"P{i}", **f, "handed_off": None} for i, f in enumerate(found, 1)]
+
+
+def handoff_step(f: dict) -> str:
+    """The step of the owner flow a finding goes to: `spec` when its order makes a wrapper module (only the spec adds a module to the design:
+    parse puts it in the structured spec, the rtl step's plan writes its file), else `rtl` (a change in place)."""
+    return "spec" if f.get("wrapper") else "rtl"
+
+
+def spec_text(fs: list[dict]) -> str:
+    """One change request of the spec step for every wrapper order (one spec update, not one per finding)."""
+    items = "\n".join(f"- `{f['wrapper']}`, instantiated by `{f['module']}` ({f['file']}:{f['line']}, {f.get('title') or RULES[f['rule']].title}: "
+                      f"`{f['text']}`): {f['fix']}" for f in fs)
+    return ("ASIC port: add these wrapper modules to the design hierarchy (the module tree and the block table, with the parent that "
+            "instantiates each one), so that each becomes a module of its own:\n" + items + "\nDescribe each wrapper by its function, ports, "
+            "widths and latency, not by a technology (no macro or cell name, no `ifdef`): its body stays behavioural, the ASIC flow puts the "
+            "macro in. The parents keep their behaviour, ports and requirements; correct any statement that says the structure is inferred "
+            "inside the parent.")
 
 
 def handoff_text(f: dict) -> str:

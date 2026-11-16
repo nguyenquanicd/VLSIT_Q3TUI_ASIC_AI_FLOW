@@ -38,3 +38,21 @@ class AsicStep(FpgaStep):
         raw = (synth.options if synth else self.options).get("library")
         items = [raw] if isinstance(raw, str) else list(raw or [])
         return [str(Path(os.path.expandvars(str(x))).expanduser()) for x in items if str(x).strip()]
+
+    def macros(self, engine) -> dict:
+        """What `asic_macro` made (schemas/asic_macro.json; {} before it ran or without the step)."""
+        from q3tui.flows.asic.lib import macro
+
+        return self.read(engine, macro.MACRO_JSON, {}) or {}
+
+    def synth_files(self, engine) -> list[Path]:
+        """The RTL as the ASIC tools read it: each memory wrapper that has macros replaced by its ASIC body."""
+        from q3tui.flows.asic.lib import macro
+
+        return macro.swapped(self.rtl_files(engine), self.macros(engine), engine.project.root)
+
+    def macro_dbs(self, engine) -> list[str]:
+        """The .db files of the memory macros (link libraries of Design Compiler, read_db of Formality)."""
+        from q3tui.flows.asic.lib import macro
+
+        return macro.macro_dbs(self.macros(engine), engine.project.root)

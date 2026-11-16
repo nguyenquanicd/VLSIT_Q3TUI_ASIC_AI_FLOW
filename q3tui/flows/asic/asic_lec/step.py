@@ -55,7 +55,8 @@ class Step(AsicStep):
         svf = self.asic_dir(engine) / "netlist" / f"{top}.svf"
         script = self.asic_dir(engine) / "lec.tcl"
         project.backup([script])
-        script.write_text(fm.script_text(self.rtl_files(engine), top, libs, self.netlist(engine), svf, work, self.options))
+        # (the reference is the RTL the synthesis read — memory wrappers as macro bodies; the macros are black boxes on both sides)
+        script.write_text(fm.script_text(self.synth_files(engine), top, [*libs, *self.macro_dbs(engine)], self.netlist(engine), svf, work, self.options))
         ctx.emit("log", message=f"checking {top}: RTL against {project.rel(self.netlist(engine))}…")
         t0 = time.monotonic()
         res = await anyio.to_thread.run_sync(lambda: toolmod.run_role(
