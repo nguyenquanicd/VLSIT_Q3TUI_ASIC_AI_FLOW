@@ -276,6 +276,7 @@ class Config(_Strict):
 
     # Where this config came from; not part of the file schema.
     source: str | None = Field(default=None, exclude=True)
+    explicit_path: str | None = Field(default=None, exclude=True)  # (--config, absolute: the TUI's background runs get it too)
 
 
 CONFIG_FILENAME = "q3tui.yaml"
@@ -366,4 +367,6 @@ def load_config(explicit: str | Path | None = None, cwd: Path | None = None, ove
         raise ValueError(f"invalid config ({' + '.join(map(str, layers)) or 'defaults'}): {exc}") from exc
     names = [str(p) for p in layers] + (["command line"] if overrides else [])
     cfg.source = " + ".join(names) if names else "<defaults>"
+    if explicit:
+        cfg.explicit_path = str(Path(explicit).expanduser().resolve())
     return cfg

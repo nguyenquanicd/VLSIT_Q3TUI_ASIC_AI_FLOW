@@ -24,6 +24,7 @@ spec ──► rtl ──► dv ──► sanity ──► fpga / asic
 | `dv` | A testbench written from the spec alone (plain SystemVerilog, or UVM from an existing VIP), run in your simulator. |
 | `sanity` | CDC / RDC analysis, every violation sorted into a waiver, an RTL fix or a question. |
 | `fpga`, `asic` | PPA estimation on an FPGA part; synthesis to a standard-cell netlist with an equivalence check. |
+| `eco` | A netlist ECO from a requirement: RTL(F), a netlist patch, equivalence checks and STA ([eco-flow.md](docs/spec/eco-flow.md)). |
 
 How it behaves:
 

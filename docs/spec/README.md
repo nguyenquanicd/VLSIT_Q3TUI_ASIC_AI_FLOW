@@ -15,6 +15,7 @@ Testbench, assertions, verification and the final document were removed.
 | [fpga-flow.md](fpga-flow.md) | The FPGA flow: SDC, Vivado out-of-context synthesis, timing / utilization report (PPA estimation) |
 | [project-flow.md](project-flow.md) | The project settings flow: the project's settings, the tools (found or not, modules), the ASIC libraries (add one by scanning a folder) |
 | [asic-flow.md](asic-flow.md) | The ASIC flow: port check, SDC, Design Compiler synthesis (netlist, area / timing / power), Formality equivalence check |
+| [eco-flow.md](eco-flow.md) | The ECO flow: ORG RTL + ORG netlist + requirement → RTL(F), netlist patch (Design Compiler), EQ(1) / EQ(2) (Formality), STA (PrimeTime) |
 | [sanity-flow.md](sanity-flow.md) | The Sanity flow: CDC / RDC analysis (VC Static) on the shared SDC, a violation table, a waiver review (waive / RTL fix / spec / SDC request / ask you), the check of the waivers |
 | [project-layout.md](project-layout.md) | Files Q3TUI reads/writes, pipeline state, staleness, entry points |
 | [tui.md](tui.md) | Terminal UI: pipeline dashboard, gates, questions, assistant |

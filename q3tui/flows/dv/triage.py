@@ -290,16 +290,19 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
         meta["loop"], meta["rounds"] = True, rounds + 1  # the engine updates tb / prepare on the change requests, then runs simulate again
     # the hand-over to the other flow last: it saves this engine's state, lets the other flow's engine write the change request into the same file, and reads it back
     handed: list[str] = []
-    owner = str(tb_opts.get("handoff_flow") or "rtl")
+    from q3tui.flows.eco.lib.ref import eco_owner
+    eco = eco_owner(project)  # (a project-mode ECO is on: its eco_rtl makes the fix, the smallest change, judged first)
+    owner = eco or str(tb_opts.get("handoff_flow") or "rtl")
     for unit, vs in by_module.items():
         text = scoped("rtl", unit, f"From the simulation of the testbench ({', '.join(v.id for v in vs)}): " + " | ".join(f"{v.summary} {v.request}{_evidence(v)}" for v in vs)
                       + _module_since_pass(project, since, next((p for p in rtl if p.stem == unit), None), [v.id for v in vs]) + wider.get(unit, ""))
-        owner = _hand_to_rtl_flow(ctx, owner, text)
-        ctx.emit("log", message=f"simulate {', '.join(v.id for v in vs)}: RTL bug → {owner}:rtl ({unit}): {vs[0].summary[:100]}"
+        owner = _hand_to_rtl_flow(ctx, owner, text, "eco_rtl" if eco else "rtl")
+        ctx.emit("log", message=f"simulate {', '.join(v.id for v in vs)}: RTL bug → {owner}:{'eco_rtl' if eco else 'rtl'} ({unit}): {vs[0].summary[:100]}"
                                 + (" — came back after its fix: one wider try instead of a question" if unit in wider else ""))
         handed.append(f"{unit} → {owner}")
     meta = engine.state.step_meta.setdefault(step.name, {})  # (the hand-over reloaded the state: this step's meta is a new object)
-    run_owner = bool(handed) and engine.unattended_run() and not stalled
+    # (never the ECO flow within this run: the ECO's eco_verify runs this flow, it takes the request and runs eco_rtl)
+    run_owner = bool(handed) and engine.unattended_run() and not stalled and not eco
     if run_owner:  # the fix loop runs the owner flow within this run, then tb and simulate on the new RTL
         engine.hand_to_flow(step.name, owner)
         meta["rounds"], meta["flow_round"] = rounds + 1, {"rtl": now_rtl, "failed": len(failures)}
@@ -387,8 +390,9 @@ def _generated_block(rtl_dir: Path, cfg) -> list[str]:
     return ["## Generated RTL", f"Made by the APB-CSR-Generator (the rtl flow's csr step), not by hand: {', '.join(made)}. {how}", ""]
 
 
-def _hand_to_rtl_flow(ctx: StepContext, flow_name: str, text: str) -> str:
-    """A change request for the `rtl` step of the flow that owns the RTL (the way the FPGA flow hands over a PPA fix); returns the flow's name."""
+def _hand_to_rtl_flow(ctx: StepContext, flow_name: str, text: str, target: str = "rtl") -> str:
+    """A change request for the `rtl` step of the flow that owns the RTL (the way the FPGA flow hands over a PPA fix; `eco_rtl` of the ECO flow
+    while a project-mode ECO is on); returns the flow's name."""
     from q3tui import flows
     from q3tui.pipeline.engine import Engine
 
@@ -397,8 +401,8 @@ def _hand_to_rtl_flow(ctx: StepContext, flow_name: str, text: str) -> str:
         raise StepFailed("handoff_flow is this flow itself: the RTL is the rtl flow's")
     ctx.engine.save()  # what this process holds is on disk; the other flow's engine reads and writes the same pipeline.json
     other = Engine(ctx.project, flow=owner)
-    if "rtl" not in other.by_name:
-        raise StepFailed(f"flow '{owner.name}' has no step 'rtl' to hand the RTL fix to")
-    other.request_change("rtl", text)
+    if target not in other.by_name:
+        raise StepFailed(f"flow '{owner.name}' has no step '{target}' to hand the RTL fix to")
+    other.request_change(target, text)
     ctx.engine.reload()  # (the change request is in the state now)
     return owner.name

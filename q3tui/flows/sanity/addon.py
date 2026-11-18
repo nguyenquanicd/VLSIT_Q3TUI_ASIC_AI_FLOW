@@ -25,8 +25,10 @@ def _handoff(ops, ids: str) -> str:
     ops.engine.save()
     others: dict[str, Engine] = {}  # one engine per owner flow: each review hands off to its own handoff_flow
     sent = []
+    from q3tui.flows.eco.lib.ref import ECO_STEP, eco_owner
+    eco = eco_owner(ops.project)  # (a project-mode ECO is on: its eco_rtl / eco_spec make the fixes, the smallest change, judged first)
     for step in steps:
-        name = str(step.options.get("handoff_flow") or "rtl")
+        name = eco or str(step.options.get("handoff_flow") or "rtl")
         if name == ops.engine.flow.name:
             raise EngineError("handoff_flow is this flow itself")
         if name not in others:
@@ -53,6 +55,7 @@ def _handoff(ops, ids: str) -> str:
             if d["action"] not in ("fix_rtl", "spec"):
                 continue
             target, text = waivers.handoff_text(step.role, d, by_id[d["id"]])
+            target = ECO_STEP.get(target, target) if eco else target
             if target not in other.by_name:
                 raise EngineError(f"flow '{name}' has no step '{target}' to hand {tag} to")
             other.request_change(target, text)

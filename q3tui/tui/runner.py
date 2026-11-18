@@ -34,7 +34,7 @@ class Runner:
         """`q3tui run` for what the TUI would run in-process: the live model / effort and auto switches go along (a setting changed
         for this session only is not in q3tui.yaml)."""
         cfg = project.cfg
-        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--flow", flow,
+        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), *_config_args(cfg), "--flow", flow,
                "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "run"]
         for flag, value in (("--from", start), ("--to", stop), ("--only", only)):
             if value:
@@ -54,7 +54,8 @@ class Runner:
     def start_auto(self, project) -> int:
         """`q3tui auto` (core/chain.py), key `auto`: the TUI follows its flow runs like any other run (run.<flow>.lock, runs/*/events.jsonl)."""
         cfg = project.cfg
-        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), "--model", cfg.llm.model, "--effort", cfg.llm.effort or "none", "auto"]
+        cmd = [sys.executable, "-m", "q3tui.core.cli", "-C", str(project.root), *_config_args(cfg), "--model", cfg.llm.model,
+               "--effort", cfg.llm.effort or "none", "auto"]
         return self._spawn(project, "auto", cmd)
 
     def _spawn(self, project, key: str, cmd: list[str]) -> int:
@@ -96,3 +97,8 @@ _RUNNER = Runner()
 
 def get() -> Runner:
     return _RUNNER
+
+
+def _config_args(cfg) -> list[str]:
+    """`--config` of the TUI for its background runs: without it they read only the project's q3tui.yaml (other step options, gates, auto-answer)."""
+    return ["--config", cfg.explicit_path] if getattr(cfg, "explicit_path", None) else []

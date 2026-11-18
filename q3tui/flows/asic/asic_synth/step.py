@@ -168,7 +168,7 @@ class Step(AsicStep):
             if not res.ok:
                 errs = "; ".join(d.message for d in res.errors[:3])
                 raise StepFailed(f"synthesis failed: {errs} (log: {res.log_path})")
-            if not netlist.is_file() or not (rep / "area.rpt").is_file():
+            if not netlist.is_file() or not (work / "area.rpt").is_file():  # (DC writes the reports in work/; copied to rep below)
                 raise StepFailed(f"the tool finished but wrote no netlist / area report (log: {res.log_path})")
             rep.mkdir(parents=True, exist_ok=True)
             for n in REPORTS:
