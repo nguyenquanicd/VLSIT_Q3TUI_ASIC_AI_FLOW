@@ -45,12 +45,28 @@ class RtlAlternative(BaseModel):
     differs_from_request: str = Field(description="What it does differently from what was asked (the user decides on this)")
 
 
+class RtlEdit(BaseModel):
+    """One exact RTL edit: `old`, copied from the file, becomes `new` (code applies it: no one rewrites it)."""
+    file: str = Field(description="The RTL file, as the task lists it")
+    old: str = Field(description="The exact text to replace, copied from the file (whole lines, indentation kept); it must occur once in the file")
+    new: str = Field(description="The text it becomes")
+
+
 class RtlPlan(BaseModel):
-    """eco_rtl, before any edit: the smallest change that meets the requirement (read-only)."""
+    """eco_rtl, before any edit (read-only): the smallest change in the ORG netlist that meets the requirement, found in the netlist itself,
+    and the RTL change that mirrors it."""
     requested: str = Field("", description="How the requirement / change requests say to make the change, when they prescribe one; empty when "
                                            "they only state the function")
-    plan: str = Field(description="The change you would make: files, signals / lines, what they become")
-    netlist_impact: str = Field(description="What the change costs in the netlist: gates added / changed, new flops, ports, replicated logic")
+    netlist_edits: list[str] = Field(default_factory=list, description=(
+        "The smallest netlist change as Design Compiler netlist-edit commands on the ORG netlist, one per item, in order (the forms of the "
+        "task; every instance / net / pin by its path from the top: u_core/U12/ZN; every instance of replicated logic written out). They are "
+        "checked against the netlist and become the ECO patch. Empty only for \"No RTL change:\""))
+    rtl_edits: list[RtlEdit] = Field(default_factory=list, description=(
+        "The RTL change that mirrors `netlist_edits` (the same structure at the same point), as exact edits: code applies them to the RTL as "
+        "they are. Empty only for \"No RTL change:\""))
+    plan: str = Field(description="One or two sentences: what the change does (the edits are in `rtl_edits`); or \"No RTL change: <why>\"")
+    modules: list[str] = Field(default_factory=list, description="The names of the modules (as in `module <name>`) the change edits")
+    netlist_impact: str = Field(description="One line: what the netlist change is (cells, rewired pins, new flops / ports if any)")
     alternative: RtlAlternative | None = Field(None, description="Only when the request prescribes a way and a smaller change gives the same "
                                                                  "required function; else null")
 

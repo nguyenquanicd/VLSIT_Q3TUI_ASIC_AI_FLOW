@@ -238,6 +238,8 @@ async def handle_failures(step, ctx: StepContext, failures: list[dict], rtl_dir:
     report = {"round": rounds + 1, "failures": failures, "verdicts": [], **({"debug_runs": probe.runs} if probe is not None else {})}
     wider: dict[str, str] = {}  # rtl unit → what the earlier tries were (the wider try of a fix that keeps coming back)
     for v in verdicts:
+        if v.verdict == "rtl_bug" and not v.request.strip() and v.summary.strip():  # (the fix said in the summary only: still the module's to fix — its owner checks it)
+            v = v.model_copy(update={"request": v.summary.strip()})
         report["verdicts"].append(v.model_dump())
         unit = v.module if v.module in modules else next(iter(sorted(modules)), "")
         top = v.verdict == "tb_bug" and kind == "plain" and v.module.strip().lower().removesuffix(".sv") in ("top", "tb_top")  # (the shared tb_top, not the test)

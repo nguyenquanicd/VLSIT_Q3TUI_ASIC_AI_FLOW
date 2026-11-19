@@ -1,28 +1,29 @@
-"""ECO step `eco_spec` (project mode): the project's spec documents updated to the requirement, the smallest change, in place (`spec/*.md`; the
-ORG spec is in `ref/<name>/spec/`). An LLM stage edits them (it may write only in spec/, never the intent); code writes `eco/spec.diff` against
-the ORG spec. The gate is your review. A change request (your review, a Sanity `spec` decision during the ECO) edits the current spec; a
-changed requirement starts again from the ORG spec. External mode (RTL from outside the project): nothing to update, the step is skipped.
-The spec flow's own steps (parse, config) take the updated spec when the dv flow runs again (eco_verify)."""
+"""ECO step `eco_spec` (project mode): the project's spec updated to the requirement, the smallest change (the ORG spec is in
+`ref/<name>/spec/`). Its tasks (`tasks/`, a prompt beside a task's code: `<task>.md`):
+
+- request: the requirement (and the change requests: your review, a Sanity `spec` decision during the ECO) as one change request;
+- hand-off: when the spec flow wrote `spec/spec.md`, the request goes to the spec flow's `spec` step and the spec flow runs (spec → parse →
+  config: it patches only the sections the request affects; its gate and questions are its own: when it stops there, this step fails until
+  you finished there and run eco again — the request is not sent twice);
+- edit: a spec that is your own (not the spec flow's): an LLM stage edits the spec documents in place (only spec/, never the intent);
+- diff: `eco/spec.diff` against the ORG spec.
+
+The gate is your review. A change request updates the current spec; a changed requirement starts again from the ORG spec. External mode
+(RTL from outside the project): nothing to update, the step is skipped."""
 from __future__ import annotations
 
-import difflib
-import shutil
 from pathlib import Path
 
-from q3tui.core.project import sha256_file
-from q3tui.flows import skill_sections
+from q3tui.flows.eco.eco_spec.tasks import diff, edit, hand_off, request
 from q3tui.flows.eco.lib.base import EQ1_JSON, INPUTS_JSON, SPEC_JSON, EcoStep
-from q3tui.flows.eco.lib.models import RtlUpdate
-from q3tui.llm.runtime import Stage
-from q3tui.pipeline.base import StepContext, StepFailed
-
-SYSTEM = skill_sections(Path(__file__).parent / "md" / "skill.md")
+from q3tui.pipeline.base import StepContext
 
 
 class Step(EcoStep):
     name = "eco_spec"
     title = "Spec update for the ECO"
     deps = ("eco_eq1",)
+    tasks = (request.TASK, hand_off.TASK, edit.TASK, diff.TASK)
 
     def ref_docs(self, engine) -> list[Path]:
         """The ORG spec documents (ref/<name>/spec/, as the project's spec_documents())."""
@@ -52,56 +53,13 @@ class Step(EcoStep):
         return None
 
     async def run(self, ctx: StepContext) -> None:
-        engine, project = ctx.engine, ctx.project
-        if self.mode(engine) != "project":
-            self.write(engine, SPEC_JSON, {"status": "skipped", "why": "external RTL (a fire-fighting ECO): the spec is not this project's"})
-            ctx.emit("log", message="spec update: skipped (external RTL)")
+        r = request.run(self, ctx)
+        if r is None:
             return
-        req = self.requirement(engine)
-        refs = self.ref_docs(engine)
-        if not refs:
-            raise StepFailed(f"no ORG spec document in {project.rel(self.ref_dir(engine) / 'spec')} (the project's spec/*.md, intent excluded)")
-        docs = [project.spec_dir / r.name for r in refs]
-        key = {"requirement": sha256_file(req), "org": {project.rel(r): sha256_file(r) for r in refs}}
-        prev = self.read(engine, SPEC_JSON, {}) or {}
-        asks, answered, open_ = self.concern_answers(ctx, prev, key)
-        feedback = [*ctx.feedback, *answered]
-        if asks and not feedback and not ctx.regenerate:  # (a run for your answers to the concerns: each one kept, or still open)
-            self.write(engine, SPEC_JSON, {**prev, "concern_asks": asks})
-            ctx.emit("warning" if open_ else "log", message=f"spec update: answer {', '.join(open_)} (the concerns of the change), then run again"
-                     if open_ else "spec update: every concern answered — the change is kept")
-            return
-        update = bool(feedback) and not ctx.regenerate and prev.get("key") == key
-        if not update:  # (from the ORG spec again)
-            changed = [d for d, r in zip(docs, refs) if not d.is_file() or d.read_bytes() != r.read_bytes()]
-            if changed:
-                project.backup(changed)
-            for d, r in zip(docs, refs):
-                if d in changed:
-                    shutil.copyfile(r, d)
-        task = [f"## The requirement ({project.rel(req)})", req.read_text(errors="replace"), "",
-                "## The spec documents: edit them in place (the ORG spec is kept in " + project.rel(refs[0].parent) + ")",
-                *[f"- {project.rel(d)}" for d in docs]]
-        if update:
-            task += ["", "## Change requests on the updated spec", *[f"- {x}" for x in feedback],
-                     f"(The changes made so far against the ORG spec: {project.rel(self.spec_diff(engine))}.)"]
-        stage = Stage(name="eco_spec", system_prompt=SYSTEM["SPEC"], prompt="\n".join(task), cwd=project.root,
-                      builtin_tools=["Read", "Grep", "Glob", "Edit"], output_model=RtlUpdate, write_dirs=[project.spec_dir],
-                      deny_dirs=[project.build_dir, project.src_dir, self.eco_dir(engine) / "netlist", self.eco_dir(engine) / "patch",
-                                 self.org_dir(engine)])
-        intent = project.spec_dir / "intent.md"
-        before = intent.read_bytes() if intent.is_file() else None
-        out: RtlUpdate = (await ctx.llm(stage)).output
-        if intent.is_file() and before is not None and intent.read_bytes() != before:
-            intent.write_bytes(before)  # (the intent is yours: the ECO updates the spec documents only)
-            ctx.emit("warning", message="spec update: spec/intent.md was edited — put back as it was")
-        diff = "".join(x for d, r in zip(docs, refs) for x in difflib.unified_diff(
-            r.read_text(errors="replace").splitlines(keepends=True), d.read_text(errors="replace").splitlines(keepends=True),
-            fromfile=f"a/{project.rel(r)}", tofile=f"b/{project.rel(d)}"))
-        self.spec_diff(engine).parent.mkdir(parents=True, exist_ok=True)
-        self.spec_diff(engine).write_text(diff)
-        self.write(engine, SPEC_JSON, {"status": "updated" if diff else "unchanged", "key": key, "summary": out.summary,
-                                       "changes": [c.model_dump() for c in out.changes], "concerns": out.concerns,
-                                       "diff_lines": diff.count("\n"),
-                                       "concern_asks": {**asks, **self.ask_concerns(ctx, {"key": key, "diff": diff}, out.concerns, "spec update")}})
-        ctx.emit("log", message=f"spec update: {out.summary[:200]} ({diff.count(chr(10))} diff lines, see {project.rel(self.spec_diff(engine))})")
+        if self.owner_made(ctx.engine, "spec") and ctx.project.spec_dir / "spec.md" in r.docs:
+            out = await hand_off.run(self, ctx, r)
+            self.task(ctx, "edit", "not needed: the spec flow made the change", "skipped")
+        else:
+            self.task(ctx, "hand-off", "the spec is your own (the spec flow did not write spec/spec.md): edited here", "skipped")
+            out = await edit.run(self, ctx, r)
+        diff.run(self, ctx, r, out)

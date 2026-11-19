@@ -1,0 +1,3 @@
+ECO (an engineering change order on a block that is already designed, verified and synthesized): update the spec to the requirement below with the smallest change. Change only the requirements, register / field descriptions, behaviour descriptions, waveforms and examples it affects; keep every other line, the section structure, the requirement IDs (add a new ID only for a new requirement, after the existing ones; mark a changed requirement in its text, e.g. "(ECO)"), the names and the wording style; do not restructure, reformat or "improve" anything. If the requirement contradicts the spec in a way it does not settle, take the requirement's reading and raise it as a conflict.
+The requirement ({path}):
+{requirement}

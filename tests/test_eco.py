@@ -79,13 +79,16 @@ class EcoLLM:
         self.alt = None  # (the plan of eco_rtl finds this smaller change than the one asked)
         self.stages, self.same, self.patch = [], False, ["disconnect_net o_r U2/Z", "create_cell U3 gf/TIEL_X1", "connect_net o_r U3/ZN"]
         self.concerns = {}  # (stage name -> the concerns its first answer reports)
+        self.plan_edits = []  # (the netlist edits of eco_rtl's plan, answer by answer: none — eco_patch's AI writes the patch)
+        self.plan_rtl = []  # (the exact RTL edits of eco_rtl's plan, answer by answer: none — the eco_rtl stage edits the RTL)
 
     async def __call__(self, stage, cfg, emit):
         from q3tui.llm.runtime import StageResult
         self.stages.append(stage)
         if stage.name == "eco_rtl_plan":
             out = RtlPlan(requested="a new TIEL cell drives o_r" if self.alt else "", plan="tie o_r low", netlist_impact="one tie cell",
-                          alternative=self.alt)
+                          modules=["blk"], netlist_edits=self.plan_edits.pop(0) if self.plan_edits else [], alternative=self.alt,
+                          rtl_edits=self.plan_rtl.pop(0) if self.plan_rtl else [])
         elif stage.name == "eco_rtl":
             f = stage.write_dirs[0] / "blk.sv"
             f.write_text(f.read_text().replace("assign o_r = 1'b1;", "assign o_r = 1'b0;")
@@ -263,6 +266,16 @@ async def test_eq_reads_a_memory_wrapper_as_its_macro_body(proj):
         assert "blk_sram.sv" in tcl and "mem.db" in tcl and "src/rtl/blk.sv" not in tcl, step
 
 
+def test_without_a_library_setting_the_one_asic_synth_used_is_read(proj):
+    yaml = proj.root / "q3tui.yaml"
+    yaml.write_text(yaml.read_text().replace("    eco_inputs:\n      library: " + str(proj.root / "lib.db") + "\n", ""))
+    eng = Engine(Project.open(proj.root))
+    step = next(s for s in eng.steps if s.kind == "eco.eco_sta")
+    assert step.libraries(eng) == []
+    (proj.schemas_dir / "asic_synth.json").write_text(json.dumps({"library": [str(proj.root / "lib.db")]}))
+    assert step.libraries(eng) == [str(proj.root / "lib.db")]
+
+
 def test_a_passed_asic_lec_stands_for_eq1(proj):
     rtl = [proj.root / "src" / "rtl" / "blk.sv"]
     inputs = {"netlist": "build/syn/asic/netlist/blk.v"}
@@ -324,6 +337,11 @@ async def test_every_step_has_a_report_in_the_tui(proj, tmp_path):
     assert "```diff" in panels.STEPS["eco_rtl"][3](app, "diff") and "o_r" in panels.STEPS["eco_rtl"][3](app, "diff")
     assert "```tcl" in panels.STEPS["eco_patch"][3](app, "cmds") and "connect_net o_r U3/ZN" in panels.STEPS["eco_patch"][3](app, "cmds")
     assert [r[0] for r in panels._overview_rows(app)] == list(panels.STEPS) and panels._overview_summary(app).startswith("9/9 steps done")
+    for step in Engine(proj).steps:  # (the Tasks tab: one row per task, each with a detail)
+        [tab] = [t for t in panels._tabs_for(step.name, step) if t.id == "tasks"]
+        got = tab.rows(app)
+        assert [r[0] for r in got] == [n for n, _ in step.tasks] and all(len(r) == 5 and tab.detail(app, r[0]) for r in got), step.name
+    assert panels._task_rows(Engine(proj).step("eco_rtl"))(app)[0][4].plain.endswith("done")  # (plan: done in the run)
 
 
 async def test_it_asks_for_the_inputs_first(proj):
@@ -718,4 +736,221 @@ def test_an_instance_inside_a_submodule_is_found_by_its_path():
            "module top ( a, z );\n  input a;\n  output z;\n  sub u_sub ( .a(a), .z(z) );\nendmodule\n")
     assert check_structure(["disconnect_net [get_nets z] u_sub/U7/ZN"], net) == []
     assert check_structure(["disconnect_net [get_nets z] u_sub/U8/ZN"], net) == ["line 1: instance `u_sub/U8` is not in the netlist"]
-    assert check_structure(["disconnect_net [get_nets z] U7/ZN"], net) == ["line 1: instance `U7` is not in the netlist"]  # (not at the top)
+    assert check_structure(["disconnect_net [get_nets z] U7/ZN"], net) == [  # (not at the top: where it is, for the next try)
+        "line 1: instance `U7` is not in the netlist; name it from the top: `u_sub/U7`"]
+
+
+def test_a_name_without_its_hierarchy_is_named_from_the_top():
+    from q3tui.flows.eco.lib.tcl import check_structure, qualify
+    net = ("module sub ( a, z );\n  input a;\n  output z;\n  wire n1;\n  INVD1 U7 ( .I(a), .ZN(n1) );\n  INVD1 U8 ( .I(n1), .ZN(z) );\nendmodule\n"
+           "module top ( a, z, y );\n  input a;\n  output z, y;\n  sub u_sub ( .a(a), .z(z) );\n  sub u_two ( .a(a), .z(y) );\n"
+           "  INVD1 U9 ( .I(a), .ZN(y) );\nendmodule\n")
+    # (U7 / n1 are in both u_sub and u_two: ambiguous, left; in a design with one, they get the path)
+    one = net.replace("  sub u_two ( .a(a), .z(y) );\n", "")
+    out, notes = qualify(["create_net u_sub/eco_n", "disconnect_net n1 U8/I", "connect_net eco_n U8/I", "connect_net a U9/I"], one)
+    assert out == ["create_net u_sub/eco_n", "disconnect_net u_sub/n1 u_sub/U8/I", "connect_net u_sub/eco_n u_sub/U8/I", "connect_net a U9/I"]
+    assert len(notes) == 4 and check_structure(out, one) == []
+    assert qualify(["disconnect_net n1 U8/I"], net)[0] == ["disconnect_net n1 U8/I"]
+    # (a new cell / net made at the top but connected inside u_sub only: made in u_sub; a bare library cell gets its library)
+    out, _ = qualify(["create_cell eco_c INVD1", "create_net eco_m", "disconnect_net n1 U8/I", "connect_net eco_m eco_c/ZN",
+                      "connect_net eco_m U8/I", "connect_net n1 eco_c/I"], one)
+    assert out == ["create_cell u_sub/eco_c [get_lib_cells */INVD1]", "create_net u_sub/eco_m", "disconnect_net u_sub/n1 u_sub/U8/I",
+                   "connect_net u_sub/eco_m u_sub/eco_c/ZN", "connect_net u_sub/eco_m u_sub/U8/I", "connect_net u_sub/n1 u_sub/eco_c/I"]
+    assert check_structure(out, one) == []
+    assert "are in different modules" in check_structure(["create_net u_sub/eco_m", "connect_net u_sub/eco_m U9/I"], one)[0]
+
+
+# -- workflow → step → task; spec / RTL handed to their flows; the netlist cost first ----------------------------------------------------
+
+def test_the_netlist_cost_of_a_patch():
+    cost = tcl.netlist_cost(["# a note", "create_cell U3 gf/TIEL_X1", "create_cell U4 [get_lib_cells */TIEL_X1]", "create_net n9",
+                             "connect_net n9 U3/ZN", "disconnect_net o_r U2/Z", "insert_buffer U1/Z gf/BUF_X1", "size_cell U1 gf/MUX2_X4"])
+    assert cost["commands"] == 7 and cost["new_cells"] == 3 and cost["cell_types"] == {"TIEL_X1": 2}
+    assert (cost["new_nets"], cost["connects"], cost["disconnects"], cost["resized"]) == (1, 1, 1, 1)
+    swap = tcl.netlist_cost(["remove_cell U1", "create_cell U1_eco gf/AOI221_X1", "create_cell U5 gf/ND2_X1"])  # (a cell replaced: +0)
+    assert (swap["new_cells"], swap["removed"], swap["net_cells"]) == (2, 1, 1)
+
+
+def _owner_flows(monkeypatch, outcomes: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
+    """The spec / rtl flows as the ECO runs them: each queued request applied (spec.md / blk.sv edited) and consumed; the run ends with the
+    next of `outcomes[flow]` (complete when none is left). The calls: [(flow, the requests it had)]."""
+    calls: list[tuple[str, list[str]]] = []
+    real = Engine.run
+    edits = {"spec": ("spec/spec.md", "o_r is always 1.", "o_r is always 0 (ECO)."),
+             "rtl": ("src/rtl/blk.sv", "assign o_r = 1'b1;", "assign o_r = 1'b0;")}
+
+    async def run(self, *a, **kw):
+        name = self.flow.name
+        if name not in edits:
+            return await real(self, *a, **kw)
+        asks = list(self.state.feedback.pop(name, []) or [])
+        calls.append((name, asks))
+        if asks:
+            f, old, new = edits[name]
+            path = self.project.root / f
+            path.write_text(path.read_text().replace(old, new))
+            self.save()
+        left = outcomes.get(name) or []
+        return left.pop(0) if left else "complete"
+
+    monkeypatch.setattr(Engine, "run", run)
+    return calls
+
+
+def _made_by_flows(proj, *steps) -> Engine:
+    """The project's spec / RTL as the spec / rtl flows made them (their step records; the rtl flow's module `blk`)."""
+    from q3tui.pipeline.state import StepRecord
+    eng = Engine(proj)
+    for s in steps:
+        eng.state.steps[s] = StepRecord(status="done", origin="generated")
+    eng.state.step_meta["rtl"] = {"modules": {"blk": {}}}
+    eng.save()
+    return Engine(proj)
+
+
+async def test_the_spec_and_the_rtl_go_to_the_flows_that_made_them(proj, llm, monkeypatch):
+    calls = _owner_flows(monkeypatch, {})
+    llm.plan_edits = [list(llm.patch), list(llm.patch)]
+    eng = await _drive(_made_by_flows(proj, "spec", "rtl"), {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)"})
+    st = _status(eng)
+    assert all(v.status == "done" for v in st.values()), [(v.name, v.status, v.detail) for v in st.values()]
+    names = [s.name for s in llm.stages]
+    assert "eco_spec" not in names and "eco_rtl" not in names and "eco_rtl_plan" in names  # (the plan is the ECO's; the edits are the flows')
+    [(f1, spec_asks), (f2, rtl_asks)] = [c for c in calls if c[1]]
+    assert (f1, f2) == ("spec", "rtl") and "o_r must be 0." in spec_asks[0] and "smallest change" in spec_asks[0]
+    assert rtl_asks == [rtl_asks[0]] and rtl_asks[0].startswith("[rtl:blk] ECO") and "tie o_r low" in rtl_asks[0]
+    root = proj.root
+    assert "+  assign o_r = 1'b0;" in (root / "eco" / "rtl.diff").read_text() and "+o_r is always 0 (ECO)." in (root / "eco" / "spec.diff").read_text()
+    assert json.loads((proj.schemas_dir / "eco_rtl.json").read_text())["by"] == "rtl flow"
+    tasks = json.loads((proj.schemas_dir / "eco_tasks.json").read_text())
+    assert tasks["eco_rtl"]["hand-off"]["status"] == "done" and tasks["eco_rtl"]["edit"]["status"] == "skipped"
+    assert tasks["eco_spec"]["hand-off"]["status"] == "done" and tasks["eco_spec"]["edit"]["status"] == "skipped"
+    assert tasks["eco_patch"]["cost"]["status"] == "done" and "1 new cell(s) (1× TIEL_X1; planned 1)" in tasks["eco_patch"]["cost"]["note"]
+    # (netlist first: the plan reads the ORG netlist and gives the edits, checked; they are the patch — no AI writes it again)
+    plan = next(s for s in llm.stages if s.name == "eco_rtl_plan")
+    assert "## The ORG netlist: ref/blk/netlist/blk.v" in plan.prompt and root / "ref" / "blk" / "netlist" not in plan.deny_dirs
+    assert "eco_patch" not in names and json.loads((proj.schemas_dir / "eco_rtl.json").read_text())["netlist_edits"] == [
+        "disconnect_net o_r U2/Z", "create_cell U3 [get_lib_cells */TIEL_X1]", "connect_net o_r U3/ZN"]  # (as checked: the library by query)
+    assert "create_cell U3 [get_lib_cells */TIEL_X1]" in (root / "eco" / "patch" / "eco_patch.tcl").read_text()  # (the library by query)
+    assert "connect_net o_r U3/ZN" in (root / "eco" / "patch" / "eco_patch.tcl").read_text()
+    assert "the plan's (eco_rtl)" in tasks["eco_patch"]["edits"]["note"] and "1 new cell(s), 3 edit(s), checked" in tasks["eco_rtl"]["plan"]["note"]
+    # (regenerate eco_rtl: src/rtl back to ORG, a new plan, and the change sent to the rtl flow again — not the kept plan / "handed once")
+    n_plans, n_rtl = names.count("eco_rtl_plan"), len([a for f, a in calls if f == "rtl" and a])
+    await eng.run_step(eng.step("eco_rtl"), regenerate=True)
+    assert [s.name for s in llm.stages].count("eco_rtl_plan") == n_plans + 1
+    assert len([a for f, a in calls if f == "rtl" and a]) == n_rtl + 1 and _status(eng)["eco_rtl"].status == "done"
+
+
+async def test_planned_netlist_edits_that_do_not_fit_go_back_to_the_plan_then_to_the_patch(proj, llm):
+    llm.plan_edits = [["disconnect_net o_r U99/Z"], ["disconnect_net o_r U98/Z"]]  # (refused, and refused again)
+    eng = await _drive(Engine(proj), {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)"})
+    plans = [s.prompt for s in llm.stages if s.name == "eco_rtl_plan"]
+    assert len(plans) == 2 and "Your netlist edits were refused" in plans[1] and "`U99` is not in the netlist" in plans[1]
+    assert all(v.status == "done" for v in _status(eng).values())
+    assert json.loads((proj.schemas_dir / "eco_rtl.json").read_text())["netlist_edits"] == []  # (eco_patch's AI wrote the patch)
+    tasks = json.loads((proj.schemas_dir / "eco_tasks.json").read_text())
+    assert "refused" in tasks["eco_rtl"]["plan"]["note"] and tasks["eco_patch"]["edits"]["note"].endswith("(AI)")
+
+
+async def test_the_plans_exact_rtl_edits_are_applied_as_they_are_and_a_retry_keeps_them(proj, llm):
+    good = {"file": "src/rtl/blk.sv", "old": "  assign o_r = 1'b1;", "new": "  assign o_r = 1'b0;"}
+    llm.plan_edits = [["disconnect_net o_r U99/Z"], list(llm.patch)]  # (refused, then fixed)
+    llm.plan_rtl = [[good], [{**good, "new": "  assign o_r = 1'bx;"}]]  # (the retry's RTL change is not used)
+    eng = await _drive(Engine(proj), {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)"})
+    assert all(v.status == "done" for v in _status(eng).values())
+    names = [s.name for s in llm.stages]
+    assert names.count("eco_rtl_plan") == 2 and "eco_rtl" not in names  # (no LLM rewrote the RTL change)
+    assert "The RTL change they must mirror" in [s.prompt for s in llm.stages if s.name == "eco_rtl_plan"][1]
+    assert "+  assign o_r = 1'b0;" in (proj.root / "eco" / "rtl.diff").read_text()
+    tasks = json.loads((proj.schemas_dir / "eco_tasks.json").read_text())
+    assert "exact edit(s), applied as they are" in tasks["eco_rtl"]["edit"]["note"]
+
+
+async def test_an_exact_rtl_edit_that_does_not_fit_the_file_goes_to_the_ai(proj, llm):
+    llm.plan_rtl = [[{"file": "src/rtl/blk.sv", "old": "assign o_r = 1'b1 ;", "new": "assign o_r = 1'b0;"}]]  # (not in the file)
+    eng = await _drive(Engine(proj), {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)"})
+    assert _status(eng)["eco_rtl"].status == "done"
+    edit = next(s for s in llm.stages if s.name == "eco_rtl")
+    assert "Make exactly these edits" in edit.prompt and "occurs 0 times" in edit.prompt
+
+
+async def test_an_rtl_flow_that_stops_at_its_gate_keeps_the_change(proj, llm, monkeypatch):
+    calls = _owner_flows(monkeypatch, {"rtl": ["gate"]})
+    eng = await _drive(_made_by_flows(proj, "rtl"), {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)"})
+    st = _status(eng)
+    assert st["eco_rtl"].status == "failed" and "ended 'gate'" in st["eco_rtl"].detail and "eco_spec" in [s.name for s in llm.stages]
+    assert "assign o_r = 1'b0;" in (proj.root / "src" / "rtl" / "blk.sv").read_text()
+    eng = await _drive(eng)  # (you finished in the rtl flow; eco again: the change is kept, not sent twice, not restored from ref/)
+    assert _status(eng)["eco_rtl"].status == "done", _status(eng)["eco_rtl"].detail
+    assert [len(a) for f, a in calls if f == "rtl"] == [1, 0]
+    assert "+  assign o_r = 1'b0;" in (proj.root / "eco" / "rtl.diff").read_text()
+
+
+async def test_a_costly_patch_asks_for_a_cheaper_rtl_change(proj, llm):
+    proj.cfg.pipeline.step_options.setdefault("eco_patch", {}).update(max_new_cells=0, max_rounds=1)
+    eng = await _drive(Engine(proj), {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)",
+                                      "eco_patch": "Look for a cheaper RTL change: reuse the TIEH cell U2"})
+    plans = [s.prompt for s in llm.stages if s.name == "eco_rtl_plan"]
+    assert len(plans) == 2 and "From eco_patch" in plans[1] and "reuse the TIEH cell U2" in plans[1] and "1 new cell(s)" in plans[1]
+    st = _status(eng)
+    assert all(v.status == "done" for v in st.values()), [(v.name, v.status, v.detail) for v in st.values()]
+    tasks = json.loads((proj.schemas_dir / "eco_tasks.json").read_text())
+    assert "fix rounds are used up" in tasks["eco_patch"]["cost"]["note"]  # (asked once; the second patch goes on: the rounds are used up)
+    assert json.loads((proj.schemas_dir / "eco_patch.json").read_text())["new_cells"] == 1
+
+
+def test_every_step_lists_its_tasks():
+    flow = flows.load_flow("eco")
+    steps = {s.name: s for s in flows.build_steps(flow)}
+    assert all(steps[n].tasks for n in steps), [n for n in steps if not steps[n].tasks]
+    assert [t for t, _ in steps["eco_rtl"].tasks] == ["plan", "decide", "hand-off", "edit", "check"]
+
+
+LIB = """library (gf) {
+  cell (AOI22D1) {
+    pg_pin (VDD) { voltage_name : "VDD"; }
+    pin (A1) { direction : input; }
+    pin (A2) { direction : input; }
+    pin (B1) { direction : input; }
+    pin (B2) { direction : input; }
+    pin (ZN) { direction : output; power_down_function : "!VDD + VSS"; function : "(!((A1 A2)+(B1 B2)))"; }
+  }
+  cell (AOI221D1) {
+    pin (A1) { direction : input; }
+    pin (A2) { direction : input; }
+    pin (B1) { direction : input; }
+    pin (B2) { direction : input; }
+    pin (C) { direction : input; }
+    pin (ZN) { direction : output; function : "(!(((A1 A2)+(B1 B2))+C))"; }
+  }
+  cell (DFQD1) {
+    ff (IQ,IQN) { next_state : "D"; clocked_on : "CP"; }
+    pin (D) { direction : input; }
+    pin (CP) { direction : input; }
+    pin (Q) { direction : output; function : "IQ"; }
+  }
+}
+"""
+
+
+def test_the_library_gives_each_cell_its_pins_and_function_and_the_check_uses_them(tmp_path):
+    from q3tui.flows.eco.lib import edits, liberty
+    (tmp_path / "gf.lib").write_text(LIB)
+    (tmp_path / "gf.db").write_bytes(b"")
+    db = [str(tmp_path / "gf.db")]
+    c = liberty.cells(db, ["AOI22D1", "DFQD1", "NOPE"])
+    assert set(c) == {"AOI22D1", "DFQD1"} and c["AOI22D1"]["function"] == {"ZN": "(!((A1 A2)+(B1 B2)))"}  # (not power_down_function)
+    assert liberty.line("DFQD1", c["DFQD1"]) == "DFQD1 (in D CP): Q = IQ — ff (IQ,IQN): next_state D, clocked_on CP"
+    net = tmp_path / "n.v"
+    net.write_text("module t ( a, b, z );\n  input a, b;\n  output z;\n  AOI22D1 U1 ( .A1(a), .A2(b), .B1(a), .B2(b), .ZN(z) );\n"
+                   "  AOI221D1 U9 ( .A1(a), .A2(b), .B1(a), .B2(b), .C(a), .ZN(n9) );\nendmodule\n")
+    block = edits.cells_block(net, db)
+    assert "- AOI22D1 (in A1 A2 B1 B2): ZN = (!((A1 A2)+(B1 B2))) [1]" in block and "never a guess from the name" in block
+    assert edits.cells_block(net) .startswith("Cells the netlist instantiates (library cells you can use")  # (no .lib: names only)
+    pins, text = edits.lib_pins(net, db), net.read_text()
+    assert tcl.check_structure(["create_net n1", "connect_net n1 U1/C"], text, pins) == [
+        "line 2: `U1` is a AOI22D1, which has no pin `C` (its pins: A1 A2 B1 B2 ZN)"]
+    swap = tcl.check_structure(["change_link U1 [get_lib_cells */AOI221D1]", "create_net n1", "connect_net n1 U1/C"], text, pins)
+    assert len(swap) == 1 and "cannot become AOI221D1" in swap[0]  # (the pin C is there once swapped; the swap itself is refused)
+    assert tcl.check_structure(["remove_cell U1", "create_cell U1 [get_lib_cells */AOI221D1]", "create_net n1", "connect_net n1 U1/C",
+                                "connect_net z U1/ZN"], text, pins) == []

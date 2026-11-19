@@ -20,10 +20,16 @@ EQ2_JSON = "eco_eq2.json"
 STA_JSON = "eco_sta.json"
 SPEC_JSON = "eco_spec.json"
 VERIFY_JSON = "eco_verify.json"
+TASKS_JSON = "eco_tasks.json"  # schemas/: {step: {task: {status, note}}}: what the tasks of each step did in its last run
 CONCERN_KEEP, CONCERN_OWN = "Keep the change", "My answer"  # (the options of a concern question: ask_concerns)
 
 # the inputs when you take the defaults: what the asic flow leaves (`{top}`: the top module)
 DEFAULTS = {"rtl": "src/rtl/filelist.f", "netlist": "build/syn/asic/netlist/{top}.v", "requirement": "eco/requirement.md"}
+
+
+def task_prompt(task_file: str) -> str:
+    """The prompt of a task: `<step>/tasks/<task>.md` beside its code `<task>.py` (workflow `flows/eco/` → step `<step>/` → task)."""
+    return Path(task_file).with_suffix(".md").read_text().strip()
 
 
 class EcoStep(StepQuestions, AsicStep):
@@ -60,9 +66,16 @@ class EcoStep(StepQuestions, AsicStep):
         return (step.options if step else {}).get(key)
 
     def libraries(self, engine) -> list[str]:
-        """The `.db` libraries: `library` of the eco_inputs step (one setting for the flow), else this step's own."""
+        """The `.db` libraries: `library` of the eco_inputs step (one setting for the flow), else this step's own, else the library the
+        asic flow synthesized the ORG netlist with (`schemas/asic_synth.json` of the ref, then of the project)."""
         import os
         raw = self._inputs_step_option(engine, "library") or self.options.get("library")
+        if not raw:
+            ref = self.ref_dir(engine)
+            for d in ([ref / "schemas"] if ref else []) + [engine.project.schemas_dir]:
+                raw = (read_json(d / "asic_synth.json", {}) or {}).get("library")
+                if raw:
+                    break
         items = [raw] if isinstance(raw, str) else list(raw or [])
         return [str(Path(os.path.expandvars(str(x))).expanduser()) for x in items if str(x).strip()]
 
@@ -171,7 +184,8 @@ class EcoStep(StepQuestions, AsicStep):
         # (+ the .db of the memory macros asic_macro compiled: the netlist instantiates them)
         libs = list(dict.fromkeys([*self.libraries(engine), *self.macro_dbs(engine)]))
         if not libs:
-            raise StepFailed("no library: set `library` (the .db of the standard cells) of eco_inputs (Settings, or q3tui.yaml step_options)")
+            raise StepFailed("no library: set `library` (the .db of the standard cells) of eco_inputs (Settings, or q3tui.yaml step_options); "
+                             "no schemas/asic_synth.json gives it")
         missing = [x for x in libs if not Path(x).is_file()]
         if missing:
             raise StepFailed(f"library not found: {', '.join(missing)}")
@@ -218,6 +232,55 @@ class EcoStep(StepQuestions, AsicStep):
         meta, n = self.rounds(ctx)
         ctx.engine.request_change(target, text)
         meta["loop"], meta["rounds"] = True, n + 1
+
+    # -- Workflow → Step → Task: the tasks of a step ---------------------------------------------------------------
+    tasks: tuple[tuple[str, str], ...] = ()  # ((name, what it does), …): this step's tasks in order (its Tasks tab, docs/spec/eco-flow.md)
+
+    def task(self, ctx, name: str, note: str = "", status: str = "done") -> None:
+        """What task `name` of this step did in this run (done / skipped / waiting / handed / failed): a row of the step's Tasks tab, kept in
+        schemas/eco_tasks.json. The first record of a run clears what the step's tasks did in the run before."""
+        data = self.read(ctx.engine, TASKS_JSON, {}) or {}
+        mine = dict(data.get(self.name) or {}) if getattr(ctx, "_eco_tasks", False) else {}
+        ctx._eco_tasks = True
+        mine[name] = {"status": status, "note": " ".join(str(note).split())[:400]}
+        self.write(ctx.engine, TASKS_JSON, {**data, self.name: mine})
+
+    # -- hand-off to the flow that owns the spec / the RTL (project mode) ---------------------------------------------
+    def owner_made(self, engine, step: str) -> bool:
+        """The owner flow's `step` (the spec flow's `spec`, the rtl flow's `rtl`) made what the ECO changes — its result, not your own files:
+        that flow applies the ECO's change. (Your own spec / RTL: the ECO edits it itself, as on RTL from outside the project.)"""
+        rec = engine.state.steps.get(step)
+        return self.mode(engine) == "project" and rec is not None and rec.status == "done" and rec.origin != "user"
+
+    async def hand_to_owner(self, ctx, flow: str, step: str, requests: list[str], key: str) -> str:
+        """The change requests for `step` of the flow `flow` (queued once per `key`: a run again — after you reviewed or answered in that
+        flow — does not send them twice), then that flow run on this project; its outcome (complete / gate / failed: …). This engine's
+        state is saved before and the change requests for this flow pulled after (not `reload()`: see pull_requests)."""
+        from q3tui import flows
+        from q3tui.pipeline.engine import Engine
+        meta = ctx.engine.state.step_meta.setdefault(self.name, {})
+        ctx.engine.save()
+        try:
+            other = Engine(ctx.project, ctx.engine.bus, flow=flows.load_flow(flow, ctx.project.root))
+            if meta.get("handed") != key or ctx.regenerate:  # (regenerate restored the ORG files: the change goes again)
+                for r in requests:
+                    other.request_change(step, r)
+                meta["handed"] = key
+            try:
+                return await other.run(yes=self.auto_answer(ctx.engine) or ctx.engine.unattended_run())
+            except StepFailed as exc:
+                return f"failed: {exc}"
+        finally:
+            self.pull_requests(ctx)
+
+    def pull_requests(self, ctx) -> None:
+        """The change requests another flow's run wrote for this flow's steps (dv / Sanity hand-offs to eco_rtl / eco_spec), into this engine's
+        state. (Not `reload()`: inside a step it replaces the state the engine records this step's result in — the result would be lost.)"""
+        from q3tui.pipeline.state import PipelineState
+        disk = PipelineState.load(ctx.engine.state_path)
+        for s in ("eco_rtl", "eco_spec"):
+            if disk.feedback.get(s):
+                ctx.engine.state.feedback[s] = list(disk.feedback[s])
 
     # -- questions ------------------------------------------------------------------------------------------------
     def answers(self, engine) -> dict[str, str]:

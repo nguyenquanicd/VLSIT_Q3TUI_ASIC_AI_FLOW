@@ -4,7 +4,8 @@ from __future__ import annotations
 
 def register(api) -> None:
     api.setting("eco_inputs", "library", "Library (.db)", "text",
-                "The standard-cell library of the ORG netlist: Design Compiler, Formality and PrimeTime read it (a list in q3tui.yaml for several).")
+                "The standard-cell library of the ORG netlist: Design Compiler, Formality and PrimeTime read it (a list in q3tui.yaml for several). "
+                "Empty: the one the asic flow synthesized it with (schemas/asic_synth.json).", nullable=True)
     api.setting("eco_inputs", "top", "Top module", "text", "Empty: schemas/structured_spec.json metadata.top_module.", nullable=True)
     api.setting("eco_inputs", "rtl", "ORG RTL filelist", "text", "Empty (with the two below): the step asks — the asic flow's or your own.", nullable=True)
     api.setting("eco_inputs", "netlist", "ORG netlist (.v)", "text", "The .sdc beside it is the STA's constraints.", nullable=True)

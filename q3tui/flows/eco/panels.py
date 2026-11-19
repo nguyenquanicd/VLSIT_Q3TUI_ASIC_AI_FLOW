@@ -335,6 +335,8 @@ def _patch_brief(app):
     d, _, cmds = _patch(app)
     if not d:
         return NOT_RUN
+    if d.get("status") == "handed":
+        return f"{d.get('new_cells', '?')} new cell(s): sent back to eco_rtl for a cheaper RTL change", "warn"
     cells = [c for c in cmds if c.startswith("create_cell")]
     return f"{len(cmds)} commands · {len(cells)} new cell(s)", "pass"
 
@@ -345,10 +347,14 @@ def _patch_rows(app):
         return []
     by = Counter(c.split()[0] for c in cmds)
     types = Counter(c.split()[-1].rsplit("/", 1)[-1] for c in cmds if c.startswith("create_cell"))
-    rows = [("cmds", "Netlist edits", f"{len(cmds)} commands", _st("pass", "checked")),
-            ("cells", "New cells", ", ".join(f"{n}× {t}" for t, n in types.most_common()) or "none", _st("info", str(sum(types.values())))),
-            ("nets", "New nets", str(by.get("create_net", 0)), _st("info")),
-            ("conn", "Connections", f"{by.get('connect_net', 0)} connect · {by.get('disconnect_net', 0)} disconnect", _st("info"))]
+    rows = [("cmds", "Netlist edits", f"{len(cmds)} commands", _st("pass", "checked"))] if cmds else [
+        ("cmds", "Netlist edits", f"{d.get('commands', '?')} commands — sent back to eco_rtl for a cheaper RTL change", _st("warn", "handed"))]
+    if "new_cells" in d:
+        rows.append(("cost", "Netlist cost (the ECO's first measure)", f"{d['new_cells']} new cell(s) · {d.get('new_nets', 0)} new net(s) · "
+                     f"{d.get('resized', 0)} resized · {d.get('removed', 0)} removed · cell count {d.get('net_cells', d['new_cells'] - d.get('removed', 0)):+d}", _st("warn" if d.get("status") == "handed" else "info")))
+    rows += [("cells", "New cells", ", ".join(f"{n}× {t}" for t, n in types.most_common()) or "none", _st("info", str(sum(types.values())))),
+             ("nets", "New nets", str(by.get("create_net", 0)), _st("info")),
+             ("conn", "Connections", f"{by.get('connect_net', 0)} connect · {by.get('disconnect_net', 0)} disconnect", _st("info"))]
     other = {k: v for k, v in by.items() if k not in ("create_cell", "create_net", "connect_net", "disconnect_net")}
     if other:
         rows.append(("other", "Other edits", ", ".join(f"{v}× {k}" for k, v in other.items()), _st("info")))
@@ -516,17 +522,46 @@ def _brief_summary(brief):
     return summary
 
 
-def _tabs_for(name: str) -> tuple[TabSpec, ...]:
+# -- Tasks: Workflow → Step → Task --------------------------------------------------------------------------------------
+
+_TASK_KIND = {"done": "pass", "skipped": "skip", "waiting": "wait", "handed": "warn", "failed": "fail"}
+
+
+def _task_rows(step):
+    def rows(app):
+        done = (artifact(app, "eco_tasks.json", {}) or {}).get(step.name) or {}
+        return [(n, str(i), n, _one_line(done[n].get("note") if n in done else what, 70),
+                 _st(_TASK_KIND.get(done[n].get("status"), "info"), done[n].get("status", "")) if n in done else _st("info", "—"))
+                for i, (n, what) in enumerate(getattr(step, "tasks", ()), 1)]
+    return rows
+
+
+def _task_detail(step):
+    def detail(app, key):
+        what = dict(getattr(step, "tasks", ())).get(key)
+        if what is None:
+            return ""
+        rec = ((artifact(app, "eco_tasks.json", {}) or {}).get(step.name) or {}).get(key)
+        last = f"**Last run: {rec.get('status')}** — {rec.get('note', '')}" if rec else "_not reached in the last run_"
+        return f"## {step.name} › {key}\n\n{what}\n\n{last}"
+    return detail
+
+
+def _tabs_for(name: str, step=None) -> tuple[TabSpec, ...]:
     title, brief, rows, detail, hint = STEPS[name]
-    return (TabSpec("report", "Report", ("Item", "Value", "Status"), rows, detail, hint, empty="not run yet — run (r)",
+    tabs = (TabSpec("report", "Report", ("Item", "Value", "Status"), rows, detail, hint, empty="not run yet — run (r)",
                     summary=_brief_summary(brief)),
             TabSpec("eco", "ECO", ("#", "Step", "Result", "Status"), _overview_rows, _overview_detail,
                     "the whole ECO flow; the highlighted step's result on the right", summary=_overview_summary))
+    if step is not None and getattr(step, "tasks", ()):
+        tabs += (TabSpec("tasks", "Tasks", ("#", "Task", "Result", "Status"), _task_rows(step), _task_detail(step),
+                         "the tasks of this step in order (workflow → step → task) and what each did in the last run"),)
+    return tabs
 
 
 def _builder(name: str):
     def build(step: "StepDef"):
-        return VlsitPanel(step, _tabs_for(name))
+        return VlsitPanel(step, _tabs_for(name, step))
 
     return build
 
