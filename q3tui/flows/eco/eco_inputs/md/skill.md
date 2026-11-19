@@ -4,7 +4,7 @@ title: ECO inputs (ORG RTL, ORG netlist, requirement)
 deps: []
 gate: none
 options:
-  library: $PDK_ROOT/GF180/globalfoundries-pdk-libs-gf180mcu_fd_sc_mcu7t5v0/build/synopsys/gf180mcu_fd_sc_mcu7t5v0__tt_025C_5v00.db
+  library: null       # the .db (or a list); null: the one the asic flow synthesized the ORG netlist with (schemas/asic_synth.json)
   rtl: null           # the ORG RTL filelist; null (all three): the step asks you — the defaults or your own paths
   netlist: null       # the ORG netlist (.v); the .sdc beside it is the STA's constraints
   requirement: null   # what the ECO must change (markdown)

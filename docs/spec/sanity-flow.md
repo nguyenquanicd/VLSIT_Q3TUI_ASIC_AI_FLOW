@@ -59,7 +59,21 @@ stale, and is given to the LLM as settled. To satisfy an SDC request, change the
 SDC is sdc.json's, or edit your file): the analysis runs again on the new SDC.
 
 Changes propagate as updates: a decision stays while the RTL, the SDC and the knowledge it was made on are unchanged; only new violations and the ones
-waiting for you go to the LLM again (`options.batch`, default 40 violations per call).
+waiting for you go to the LLM again (`options.batch`, default 40 groups per call).
+
+**Groups** (`lib/waivers.py` `groups`, `group_command`). The tool reports one violation per object, so many are the same case (OpenTitan PWM: 34
+`RDC_CORRUPT_OBSERVED` from 34 sources into the one resetless snapshot `reg_snap`). Violations with the same tag that differ in exactly one piece of
+what a waiver names (RDC: one word of the message; CDC: the `-from` or the `-to` object) are a group, largest first:
+
+- The review sees a group once: its first violation, and the members with their object. Its decision applies to every member; a member that
+  differs gets its own decision. Each member keeps its own item (table, check), marked `group` (the first one has `members`).
+- A group's `ask` / `sdc` question is asked once (the first violation's): your answer is the members' too. A group's `fix_rtl` / `spec` is handed off
+  once, naming the other members; they share its hand-off.
+- The waived members of a group get one waiver, a glob: the varying piece as its common prefix `*` common suffix
+  (`waive_rdc -add W_V2_34 … -msg {… at u_pwm_csr/* due to reset i_preset_n is observed at u_pwm_csr/reg_snap/Q\[283:0\] …}`). It is written
+  only when it matches exactly those violations among all of the report's (of that tag); otherwise each is waived on its own. A CDC object glob
+  whose `*` would cross a `/` is not written. `<role>_check` counts as before: the same violations must be waived, nothing more.
+- Checked on PWM with VC Static X-2025.06: 39 RDC waivers → 5, the same report after the check.
 
 ### Knowledge
 

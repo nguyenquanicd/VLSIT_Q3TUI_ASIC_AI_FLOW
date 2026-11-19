@@ -26,17 +26,27 @@ def _problems(commands: list[str], netlist: Path | None) -> list[str]:
     return problems
 
 
+def _qualified(ctx, out: NetlistEdits, netlist: Path | None) -> NetlistEdits:
+    """The edits with each existing instance / net named from the top where it has exactly one place (tcl.qualify)."""
+    if netlist is None or not netlist.is_file():
+        return out
+    commands, notes = tcl.qualify(out.commands, netlist.read_text(errors="replace"))
+    if notes:
+        ctx.emit("log", message=f"named from the top: {len(notes)} object(s) ({', '.join(notes[:3])}{' …' if len(notes) > 3 else ''})")
+    return out.model_copy(update={"commands": commands})
+
+
 async def write_edits(step, ctx, name: str, system: str, task: str, deny: list[Path], netlist: Path | None = None) -> NetlistEdits:
     project = ctx.project
     stage = Stage(name=name, system_prompt=system, prompt=task, cwd=project.root, builtin_tools=["Read", "Grep", "Glob"],
                   output_model=NetlistEdits, deny_dirs=deny)
-    out: NetlistEdits = (await ctx.llm(stage)).output
+    out: NetlistEdits = _qualified(ctx, (await ctx.llm(stage)).output, netlist)
     problems = _problems(out.commands, netlist)
     if problems:
         stage = Stage(name=name, system_prompt=system, cwd=project.root, builtin_tools=["Read", "Grep", "Glob"], output_model=NetlistEdits,
                       deny_dirs=deny, prompt=task + "\n\n## Your previous answer was refused — fix these problems\n"
                       + "\n".join(f"- {p}" for p in problems) + "\n\nPrevious commands:\n" + "\n".join(out.commands))
-        out = (await ctx.llm(stage)).output
+        out = _qualified(ctx, (await ctx.llm(stage)).output, netlist)
         problems = _problems(out.commands, netlist)
         if problems:
             raise StepFailed(f"{name}: the netlist edits are refused: " + "; ".join(problems[:5]))

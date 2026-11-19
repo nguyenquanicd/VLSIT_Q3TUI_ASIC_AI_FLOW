@@ -36,8 +36,12 @@ def _handoff(ops, ids: str) -> str:
         other = others[name]
         plan = step.plan(ops.engine)
         by_id = {v["id"]: v for v in (step.read(ops.engine, report_json(step.role), {}) or {}).get("violations", [])}
+        by_sig = {i["sig"]: i for i in plan.get("items", [])}
         for d in plan.get("items", []):
             tag, plain = f"{step.role}:{d['id']}".upper(), d["id"].upper()
+            if d.get("group"):  # (a member decided as its group: sent once, with the group's first violation; it shares its hand-off)
+                d["handed_off"] = d.get("handed_off") or (by_sig.get(d["group"]) or {}).get("handed_off")
+                continue
             if d.get("handed_off") or (wanted and not ({tag, plain} & wanted)):
                 continue
             if d["action"] == "sdc":  # a constraint the review found missing: applied to the SDC here (only plain SDC commands; else it stays yours)

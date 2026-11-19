@@ -107,6 +107,140 @@ def _has_instance(tree: tuple[str, dict[str, dict[str, str]]], path: str) -> boo
     return True
 
 
+def _paths(tree: tuple[str, dict[str, dict[str, str]]], module: str, prefix: str = "", depth: int = 0) -> list[tuple[str, str]]:
+    """(instance path, module) of every instance of a sub-module below `module`, from the top (`u_core`, `u_core/u_sub`)."""
+    top, mods = tree
+    out = []
+    for inst, cell in mods.get(module, {}).items():
+        if cell in mods and depth < 32:
+            path = f"{prefix}{inst}"
+            out += [(path, cell), *_paths(tree, cell, path + "/", depth + 1)]
+    return out
+
+
+def _where(tree: tuple[str, dict[str, dict[str, str]]], path: str) -> str:
+    """For an instance named without (all of) its hierarchy: where it is, as the edit must name it (`; it is u_core/U12`)."""
+    top, mods = tree
+    leaf = path.replace("\\[", "[").replace("\\]", "]").split("/")[-1]
+    hits = [f"{p}/{leaf}" for p, m in _paths(tree, top) if leaf in mods.get(m, {})]
+    return f"; name it from the top: {' or '.join(f'`{h}`' for h in hits[:3])}" if hits else ""
+
+
+_DECL = re.compile(r"^\s*(?:wire|input|output|inout)\b\s*(?:\[[^\]]*\]\s*)?([^;]+);", re.M)
+
+
+def _nets(netlist: str) -> dict[str, set[str]]:
+    """{module: its net names (ports and wires, without a bus index)} of a gate-level netlist."""
+    return {m.group(1): {n.strip().lstrip("\\").split("[")[0] for d in _DECL.finditer(m.group(2)) for n in d.group(1).split(",") if n.strip()}
+            for m in _MODULE.finditer(netlist)}
+
+
+def qualify(commands: list[str], netlist: str) -> tuple[list[str], list[str]]:
+    """(the edits, what was qualified): each existing instance / net named from the top where it has one place, each cell / net the edits
+    create without a path made in the one module it connects in (`_qualify_once`, until nothing changes)."""
+    notes: list[str] = []
+    for _ in range(4):
+        new, more = _qualify_once(commands, netlist)
+        if new == commands:
+            break
+        commands, notes = new, notes + more
+    return commands, notes
+
+
+def _qualify_once(commands: list[str], netlist: str) -> tuple[list[str], list[str]]:
+    """(the edits, what was qualified): an existing instance or net named without its hierarchy, not at the top and in exactly one place
+    below it, gets its path from the top (`U12/ZN` → `u_core/U12/ZN`), as Design Compiler needs it. Anything else is left as it is (the
+    check says what is wrong)."""
+    tree = _hierarchy(netlist)
+    top, mods = tree
+    nets = _nets(netlist)
+    subs = _paths(tree, top)
+    created = {re.findall(r"\S+", c.strip())[1] for c in commands if re.match(r"\s*create_(cell|net)\s+\S+", c)}
+
+    scopes = dict(subs)
+
+    def where(name: str, kind: str, scope: str = "") -> str | None:
+        plain = name.replace("\\[", "[").replace("\\]", "]")
+        if "/" in plain or plain.startswith("["):
+            return None
+        base = plain.split("[")[0]
+        here = (lambda m: plain in mods.get(m, {})) if kind == "cell" else (lambda m: base in nets.get(m, set()))
+        if scope and here(scopes.get(scope, "")):  # (a pin of a connect_net: in the module of its net first)
+            return f"{scope}/{name}"
+        if here(top) or name in created:
+            return None
+        hits = [p for p, m in subs if here(m)]
+        mine = [c for c in created if c.rsplit("/", 1)[-1] == name]
+        found = [f"{p}/{name}" for p in hits] + mine
+        return found[0] if len(found) == 1 else None
+
+    out, notes = [], []
+    for raw in commands:
+        toks = re.findall(r"\[[^\]]*\]|\S+", raw.strip())
+        if not toks or toks[0].startswith("#"):
+            out.append(raw)
+            continue
+        cmd, args = toks[0], toks[1:]
+        new = list(args)
+        if cmd in ("connect_net", "disconnect_net") and args:
+            new[0] = where(args[0], "net") or args[0]
+            scope = new[0].rsplit("/", 1)[0] if "/" in new[0] and not new[0].startswith("[") else ""
+            for k, pin in enumerate(args[1:], 1):
+                if "/" in pin and not pin.startswith("["):
+                    inst, p_ = pin.rsplit("/", 1)
+                    q2 = where(inst, "cell", scope)
+                    new[k] = f"{q2}/{p_}" if q2 else pin
+            pins = {p.rsplit("/", 2)[0] if p.count("/") >= 2 else "" for p in new[1:] if "/" in p and not p.startswith("[")}
+            if not scope and len(pins) == 1 and next(iter(pins)):  # (a net named without the module its pins are in)
+                new[0] = where(args[0], "net", next(iter(pins))) or new[0]
+        elif cmd in ("size_cell", "change_link", "remove_cell") and args:
+            new[0] = where(args[0], "cell") or args[0]
+        if cmd in ("create_cell", "size_cell", "change_link", "insert_buffer") and len(args) >= 2 and not args[-1].startswith("["):
+            # (the library cell by query: a bare cell (CMD-036) or a library name the AI made up ("TSMC/X") never reach Design Compiler)
+            # shortcut: `*/X` is ambiguous when two loaded libraries have X (several corners / Vt); then name the library from the .db
+            new[-1] = f"[get_lib_cells */{_lib_cell(args[-1])}]"
+        elif cmd == "remove_net" and args:
+            new[0] = where(args[0], "net") or args[0]
+        if new != args:
+            notes += [f"{a} → {b}" for a, b in zip(args, new) if a != b]
+            out.append(" ".join([cmd, *new]))
+        else:
+            out.append(raw)
+    return _move_created(out, notes)
+
+
+def _move_created(commands: list[str], notes: list[str]) -> tuple[list[str], list[str]]:
+    """A cell / net the edits create without a path (at the top) while all it connects to is in one sub-module: created there instead."""
+    rows = [re.findall(r"\[[^\]]*\]|\S+", c.strip()) for c in commands]
+    rows = [r if r and not r[0].startswith("#") else [] for r in rows]
+    new = {r[1] for r in rows if len(r) >= 2 and r[0] in ("create_cell", "create_net") and "/" not in r[1]}
+    scope = lambda path: path.rsplit("/", 1)[0] if "/" in path else ""  # noqa: E731
+    moves: dict[str, str] = {}
+    for name in new:
+        seen = set()
+        for r in rows:
+            if len(r) < 2 or r[0] not in ("connect_net", "disconnect_net") or r[1].startswith("["):
+                continue
+            pins = [x for x in r[2:] if "/" in x and not x.startswith("[")]
+            if r[1] == name:
+                seen |= {scope(x.rsplit("/", 1)[0]) for x in pins if x.split("/", 1)[0] not in new and x.count("/") >= 2}  # (not a bare U1/Z)
+            elif any(x.split("/", 1)[0] == name for x in pins) and r[1] not in new:
+                seen.add(scope(r[1]))
+        if len(seen) == 1 and next(iter(seen)):
+            moves[name] = next(iter(seen))
+    if not moves:
+        return commands, notes
+    out = []
+    for raw, r in zip(commands, rows):
+        if not r:
+            out.append(raw)
+            continue
+        t = [f"{moves[x]}/{x}" if x in moves else (f"{moves[x.split('/', 1)[0]]}/{x}" if x.split("/", 1)[0] in moves and "/" in x else x)
+             for x in r]
+        out.append(" ".join(t) if t != r else raw)
+    return out, notes + [f"{n} → {d}/{n} (created where it connects)" for n, d in moves.items()]
+
+
 def check_structure(commands: list[str], netlist: str) -> list[str]:
     """What the edits do to the netlist, checked before Design Compiler runs them: the library cells they name are cells the netlist
     already uses, the instances they touch exist (or are created by them), a created cell and a created net get connected."""

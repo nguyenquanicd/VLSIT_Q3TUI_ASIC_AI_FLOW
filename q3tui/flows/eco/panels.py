@@ -516,17 +516,46 @@ def _brief_summary(brief):
     return summary
 
 
-def _tabs_for(name: str) -> tuple[TabSpec, ...]:
+# -- Tasks: Workflow → Step → Task --------------------------------------------------------------------------------------
+
+_TASK_KIND = {"done": "pass", "skipped": "skip", "waiting": "wait", "handed": "warn", "failed": "fail"}
+
+
+def _task_rows(step):
+    def rows(app):
+        done = (artifact(app, "eco_tasks.json", {}) or {}).get(step.name) or {}
+        return [(n, str(i), n, _one_line(done[n].get("note") if n in done else what, 70),
+                 _st(_TASK_KIND.get(done[n].get("status"), "info"), done[n].get("status", "")) if n in done else _st("info", "—"))
+                for i, (n, what) in enumerate(getattr(step, "tasks", ()), 1)]
+    return rows
+
+
+def _task_detail(step):
+    def detail(app, key):
+        what = dict(getattr(step, "tasks", ())).get(key)
+        if what is None:
+            return ""
+        rec = ((artifact(app, "eco_tasks.json", {}) or {}).get(step.name) or {}).get(key)
+        last = f"**Last run: {rec.get('status')}** — {rec.get('note', '')}" if rec else "_not reached in the last run_"
+        return f"## {step.name} › {key}\n\n{what}\n\n{last}"
+    return detail
+
+
+def _tabs_for(name: str, step=None) -> tuple[TabSpec, ...]:
     title, brief, rows, detail, hint = STEPS[name]
-    return (TabSpec("report", "Report", ("Item", "Value", "Status"), rows, detail, hint, empty="not run yet — run (r)",
+    tabs = (TabSpec("report", "Report", ("Item", "Value", "Status"), rows, detail, hint, empty="not run yet — run (r)",
                     summary=_brief_summary(brief)),
             TabSpec("eco", "ECO", ("#", "Step", "Result", "Status"), _overview_rows, _overview_detail,
                     "the whole ECO flow; the highlighted step's result on the right", summary=_overview_summary))
+    if step is not None and getattr(step, "tasks", ()):
+        tabs += (TabSpec("tasks", "Tasks", ("#", "Task", "Result", "Status"), _task_rows(step), _task_detail(step),
+                         "the tasks of this step in order (workflow → step → task) and what each did in the last run"),)
+    return tabs
 
 
 def _builder(name: str):
     def build(step: "StepDef"):
-        return VlsitPanel(step, _tabs_for(name))
+        return VlsitPanel(step, _tabs_for(name, step))
 
     return build
 

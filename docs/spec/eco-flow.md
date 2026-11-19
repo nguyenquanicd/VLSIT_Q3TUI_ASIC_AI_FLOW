@@ -58,10 +58,17 @@ is used once (`concern_asks` in `schemas/eco_spec.json` / `eco_rtl.json`). Auto-
 | 3 | `eco_spec` | human | Project mode: from the ORG spec (`ref/<name>/spec/`), the AI edits `spec/*.md` in place for the requirement, the smallest change (requirement IDs kept, a changed one marked "(ECO)"; never `spec/intent.md`: put back if touched). → `eco/spec.diff`, `schemas/eco_spec.json` (`updated` / `unchanged`). A change request (your review, a Sanity `spec` decision) edits the current spec. External mode: `skipped`. The spec flow's `parse` / `config` take the new spec when dv runs again. |
 | 4 | `eco_rtl` | human | Project mode: the RTL files are the ORG ones again (from `ref/`), then modified in place in `src/rtl`; external mode: the ORG RTL copied to `eco/rtl/` (with its `filelist.f`). First a read-only AI plan of the smallest change (no new flop / port / state / width, outside replicated logic, reuse existing logic; the spec diff is in its prompt). When the requirement or a change request prescribes a way and the plan finds a smaller one with the same function, a blocking question: the smaller change (Recommended; auto-answer takes it) / as asked / your own way (`schemas/eco_rtl_plan.json`). A request from dv / Sanity is judged first (caused by the ECO change? already in the ORG RTL? a testbench / spec issue?): a plan "No RTL change: …" keeps RTL(F) and records it (`declined` in `schemas/eco_rtl.json`). Then the AI edits only RTL(F), that change and nothing more. pyslang must parse it with no error the ORG RTL has not (one retry). → `eco/rtl.diff` (ORG in `ref/` vs RTL(F)), `schemas/eco_rtl.json`. A revision that changes nothing fails. |
 | 5 | `eco_verify` | none | Project mode: asks "run dv and Sanity again?" (option `verify`; auto-answer: yes). Yes: the dv flow, then the Sanity flow (analysis; open violations → the review's hand-off, to `eco_rtl` / `eco_spec`) run within this step (their gates approved only in an unattended run). Both pass (every dv step done, no FAIL / ERROR / TIMEOUT / BLOCKED test; Sanity nothing open) → `passed`. A fix handed to `eco_rtl` / `eco_spec`: the fix loop updates them and this step runs again, up to `max_rounds`; a request `eco_rtl` declined while the check still fails, or the bound: the step fails for you. No / external mode: `skipped`. → `schemas/eco_verify.json` |
-| 6 | `eco_patch` | human | Waits for `eco_verify` `passed` / `skipped`. The AI (read-only) writes Design Compiler netlist edits from the diff and the ORG netlist. Code checks every line against an allow-list (`create_cell`, `connect_net`, `size_cell`, … and the `get_*` queries inside `[]`; no `;`, braces, `exec`, `source`, files), and against the netlist: a library cell must be one the netlist already uses (no placeholder), a touched instance must exist, a new cell or net must get connected. Refused edits go back to the AI once with the reasons. → `eco/patch/eco_patch.tcl`. A new patch drops old timing fixes. A revision with the same edits fails. |
+| 6 | `eco_patch` | human | Waits for `eco_verify` `passed` / `skipped`. The AI (read-only) writes Design Compiler netlist edits from the diff and the ORG netlist; an instance / net named without its hierarchy gets its path from the top where it has exactly one place (`tcl.qualify`). Code checks every line against an allow-list (`create_cell`, `connect_net`, `size_cell`, … and the `get_*` queries inside `[]`; no `;`, braces, `exec`, `source`, files), and against the netlist: a library cell must be one the netlist already uses (no placeholder), a touched instance must exist, a new cell or net must get connected. Refused edits go back to the AI once with the reasons. → `eco/patch/eco_patch.tcl`. A new patch drops old timing fixes. A revision with the same edits fails. |
 | 7 | `eco_apply` | none | Design Compiler (role `asic_synth`): read the ORG netlist, `link`, source the patch then `sta_fix_*.tcl` in order, `check_design`, write `eco/netlist/<top>.v` (Post NETLIST). DC errors: back to `eco_patch` with the error lines, up to `max_rounds`. A failing new timing fix is removed. |
 | 8 | `eco_eq2` | none | Formality on RTL(F) vs Post NETLIST. Fail: the AI analysis (`eco/reports/eq2.md`: causes, owner, recommended fix) and a blocking question: the recommended fix / the other step / your own fix (typed; goes to the step the analysis names, or start with `patch:` / `rtl:`) / stop. Under auto-answer the recommended fix is sent without asking. Up to `max_rounds`. |
 | 9 | `eco_sta` | none | PrimeTime (role `eco_sta`) on the Post NETLIST with `sdc` (default `ref/<name>/netlist/<top>.sdc`, else `constraints/sdc/sdc.tcl`): setup / hold paths, all violators, global timing → `eco/reports/sta_*.rpt`, `sta.md`, `schemas/eco_sta.json`. Only setup fails; hold is reported (before placement). Setup fail: the AI writes `eco/patch/sta_fix_<n>.tcl` (sizing / buffering, same allow-list), `eco_apply`, EQ(2) and STA run again, up to `max_rounds`. |
+
+**Workflow → Step → Task**, as folders: the workflow is `q3tui/flows/eco/` (`FLOW.md`, `addon.py`, `panels.py`, `lib/`); a step is
+`<step>/` (`md/skill.md`: front matter and description; `step.py`: the Step class, whose `run` calls its tasks in order); a task is
+`<step>/<task>/` (`task.py`: `TASK = (name, about)` and its code; `prompt.md` when it calls an LLM, read by `task_prompt`). A task file never
+imports its `step.py` (the loader reads it by path). Each task records what it did in the run (`EcoStep.task`, `schemas/eco_tasks.json`).
+The tasks of each step, one line each: `q3tui/flows/eco/TASKS.md`. There is no "check the inputs" task: the engine asks `missing_input`
+before a step runs.
 
 `max_rounds` (eco_verify, eco_apply, eco_eq2, eco_sta; default `pipeline.max_fix_iterations`) counts the hand-backs since the step last passed,
 across runs (the human gates of `eco_spec` / `eco_rtl` / `eco_patch` end each run). At the bound the step fails and the count starts again.
@@ -72,7 +79,7 @@ still asks.
 
 ## In the TUI
 
-Every ECO step has two tabs before Files / Questions (`q3tui/flows/eco/panels.py`), read from `schemas/eco_*.json` and `eco/`:
+Every ECO step has three tabs before Files / Questions (`q3tui/flows/eco/panels.py`), read from `schemas/eco_*.json` and `eco/`:
 
 - **Report**: the step's result as rows (item, value, a coloured status: pass / fail / check / skipped / waiting), the highlighted row's
   detail on the right: the requirement and the ORG files (eco_inputs), the Formality report or the AI advice (EQ(1), EQ(2)), the summary,
@@ -81,10 +88,11 @@ Every ECO step has two tabs before Files / Questions (`q3tui/flows/eco/panels.py
 - **ECO**: the whole flow, one row per step with its result in one line ("9/9 steps done · 2 with notes to read"); the highlighted step's
   rows on the right. "check" marks a step that passed with concerns (eco_spec, eco_rtl); each concern row says "answer <id>", "kept"
   or "sent back".
+- **Tasks**: the step's tasks in order, what each did in the last run (done / skipped / waiting / handed / failed; "—": not reached).
 
 ## Settings
 
-`eco_inputs`: `library` (the `.db`, read by DC, Formality and PrimeTime), `top`, `rtl`, `netlist`, `requirement`, `ref_name`. `eco_eq1` /
+`eco_inputs`: `library` (the `.db`, read by DC, Formality and PrimeTime; unset: the `library` of `schemas/asic_synth.json` in the ref, then in the project — the one that synthesized the ORG netlist), `top`, `rtl`, `netlist`, `requirement`, `ref_name`. `eco_eq1` /
 `eco_eq2`: `message_filter`, `extra_tcl` (as `asic_lec`). `eco_verify`: `verify` (yes / no), `max_rounds`. `eco_sta`: `sdc`, `max_paths`,
 `max_rounds`. `eco_apply`: `max_rounds`.
 

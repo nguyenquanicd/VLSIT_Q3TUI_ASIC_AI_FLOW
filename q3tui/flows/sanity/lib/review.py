@@ -28,6 +28,11 @@ SDC_OPTIONS = [{"label": "I will update the SDC", "description": "you change con
                {"label": "No SDC change: decide again", "description": "the review looks again, with this answer, for a design reason"}]
 
 
+def _answer(answers: dict[str, str], item: dict) -> str:
+    """Your answer to a decision: to its own question, or to its group's (a member decided as its group is asked once, as the group)."""
+    return answers.get(item["sig"]) or answers.get(item.get("group") or "", "")
+
+
 class WaiverStep(SanityStep):
     system = ""  # the system prompt (the step's md/skill.md)
     skill_path = Path()  # the step folder (md/knowledge.md is the flow's built-in knowledge)
@@ -82,7 +87,7 @@ class WaiverStep(SanityStep):
         end = next((i for i, x in enumerate(lines) if x.startswith("check_")), None)
         return "\n".join(lines[start + 1:end]) if start is not None and end is not None else ""
 
-    def _prompt(self, engine, batch: list[dict], answers: dict[str, str], modules: list[str], prev_by_sig: dict | None = None) -> str:
+    def _prompt(self, engine, groups: list[list[dict]], answers: dict[str, str], modules: list[str], prev_by_sig: dict | None = None) -> str:
         role = self.role
         lines = [f"## {role.upper()} violations to decide (the tool's report: ground truth)",
                  f"Top `{self.top(engine)}`; RTL modules (src/rtl/<module>.sv): {', '.join(modules)}.",
@@ -92,9 +97,16 @@ class WaiverStep(SanityStep):
         if applied:
             lines += ["The tool run adds these after the SDC (`" + engine.project.rel(self.setup_script(engine)) + "`; they are part of the constraints, "
                       "do not ask for them in the SDC):", "```tcl", applied, "```\n"]
-        for v in batch:
+        for g in groups:
+            v = g[0]
             fields = "; ".join(f"{k}={str(x)[:160]}" for k, x in (v.get("fields") or {}).items())
             lines.append(f"- **{v['id']}** {v['severity']} `{v['tag']}`: {v['message'][:300]}" + (f"\n  fields: {fields}" if fields else ""))
+            if len(g) > 1:  # (one decision for the group: the tool reports the same kind once per object)
+                i = waivers.varying(g, role)
+                part = (lambda m: m["message"] if i is None else "".join(waivers._pieces(m, role)[i:i + 1]))
+                lines.append(f"  A GROUP of {len(g)} violations: the same `{v['tag']}`, the same text except one object. Your decision for **{v['id']}** "
+                             "applies to every member: check that it holds for each; give a member its own decision (by its id) only if it differs. "
+                             "Members (their object): " + "; ".join(f"{m['id']} `{part(m)[:100]}`" for m in g))
             sig = waivers.sig_id(role, v)
             if answers.get(sig):
                 lines.append(f"  The user answered: {answers[sig]} (settled: follow it, do not ask again)")
@@ -114,35 +126,52 @@ class WaiverStep(SanityStep):
                         question=f"{v['tag']} is still open after {len(tries)} hand-off(s) (last: {last['text'][:140]}). How should it be settled?",
                         options=["Decide it in the spec: say what the design must do", "Waive it: give the design reason", "Try another RTL fix: give a hint"])
 
-    def _validate(self, engine, out: Review, batch: list[dict], modules: list[str], answers: dict[str, str]) -> list[dict]:
+    def _validate(self, engine, out: Review, groups: list[list[dict]], modules: list[str], answers: dict[str, str]) -> list[dict]:
         by_id = {d.id: d for d in out.decisions}
         items = []
-        for v in batch:
-            d = by_id.get(v["id"]) or Decision(id=v["id"], action="ask", reason="the review gave no decision for this violation",
-                                               question=f"The review made no decision for {v['tag']}: {v['message'][:120]}. How should it be handled?")
-            if d.action == "fix_rtl" and d.module not in modules:
-                d = Decision(id=d.id, action="spec", reason=d.reason, change=f"{d.change} (the review named the module '{d.module}', which is not in the RTL)")
-            if d.action == "fix_rtl" and memory.conflicts_with_requirement(d.reason, d.change):
-                # its own text says the change goes against a requirement: that is the spec's decision (or yours), never a silent RTL change
-                d = Decision(id=d.id, action="spec", reason=d.reason, change=f"{d.change} (an RTL change here would go against a requirement the reason cites: decide the requirement first)")
-            if d.action in ("fix_rtl", "spec"):
-                tries = memory.repeated(engine.project, waivers.sig_id(self.role, v), d.action, d.change or d.reason)
-                if tries:
-                    d = self._ask_repeated(d, v, tries)
-            if d.action == "waive" and not d.reason.strip():
-                d = Decision(id=d.id, action="ask", reason="a waiver needs its evidence and none was given", question=f"Waive {v['tag']}: {v['message'][:120]}?")
-            if d.action == "waive" and waivers.waive_command(v, {"id": v["id"], **d.model_dump()}, self.role) is None:
-                d = Decision(id=d.id, action="ask", reason=f"waivable by the review ({d.reason[:200]}), but the tool's report does not say which objects it is "
-                             "about, so no waive command can be written", question=f"{v['tag']} cannot be waived by command (no objects in the report). Accept it as open?",
-                             options=["Yes, accept it as open", "No, fix the RTL"])
-            if d.action in waivers.OPEN_ASKING and not d.question.strip():
-                d.question = f"{v['tag']}: {d.sdc_request or d.reason}"[:300]
-            items.append(self._item(v, d.model_dump(), answers))
+        for g in groups:
+            first = len(items)
+            for v in g:
+                own = v["id"] in by_id
+                d = by_id.get(v["id"]) or (by_id[g[0]["id"]].model_copy(update={"id": v["id"]}) if g[0]["id"] in by_id else None)
+                items.append(self._checked(engine, v, d, modules, answers))
+                items[-1]["from_group"] = not own
+            rep = items[first]
+            if len(g) > 1:
+                rep["members"] = [v["id"] for v in g]
+            for it in items[first + 1:]:  # (a member decided as its group: its question / hand-off is the group's, asked and sent once)
+                if it.pop("from_group") and it["action"] == rep["action"]:
+                    it["group"] = rep["sig"]
+                    it["answer"] = _answer(answers, it)
+            rep.pop("from_group", None)
         return items
+
+    def _checked(self, engine, v: dict, d: Decision | None, modules: list[str], answers: dict[str, str]) -> dict:
+        """One violation's decision, checked (what the review cannot decide alone becomes a question)."""
+        d = d or Decision(id=v["id"], action="ask", reason="the review gave no decision for this violation",
+                          question=f"The review made no decision for {v['tag']}: {v['message'][:120]}. How should it be handled?")
+        if d.action == "fix_rtl" and d.module not in modules:
+            d = Decision(id=d.id, action="spec", reason=d.reason, change=f"{d.change} (the review named the module '{d.module}', which is not in the RTL)")
+        if d.action == "fix_rtl" and memory.conflicts_with_requirement(d.reason, d.change):
+            # its own text says the change goes against a requirement: that is the spec's decision (or yours), never a silent RTL change
+            d = Decision(id=d.id, action="spec", reason=d.reason, change=f"{d.change} (an RTL change here would go against a requirement the reason cites: decide the requirement first)")
+        if d.action in ("fix_rtl", "spec"):
+            tries = memory.repeated(engine.project, waivers.sig_id(self.role, v), d.action, d.change or d.reason)
+            if tries:
+                d = self._ask_repeated(d, v, tries)
+        if d.action == "waive" and not d.reason.strip():
+            d = Decision(id=d.id, action="ask", reason="a waiver needs its evidence and none was given", question=f"Waive {v['tag']}: {v['message'][:120]}?")
+        if d.action == "waive" and waivers.waive_command(v, {"id": v["id"], **d.model_dump()}, self.role) is None:
+            d = Decision(id=d.id, action="ask", reason=f"waivable by the review ({d.reason[:200]}), but the tool's report does not say which objects it is "
+                         "about, so no waive command can be written", question=f"{v['tag']} cannot be waived by command (no objects in the report). Accept it as open?",
+                         options=["Yes, accept it as open", "No, fix the RTL"])
+        if d.action in waivers.OPEN_ASKING and not d.question.strip():
+            d.question = f"{v['tag']}: {d.sdc_request or d.reason}"[:300]
+        return self._item(v, d.model_dump(), answers)
 
     def _item(self, v: dict, d: dict, answers: dict[str, str]) -> dict:
         sig = waivers.sig_id(self.role, v)
-        return {**d, "id": v["id"], "sig": sig, "answer": answers.get(sig, ""), "handed_off": d.get("handed_off")}
+        return {**d, "id": v["id"], "sig": sig, "answer": _answer(answers, {**d, "sig": sig}), "handed_off": d.get("handed_off")}
 
     async def run(self, ctx: StepContext) -> None:
         engine, project, role = ctx.engine, ctx.project, self.role
@@ -157,15 +186,16 @@ class WaiverStep(SanityStep):
         todo = []
         for v in violations:
             p = prev_by_sig.get(waivers.sig_id(role, v))
-            if p and same and (p["action"] not in waivers.OPEN_ASKING or p.get("answer") == answers.get(p["sig"], "")):
+            if p and same and (p["action"] not in waivers.OPEN_ASKING or p.get("answer") == _answer(answers, p)):
                 kept[v["id"]] = self._item(v, p, answers)
             else:
                 todo.append(v)
         modules = sorted(f.stem for f in self.rtl_files(engine))
         decided: dict[str, dict] = {}
         size = int(self.options.get("batch") or BATCH)
-        for n in range(0, len(todo), size):
-            batch = todo[n:n + size]
+        grouped = waivers.groups(todo, role)  # (the review decides each group once: `batch` counts groups)
+        for n in range(0, len(grouped), size):
+            batch = grouped[n:n + size]
             stage = Stage(name=f"{role}_waivers_{n // size + 1}", system_prompt=self.system, prompt=self._prompt(engine, batch, answers, modules, prev_by_sig),
                           cwd=project.root, builtin_tools=["Read", "Grep", "Glob"], output_model=Review,
                           deny_dirs=[project.src_dir / "tb", project.src_dir / "sva", project.tb_dir, project.model_dir])
@@ -180,7 +210,7 @@ class WaiverStep(SanityStep):
         write_json(self.artifact(engine, waivers_json(role)), plan)
         table.write(self.table_files(engine), role, report, plan)
         n_waive = sum(i["action"] == "waive" for i in items)
-        asking = [i["id"] for i in items if i["action"] in waivers.OPEN_ASKING and not i["answer"] and not i.get("handed_off")]
+        asking = [i["id"] for i in items if i["action"] in waivers.OPEN_ASKING and not i["answer"] and not i.get("handed_off") and not i.get("group")]
         sent = sum(i["action"] in ("fix_rtl", "spec") for i in items)
         ctx.emit("log", message=f"{role.upper()} review: {len(items)} violation(s): {n_waive} waived, {sent} for the RTL / spec, "
                                 f"{sum(i['action'] == 'sdc' for i in items)} SDC request(s), {len(asking)} question(s) for you"
@@ -189,9 +219,11 @@ class WaiverStep(SanityStep):
     # -- questions (to you): the decisions `ask` and `sdc` -----------------------------------------
 
     def _asking(self, engine) -> list[dict]:
-        """The decisions that wait for you, each with your latest answer (the answers file is ahead of the plan until the review runs again)."""
+        """The decisions that wait for you, each with your latest answer (the answers file is ahead of the plan until the review runs again).
+        A group's members are not asked: the group's question (its first violation) stands for them."""
         answers = self.answers(engine)
-        return [{**i, "answer": answers.get(i["sig"], i.get("answer", ""))} for i in self.items(engine) if i["action"] in waivers.OPEN_ASKING and not i.get("handed_off")]
+        return [{**i, "answer": answers.get(i["sig"], i.get("answer", ""))} for i in self.items(engine)
+                if i["action"] in waivers.OPEN_ASKING and not i.get("handed_off") and not i.get("group")]
 
     def question_list(self, engine) -> list[dict]:
         out = []
@@ -222,7 +254,7 @@ class WaiverStep(SanityStep):
         from q3tui.flows.fpga.lib import sdc as sdcmod
 
         has_json = sdcmod.load(engine.project) is not None  # (a hand-written SDC has no sdc.json to add to: its requests stay yours)
-        return [i for i in self.items(engine) if not i.get("handed_off")
+        return [i for i in self.items(engine) if not i.get("handed_off") and not i.get("group")  # (a member goes with its group)
                 and (i["action"] in ("fix_rtl", "spec") or (has_json and i["action"] == "sdc" and sdcmod.extra_lines(i.get("sdc_request", "")) is not None))]
 
     def follow_up(self, engine):

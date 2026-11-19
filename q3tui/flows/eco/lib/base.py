@@ -20,10 +20,16 @@ EQ2_JSON = "eco_eq2.json"
 STA_JSON = "eco_sta.json"
 SPEC_JSON = "eco_spec.json"
 VERIFY_JSON = "eco_verify.json"
+TASKS_JSON = "eco_tasks.json"  # schemas/: {step: {task: {status, note}}}: what the tasks of each step did in its last run
 CONCERN_KEEP, CONCERN_OWN = "Keep the change", "My answer"  # (the options of a concern question: ask_concerns)
 
 # the inputs when you take the defaults: what the asic flow leaves (`{top}`: the top module)
 DEFAULTS = {"rtl": "src/rtl/filelist.f", "netlist": "build/syn/asic/netlist/{top}.v", "requirement": "eco/requirement.md"}
+
+
+def task_prompt(task_file: str) -> str:
+    """The prompt of a task: `prompt.md` in the task's folder (workflow `flows/eco/` → step `<step>/` → task `<step>/<task>/`)."""
+    return (Path(task_file).parent / "prompt.md").read_text().strip()
 
 
 class EcoStep(StepQuestions, AsicStep):
@@ -60,9 +66,16 @@ class EcoStep(StepQuestions, AsicStep):
         return (step.options if step else {}).get(key)
 
     def libraries(self, engine) -> list[str]:
-        """The `.db` libraries: `library` of the eco_inputs step (one setting for the flow), else this step's own."""
+        """The `.db` libraries: `library` of the eco_inputs step (one setting for the flow), else this step's own, else the library the
+        asic flow synthesized the ORG netlist with (`schemas/asic_synth.json` of the ref, then of the project)."""
         import os
         raw = self._inputs_step_option(engine, "library") or self.options.get("library")
+        if not raw:
+            ref = self.ref_dir(engine)
+            for d in ([ref / "schemas"] if ref else []) + [engine.project.schemas_dir]:
+                raw = (read_json(d / "asic_synth.json", {}) or {}).get("library")
+                if raw:
+                    break
         items = [raw] if isinstance(raw, str) else list(raw or [])
         return [str(Path(os.path.expandvars(str(x))).expanduser()) for x in items if str(x).strip()]
 
@@ -218,6 +231,16 @@ class EcoStep(StepQuestions, AsicStep):
         meta, n = self.rounds(ctx)
         ctx.engine.request_change(target, text)
         meta["loop"], meta["rounds"] = True, n + 1
+
+    # -- tasks: workflow → step → task ----------------------------------------------------------------------------
+    def task(self, ctx, name: str, note: str = "", status: str = "done") -> None:
+        """What task `name` of this step did in this run (done / skipped / waiting / handed / failed): a row of the step's Tasks tab, kept in
+        schemas/eco_tasks.json. The first record of a run clears what the step's tasks did in the run before."""
+        data = self.read(ctx.engine, TASKS_JSON, {}) or {}
+        mine = dict(data.get(self.name) or {}) if getattr(ctx, "_eco_tasks", False) else {}
+        ctx._eco_tasks = True
+        mine[name] = {"status": status, "note": " ".join(str(note).split())[:400]}
+        self.write(ctx.engine, TASKS_JSON, {**data, self.name: mine})
 
     # -- questions ------------------------------------------------------------------------------------------------
     def answers(self, engine) -> dict[str, str]:

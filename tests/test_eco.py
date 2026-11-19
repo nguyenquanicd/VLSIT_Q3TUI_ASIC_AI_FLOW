@@ -263,6 +263,16 @@ async def test_eq_reads_a_memory_wrapper_as_its_macro_body(proj):
         assert "blk_sram.sv" in tcl and "mem.db" in tcl and "src/rtl/blk.sv" not in tcl, step
 
 
+def test_without_a_library_setting_the_one_asic_synth_used_is_read(proj):
+    yaml = proj.root / "q3tui.yaml"
+    yaml.write_text(yaml.read_text().replace("    eco_inputs:\n      library: " + str(proj.root / "lib.db") + "\n", ""))
+    eng = Engine(Project.open(proj.root))
+    step = next(s for s in eng.steps if s.kind == "eco.eco_sta")
+    assert step.libraries(eng) == []
+    (proj.schemas_dir / "asic_synth.json").write_text(json.dumps({"library": [str(proj.root / "lib.db")]}))
+    assert step.libraries(eng) == [str(proj.root / "lib.db")]
+
+
 def test_a_passed_asic_lec_stands_for_eq1(proj):
     rtl = [proj.root / "src" / "rtl" / "blk.sv"]
     inputs = {"netlist": "build/syn/asic/netlist/blk.v"}
@@ -324,6 +334,30 @@ async def test_every_step_has_a_report_in_the_tui(proj, tmp_path):
     assert "```diff" in panels.STEPS["eco_rtl"][3](app, "diff") and "o_r" in panels.STEPS["eco_rtl"][3](app, "diff")
     assert "```tcl" in panels.STEPS["eco_patch"][3](app, "cmds") and "connect_net o_r U3/ZN" in panels.STEPS["eco_patch"][3](app, "cmds")
     assert [r[0] for r in panels._overview_rows(app)] == list(panels.STEPS) and panels._overview_summary(app).startswith("9/9 steps done")
+    tasks = json.loads((proj.schemas_dir / "eco_tasks.json").read_text())
+    for step in Engine(proj).steps:  # (the Tasks tab: one row per task, each with a detail; every task of a passed run recorded)
+        [tab] = [t for t in panels._tabs_for(step.name, step) if t.id == "tasks"]
+        got = tab.rows(app)
+        assert [r[0] for r in got] == [n for n, _ in step.tasks] and all(len(r) == 5 and tab.detail(app, r[0]) for r in got), step.name
+        assert step.name in tasks, step.name
+    assert tasks["eco_rtl"]["plan"]["status"] == "done" and tasks["eco_eq2"]["formality"]["status"] == "done"
+
+
+def test_every_task_is_a_folder_of_its_step():
+    # (workflow flows/eco/ → step <step>/ → task <step>/<task>/task.py, prompt.md for an LLM call; no prompt left in skill.md)
+    root = Path(flows.__file__).parent / "eco"
+    steps = {s.name: s for s in flows.build_steps(flows.load_flow("eco"))}
+    assert [t for t, _ in steps["eco_rtl"].tasks] == ["check_requirement", "plan", "decide", "edit", "concerns", "check"]
+    assert [t for t, _ in steps["eco_apply"].tasks] == ["dc"]
+    for name, step in steps.items():
+        assert step.tasks, name
+        for task, about in step.tasks:
+            assert (root / name / task / "task.py").is_file() and about, (name, task)
+        assert "<!-- " not in (root / name / "md" / "skill.md").read_text(), name
+    prompts = sorted(str(p.relative_to(root)) for p in root.glob("*/*/prompt.md"))
+    assert prompts == ["eco_eq1/advise/prompt.md", "eco_eq2/advise/prompt.md", "eco_patch/edits/prompt.md", "eco_rtl/edit/prompt.md",
+                       "eco_rtl/plan/prompt.md", "eco_spec/edit/prompt.md", "eco_sta/fix/prompt.md"], prompts
+    assert (root / "TASKS.md").read_text().count("| `") == sum(len(s.tasks) for s in steps.values())  # (TASKS.md: one line per task)
 
 
 async def test_it_asks_for_the_inputs_first(proj):
@@ -719,3 +753,22 @@ def test_an_instance_inside_a_submodule_is_found_by_its_path():
     assert check_structure(["disconnect_net [get_nets z] u_sub/U7/ZN"], net) == []
     assert check_structure(["disconnect_net [get_nets z] u_sub/U8/ZN"], net) == ["line 1: instance `u_sub/U8` is not in the netlist"]
     assert check_structure(["disconnect_net [get_nets z] U7/ZN"], net) == ["line 1: instance `U7` is not in the netlist"]  # (not at the top)
+
+
+def test_a_name_without_its_hierarchy_is_named_from_the_top():
+    from q3tui.flows.eco.lib.tcl import check_structure, qualify
+    net = ("module sub ( a, z );\n  input a;\n  output z;\n  wire n1;\n  INVD1 U7 ( .I(a), .ZN(n1) );\n  INVD1 U8 ( .I(n1), .ZN(z) );\nendmodule\n"
+           "module top ( a, z, y );\n  input a;\n  output z, y;\n  sub u_sub ( .a(a), .z(z) );\n  sub u_two ( .a(a), .z(y) );\n"
+           "  INVD1 U9 ( .I(a), .ZN(y) );\nendmodule\n")
+    # (U7 / n1 are in both u_sub and u_two: ambiguous, left; in a design with one, they get the path)
+    one = net.replace("  sub u_two ( .a(a), .z(y) );\n", "")
+    out, notes = qualify(["create_net u_sub/eco_n", "disconnect_net n1 U8/I", "connect_net eco_n U8/I", "connect_net a U9/I"], one)
+    assert out == ["create_net u_sub/eco_n", "disconnect_net u_sub/n1 u_sub/U8/I", "connect_net u_sub/eco_n u_sub/U8/I", "connect_net a U9/I"]
+    assert len(notes) == 4 and check_structure(out, one) == []
+    assert qualify(["disconnect_net n1 U8/I"], net)[0] == ["disconnect_net n1 U8/I"]
+    # (a new cell / net made at the top but connected inside u_sub only: made in u_sub; a bare library cell gets its library)
+    out, _ = qualify(["create_cell eco_c INVD1", "create_net eco_m", "disconnect_net n1 U8/I", "connect_net eco_m eco_c/ZN",
+                      "connect_net eco_m U8/I", "connect_net n1 eco_c/I"], one)
+    assert out == ["create_cell u_sub/eco_c [get_lib_cells */INVD1]", "create_net u_sub/eco_m", "disconnect_net u_sub/n1 u_sub/U8/I",
+                   "connect_net u_sub/eco_m u_sub/eco_c/ZN", "connect_net u_sub/eco_m u_sub/U8/I", "connect_net u_sub/n1 u_sub/eco_c/I"]
+    assert check_structure(out, one) == []

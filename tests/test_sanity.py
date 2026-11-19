@@ -40,16 +40,18 @@ if "check_" not in text:  # (the setup's dry run: elaborate with its commands; a
     sys.exit(0)
 role = "rdc" if "check_rdc" in text else "cdc"
 viol = json.loads(Path(%r, role + ".json").read_text())
-waived = set()
-for m in re.finditer(r"^source (\S+)$", text, re.M):  # the review's waivers, sourced after the check
+waived = []
+for m in re.finditer(r"^source (\S+)$", text, re.M):  # the review's waivers, sourced after the check (globs: `*`, `\x` the character x)
     for cmd in Path(m.group(1)).read_text().splitlines():
         sel = re.search(r"-from \{(.*?)\} -to \{(.*?)\}", cmd) or re.search(r"-msg \{(.*?)\}", cmd)
         if sel and not %r:
-            waived.add(tuple(g.replace("\\", "") for g in sel.groups()))
+            waived.append([re.compile(re.escape(g.replace("\\", "")).replace(r"\*", ".*") + r"\Z") for g in sel.groups()])
+def is_waived(tag, src, dst):
+    return any(w[0].match(src) and w[1].match(dst) if len(w) == 2 else w[0].match(tag) or w[0].match(tag + ": " + tag) for w in waived)
 out = re.search(r"-file (\S+_violations\.rpt)", text).group(1)
 lines = []
 for n, (tag, sev, src, dst) in enumerate(viol, 1):
-    if (src, dst) in waived or (tag + ": " + tag,) in waived or (tag,) in waived:
+    if is_waived(tag, src, dst):
         continue
     if role == "rdc":
         lines += ["  %%s  (1 %%s/0 waived)" %% (tag, sev), "  ----", "  1.  %%s" %% tag, ""]
@@ -183,6 +185,37 @@ def test_a_waiver_names_the_violation_by_what_it_is():
     tcl, skipped = waivers.waive_tcl([v], [d, {"id": "V9", "action": "fix_rtl"}], "abc", "cdc")
     assert tcl.count("waive_cdc") == 1 and skipped == []  # (one waiver line: the fix_rtl item has none)
     assert waivers.sig_id("cdc", v) == waivers.sig_id("cdc", dict(v, id="V77")) and waivers.sig_id("cdc", v).startswith("CDC-")
+
+
+def _rdc(i, src, dst="u_csr/reg_snap/Q[283:0] (reset 'no-reset', clock i_pclk:2)", tag="RDC_CORRUPT_OBSERVED"):
+    return {"id": f"V{i}", "tag": tag, "severity": "error", "fields": {},
+            "message": f"Asynchronous reset assertion at {src} due to reset i_preset_n is observed at {dst}"}
+
+
+def test_violations_of_one_kind_are_one_group_and_one_waiver():
+    # (OpenTitan PWM: 34 sources observed at the same resetless snapshot were 34 waivers; one glob waiver says the same)
+    vs = [_rdc(1, "u_csr/reg_a/Q[15:0]"), _rdc(2, "u_csr/reg_b/Q[3:0]"), _rdc(3, "u_csr/reg_c/Q[7:0]"),
+          _rdc(4, "u_csr/reg_req/Q", "u_csr/u_sync/reg_sync/Q[0] (reset i_rst_n_core, clock i_clk_core:1)"),
+          {"id": "V5", "tag": "SETUP_RESET_INFERRED_SOFT", "severity": "error", "fields": {}, "message": "u_rst/u_sync_1/reg_sync_1/Q may be a missing soft reset"},
+          {"id": "V6", "tag": "SETUP_RESET_INFERRED_SOFT", "severity": "error", "fields": {}, "message": "u_rst/u_sync_2/reg_sync_1/Q may be a missing soft reset"}]
+    assert [[v["id"] for v in g] for g in waivers.groups(vs, "rdc")] == [["V1", "V2", "V3"], ["V4"], ["V5", "V6"]]
+    items = [{"id": v["id"], "action": "waive", "rule": "", "reason": "reg_snap reloads during reset"} for v in vs]
+    tcl, skipped = waivers.waive_tcl(vs, items, "abc", "rdc")
+    cmds = [x for x in tcl.splitlines() if x.startswith("waive_rdc")]
+    assert len(cmds) == 3 and skipped == []
+    assert cmds[0].startswith("waive_rdc -add W_V1_3 -tag RDC_CORRUPT_OBSERVED -msg {Asynchronous reset assertion at u_csr/reg_*:0\\] due to reset i_preset_n "
+                              "is observed at u_csr/reg_snap/Q\\[283:0\\] (reset 'no-reset', clock i_pclk:2)} -comment {3 violations V1..V3: ")
+    assert "-msg {u_rst/u_sync_*/reg_sync_1/Q may be a missing soft reset}" in cmds[2]
+    # (a violation the review did not waive that the glob would match too: the group is waived one by one, nothing more)
+    items[1] = {"id": "V2", "action": "fix_rtl", "module": "blk", "change": "c", "reason": "r"}
+    tcl, _ = waivers.waive_tcl(vs, items, "abc", "rdc")
+    assert "W_V1_2" not in tcl and "W_V1 " in tcl and "W_V3 " in tcl and "W_V2" not in tcl
+    # (CDC: -from / -to globs, only where the `*` stays inside one name)
+    cdc = [{"id": f"V{i}", "tag": "CDC_UNSYNC_CTRL", "message": "m", "fields": {"SrcObject": f"u_a/reg_req{i}/Q", "DestObject": "u_b/reg_sync_0/Q"}} for i in (1, 2)]
+    d = [{"id": v["id"], "action": "waive", "rule": "K1", "reason": "r"} for v in cdc]
+    assert "-from {u_a/reg_req*/Q} -to {u_b/reg_sync_0/Q}" in waivers.waive_tcl(cdc, d, "abc", "cdc")[0]
+    cdc[1]["fields"]["SrcObject"] = "u_x/reg_req2/Q"
+    assert waivers.waive_tcl(cdc, d, "abc", "cdc")[0].count("waive_cdc") == 2
 
 
 def test_the_table_has_the_columns_a_review_needs():
@@ -331,6 +364,37 @@ async def test_a_tool_that_ignores_the_waivers_fails_the_check(proj, monkeypatch
     await eng.run(yes=True)
     st = {v.name: v for v in eng.status()}
     assert st["cdc_check"].status == "failed" and "waived but still reported: V1" in st["cdc_check"].detail and "count 3 ≠ 2" in st["cdc_check"].detail
+
+
+async def test_a_group_is_decided_once_waived_once_and_asked_once(proj, monkeypatch):
+    from q3tui.llm import runtime
+
+    group = [("CDC_UNSYNC_CTRL", "error", f"u_a/reg_req{i}/Q", "u_b/reg_sync_0/Q") for i in range(3)]
+    _tools(proj.root, cdc=[*group, ("SETUP_PORT_UNCONSTRAINED", "error", "", "")])
+    fake = ReviewLLM(lambda i: {"V1": dict(action="waive", rule="K1", reason="blk.sv:3 each request is a level held until acknowledged")}.get(i))
+    monkeypatch.setattr(runtime, "run_stage", fake)
+    eng = Engine(Project.open(proj.root))
+    await eng.run(yes=True, stop="cdc_check")
+    prompt = fake.stages[0].prompt
+    assert "A GROUP of 3 violations" in prompt and "V2 `u_a/reg_req1/Q`" in prompt and "**V2**" not in prompt  # (one entry for the group)
+    by = {i["id"]: i for i in json.loads((proj.schemas_dir / "cdc_waivers.json").read_text())["items"]}
+    assert [by[i]["action"] for i in ("V1", "V2", "V3")] == ["waive"] * 3 and by["V1"]["members"] == ["V1", "V2", "V3"]
+    assert by["V2"]["group"] == by["V1"]["sig"] and by["V4"]["action"] == "ask"  # (no decision given for V4: a question)
+    tcl = (proj.root / "build" / "sanity" / "cdc_waive.tcl").read_text()
+    assert tcl.count("waive_cdc") == 1 and "-from {u_a/reg_req*/Q} -to {u_b/reg_sync_0/Q}" in tcl
+    chk = json.loads((proj.schemas_dir / "cdc_check.json").read_text())
+    assert chk["total"] == 4 and chk["waived"] == 3 and chk["open"] == 1 and chk["ok"] is True
+    # (a group the review cannot settle: one question for it, your answer is its members' too)
+    fake.decide = lambda i: {"V1": dict(action="ask", reason="r", question="Is each request held until acknowledged?", options=["Yes", "No"])}.get(i)
+    eng = Engine(Project.open(proj.root))
+    await eng.run(yes=True, regenerate={"cdc_waivers"}, stop="cdc_waivers")
+    step = eng.by_name["cdc_waivers"]
+    qs = step.question_list(eng)
+    assert [q["question"].splitlines()[0] for q in qs] == ["Is each request held until acknowledged?", qs[1]["question"].splitlines()[0]] and len(qs) == 2
+    assert step.answer(eng, qs[0]["id"], "Yes")
+    assert {i["id"]: i["answer"] for i in step._asking(eng)}.get("V1") == "Yes" and step.open_questions(eng) == 1
+    await eng.run(yes=True, stop="cdc_waivers")
+    assert "The user answered: Yes" in fake.stages[-1].prompt and "A GROUP of 3" in fake.stages[-1].prompt
 
 
 async def test_a_clean_analysis_needs_no_llm(proj, monkeypatch):
