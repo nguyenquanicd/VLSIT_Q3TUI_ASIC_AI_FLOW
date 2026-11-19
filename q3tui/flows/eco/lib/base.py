@@ -1,5 +1,5 @@
 """Shared pieces of the ECO flow's steps: the inputs (ORG RTL, ORG netlist, requirement: chosen by `eco_inputs`), where RTL(F), the patch, the
-Post NETLIST, the reports and the results go, the questions, the tool runs and the fix-loop bound."""
+ECO NETLIST, the reports and the results go, the questions, the tool runs and the fix-loop bound."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -150,7 +150,7 @@ class EcoStep(StepQuestions, AsicStep):
         d = self.patch_dir(engine)
         return sorted(d.glob("sta_fix_*.tcl"), key=lambda p: int(p.stem.rsplit("_", 1)[-1])) if d.is_dir() else []
 
-    def post_netlist(self, engine) -> Path:
+    def eco_netlist(self, engine) -> Path:
         return self.eco_dir(engine) / "netlist" / f"{self.top(engine)}.v"
 
     # -- checks -----------------------------------------------------------------------------------------------------

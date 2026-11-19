@@ -1,4 +1,4 @@
-"""ECO step `eco_sta`: STA of the Post NETLIST with PrimeTime (tool role `eco_sta`): setup and hold paths, all violators, the global summary
+"""ECO step `eco_sta`: STA of the ECO NETLIST with PrimeTime (tool role `eco_sta`): setup and hold paths, all violators, the global summary
 (`eco/reports/sta_*.rpt`, `eco/reports/sta.md`). Only setup fails the step (before placement a hold violation is reported, not fixed). A setup
 violation gets a timing fix: a read-only LLM stage writes netlist edits (sizing, buffering; checked like the patch) to
 `eco/patch/sta_fix_<n>.tcl`, eco_apply applies them after the patch, then EQ(2) and this step run again — bounded by `max_rounds`.
@@ -16,7 +16,7 @@ from q3tui.pipeline.base import StepContext
 
 class Step(EcoStep):
     name = "eco_sta"
-    title = "STA of the Post NETLIST (PrimeTime)"
+    title = "STA of the ECO NETLIST (PrimeTime)"
     deps = ("eco_eq2",)
     tasks = (primetime.TASK, fix.TASK)
     tool_roles = ("eco_sta",)
@@ -32,7 +32,7 @@ class Step(EcoStep):
 
     def inputs(self, engine) -> list[Path]:
         sdc = self.sdc(engine)
-        return [self.post_netlist(engine), self.artifact(engine, EQ2_JSON), *([sdc] if sdc else [])]
+        return [self.eco_netlist(engine), self.artifact(engine, EQ2_JSON), *([sdc] if sdc else [])]
 
     def outputs(self, engine) -> list[Path]:
         rep = self.reports_dir(engine)

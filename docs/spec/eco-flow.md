@@ -7,7 +7,7 @@ paths). Code: `q3tui/flows/eco/`. Tests: `tests/test_eco.py`.
 
 ```
 requirement ─┐                      project mode only
-ORG RTL ─────┼─ ref/ ─ EQ(1) ─► SPEC (AI) ─► RTL(F) (AI) ─► dv + Sanity ─► PATCH CMD (AI) ─► Post NETLIST (DC) ─► EQ(2) ─► STA (PrimeTime)
+ORG RTL ─────┼─ ref/ ─ EQ(1) ─► SPEC (AI) ─► RTL(F) (AI) ─► dv + Sanity ─► PATCH CMD (AI) ─► ECO NETLIST (DC) ─► EQ(2) ─► STA (PrimeTime)
 ORG netlist ─┘                                  ▲   ▲            │              ▲    ▲            ▲   │               │
                                                 │   └ their RTL fixes (judged, smallest)  │            └── eq2 fail (you choose)
                                                 └──────────────────────────────── eq2 fail ┘   DC refuses the patch      │
@@ -35,7 +35,7 @@ The mode follows from where the ORG RTL is (`eco_inputs`, `lib/ref.py`):
 
 - The name of `ref/<name>/` is asked (default: the top module; option `ref_name`). A name already taken gets the date and time:
   `ref/<name>_DDMMYYYY_HHMMSS`. `netlist/` holds the ORG netlist and the `.sdc` / `.svf` beside it; `rtl.f` lists the ORG RTL copies
-  (project-relative). The later steps take every ORG artifact from there (EQ(1), the patch, Post NETLIST, EQ(2), STA).
+  (project-relative). The later steps take every ORG artifact from there (EQ(1), the patch, ECO NETLIST, EQ(2), STA).
 - `eco/ref.json` points to it (name, path, mode, created, sources, the file map). It is written once per ECO and no reset deletes it (a step
   run again never snapshots a project the ECO already changed); `ref/` is never deleted by the flow. A new ECO: delete `eco/ref.json`.
 - While a project-mode ECO is on (`eco/ref.json` with `mode: project`), the RTL fixes of the dv flow's triage (`rtl_bug`) and of the Sanity
@@ -59,9 +59,9 @@ is used once (`concern_asks` in `schemas/eco_spec.json` / `eco_rtl.json`). Auto-
 | 4 | `eco_rtl` | human | Project mode: the RTL files are the ORG ones again (from `ref/`), then modified in place in `src/rtl`; external mode: the ORG RTL copied to `eco/rtl/` (with its `filelist.f`). First a read-only AI plan of the smallest change (no new flop / port / state / width, outside replicated logic, reuse existing logic; the spec diff is in its prompt). When the requirement or a change request prescribes a way and the plan finds a smaller one with the same function, a blocking question: the smaller change (Recommended; auto-answer takes it) / as asked / your own way (`schemas/eco_rtl_plan.json`). A request from dv / Sanity is judged first (caused by the ECO change? already in the ORG RTL? a testbench / spec issue?): a plan "No RTL change: …" keeps RTL(F) and records it (`declined` in `schemas/eco_rtl.json`). Then the AI edits only RTL(F), that change and nothing more. pyslang must parse it with no error the ORG RTL has not (one retry). → `eco/rtl.diff` (ORG in `ref/` vs RTL(F)), `schemas/eco_rtl.json`. A revision that changes nothing fails. |
 | 5 | `eco_verify` | none | Project mode: asks "run dv and Sanity again?" (option `verify`; auto-answer: yes). Yes: the dv flow, then the Sanity flow (analysis; open violations → the review's hand-off, to `eco_rtl` / `eco_spec`) run within this step (their gates approved only in an unattended run). Both pass (every dv step done, no FAIL / ERROR / TIMEOUT / BLOCKED test; Sanity nothing open) → `passed`. A fix handed to `eco_rtl` / `eco_spec`: the fix loop updates them and this step runs again, up to `max_rounds`; a request `eco_rtl` declined while the check still fails, or the bound: the step fails for you. No / external mode: `skipped`. → `schemas/eco_verify.json` |
 | 6 | `eco_patch` | human | Waits for `eco_verify` `passed` / `skipped`. The AI (read-only) writes Design Compiler netlist edits from the diff and the ORG netlist; an instance / net named without its hierarchy gets its path from the top where it has exactly one place (`tcl.qualify`). Code checks every line against an allow-list (`create_cell`, `connect_net`, `size_cell`, … and the `get_*` queries inside `[]`; no `;`, braces, `exec`, `source`, files), and against the netlist: a library cell must be one the netlist already uses (no placeholder), a touched instance must exist, a new cell or net must get connected. Refused edits go back to the AI once with the reasons. → `eco/patch/eco_patch.tcl`. A new patch drops old timing fixes. A revision with the same edits fails. |
-| 7 | `eco_apply` | none | Design Compiler (role `asic_synth`): read the ORG netlist, `link`, source the patch then `sta_fix_*.tcl` in order, `check_design`, write `eco/netlist/<top>.v` (Post NETLIST). DC errors: back to `eco_patch` with the error lines, up to `max_rounds`. A failing new timing fix is removed. |
-| 8 | `eco_eq2` | none | Formality on RTL(F) vs Post NETLIST. Fail: the AI analysis (`eco/reports/eq2.md`: causes, owner, recommended fix) and a blocking question: the recommended fix / the other step / your own fix (typed; goes to the step the analysis names, or start with `patch:` / `rtl:`) / stop. Under auto-answer the recommended fix is sent without asking. Up to `max_rounds`. |
-| 9 | `eco_sta` | none | PrimeTime (role `eco_sta`) on the Post NETLIST with `sdc` (default `ref/<name>/netlist/<top>.sdc`, else `constraints/sdc/sdc.tcl`): setup / hold paths, all violators, global timing → `eco/reports/sta_*.rpt`, `sta.md`, `schemas/eco_sta.json`. Only setup fails; hold is reported (before placement). Setup fail: the AI writes `eco/patch/sta_fix_<n>.tcl` (sizing / buffering, same allow-list), `eco_apply`, EQ(2) and STA run again, up to `max_rounds`. |
+| 7 | `eco_apply` | none | Design Compiler (role `asic_synth`): read the ORG netlist, `link`, source the patch then `sta_fix_*.tcl` in order, `check_design`, write `eco/netlist/<top>.v` (ECO NETLIST). DC errors: back to `eco_patch` with the error lines, up to `max_rounds`. A failing new timing fix is removed. |
+| 8 | `eco_eq2` | none | Formality on RTL(F) vs ECO NETLIST. Fail: the AI analysis (`eco/reports/eq2.md`: causes, owner, recommended fix) and a blocking question: the recommended fix / the other step / your own fix (typed; goes to the step the analysis names, or start with `patch:` / `rtl:`) / stop. Under auto-answer the recommended fix is sent without asking. Up to `max_rounds`. |
+| 9 | `eco_sta` | none | PrimeTime (role `eco_sta`) on the ECO NETLIST with `sdc` (default `ref/<name>/netlist/<top>.sdc`, else `constraints/sdc/sdc.tcl`): setup / hold paths, all violators, global timing → `eco/reports/sta_*.rpt`, `sta.md`, `schemas/eco_sta.json`. Only setup fails; hold is reported (before placement). Setup fail: the AI writes `eco/patch/sta_fix_<n>.tcl` (sizing / buffering, same allow-list), `eco_apply`, EQ(2) and STA run again, up to `max_rounds`. |
 
 **Workflow → Step → Task**, as folders: the workflow is `q3tui/flows/eco/` (`FLOW.md`, `addon.py`, `panels.py`, `lib/`); a step is
 `<step>/` (`md/skill.md`: front matter and description; `step.py`: the Step class, whose `run` calls its tasks in order); a task is
@@ -101,6 +101,6 @@ Tool roles: `asic_synth`, `asic_lec` (the asic flow's), `eco_sta` = `pt_shell -f
 
 ## Not done
 
-Formality's own ECO (`create_eco_patch`, licensed separately); hold fixing; a check that the Post NETLIST changed only a little; the
-external filelist's `+incdir` / `+define` in `ref/<name>/rtl.f`; the asic flow is not run again after a project-mode ECO (the Post NETLIST
+Formality's own ECO (`create_eco_patch`, licensed separately); hold fixing; a check that the ECO NETLIST changed only a little; the
+external filelist's `+incdir` / `+define` in `ref/<name>/rtl.f`; the asic flow is not run again after a project-mode ECO (the ECO NETLIST
 is the new netlist). The tests use fake tools (`eco_verify` with stand-ins for the dv and Sanity flows).

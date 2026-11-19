@@ -380,7 +380,7 @@ def _apply_brief(app):
     d = _apply(app)
     if not d:
         return NOT_RUN
-    return (f"Post NETLIST written: {d.get('netlist', '?')}", "pass") if d.get("status") == "pass" else (
+    return (f"ECO NETLIST written: {d.get('netlist', '?')}", "pass") if d.get("status") == "pass" else (
         f"failed: {len(d.get('errors') or [])} error(s)", "fail")
 
 
@@ -394,7 +394,7 @@ def _apply_rows(app):
     warns = len(re.findall(r"(?m)^\s*Warning:", cd))
     rows = [("status", "Result", "the patch applied, no compile (only the edited cells changed)" if ok else "Design Compiler stopped on the patch",
              _st("pass" if ok else "fail", d.get("status", "?"))),
-            ("net", "Post NETLIST", d.get("netlist", "–"), _st("pass", "written") if ok else _st("fail", "none")),
+            ("net", "ECO NETLIST", d.get("netlist", "–"), _st("pass", "written") if ok else _st("fail", "none")),
             ("err", "Errors", str(len(errs)), _st("pass", "none") if not errs else _st("fail", str(len(errs)))),
             ("cd", "check_design warnings", str(warns), _st("pass", "none") if not warns else _st("warn", str(warns)))]
     if d.get("fixes"):
@@ -438,7 +438,7 @@ def _sta_rows(app):
     s, h = d.get("setup") or {}, d.get("hold") or {}
     st = d.get("status", "?")
     nsv, nhv = len(d.get("setup_violations") or []), len(d.get("hold_violations") or [])
-    rows = [("status", "Verdict", {"pass": "timing met on the Post NETLIST", "fixing": "setup violated: timing fixes for eco_apply",
+    rows = [("status", "Verdict", {"pass": "timing met on the ECO NETLIST", "fixing": "setup violated: timing fixes for eco_apply",
                                    "fail": "setup violated"}.get(st, st), _st({"pass": "pass", "fixing": "warn"}.get(st, "fail"), st)),
             ("setup", "Setup WNS", f"{s.get('slack_ns', '?')} ns   {s.get('startpoint', '?')} → {s.get('endpoint', '?')}",
              _st("pass", "met") if s.get("met") else _st("fail", "violated")),
@@ -470,9 +470,9 @@ STEPS: dict[str, tuple[str, Callable, Callable, Callable, str]] = {
                 _change_detail("eco_rtl", "eco/rtl.diff"), "the smallest RTL change against the ORG RTL in ref/"),
     "eco_verify": ("dv + Sanity on RTL(F)", _verify_brief, _verify_rows, _verify_detail, "dv and Sanity must pass on the ECO'd RTL before the netlist ECO"),
     "eco_patch": ("Netlist patch (Tcl)", _patch_brief, _patch_rows, _patch_detail, "the netlist edits for the RTL change, checked against the allow-list"),
-    "eco_apply": ("Post NETLIST (DC)", _apply_brief, _apply_rows, _apply_detail, "Design Compiler applies the patch to the ORG netlist, no compile"),
-    "eco_eq2": ("EQ(2) RTL(F) vs Post NETLIST", _eq_brief(2), _eq_rows(2), _eq_detail(2), "Formality: the Post NETLIST is the ECO'd RTL"),
-    "eco_sta": ("STA Post NETLIST (PT)", _sta_brief, _sta_rows, _sta_detail, "PrimeTime on the Post NETLIST with the ORG constraints"),
+    "eco_apply": ("ECO NETLIST (DC)", _apply_brief, _apply_rows, _apply_detail, "Design Compiler applies the patch to the ORG netlist, no compile"),
+    "eco_eq2": ("EQ(2) RTL(F) vs ECO NETLIST", _eq_brief(2), _eq_rows(2), _eq_detail(2), "Formality: the ECO NETLIST is the ECO'd RTL"),
+    "eco_sta": ("STA ECO NETLIST (PT)", _sta_brief, _sta_rows, _sta_detail, "PrimeTime on the ECO NETLIST with the ORG constraints"),
 }
 
 

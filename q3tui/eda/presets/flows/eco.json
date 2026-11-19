@@ -2,6 +2,6 @@
   "_comment": "Tool roles of the ECO flow (docs/spec/eco-flow.md): Design Compiler (asic_synth) and Formality (asic_lec) are the ASIC flow's roles; eco_sta is PrimeTime. `q3tui tools init` copies them into the project's config/tools.json, where they are yours to edit.",
   "roles": {
     "eco_sta": {"cmd": "pt_shell -f {script}", "parse": {"error": ["^Error:"], "warning": ["^Warning:"]}, "modules": ["synopsys/primeTime"],
-                "timeout_s": 7200, "description": "Synopsys PrimeTime: STA of the ECO's Post NETLIST (the script is written by Q3TUI)"}
+                "timeout_s": 7200, "description": "Synopsys PrimeTime: STA of the ECO's ECO NETLIST (the script is written by Q3TUI)"}
   }
 }

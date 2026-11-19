@@ -109,7 +109,7 @@ class FlowMapScreen(Dialog[str | None]):
                             yield Box(stage("LEC", "RTL"))
                         with self._g("ECO", "eco"):
                             yield Box(stage("EQ(1) · RTL(F) · patch", "ORG RTL, ORG netlist, requirement"))
-                            yield Box(stage("Post NETLIST · EQ(2) · STA", "patch"))
+                            yield Box(stage("ECO NETLIST · EQ(2) · STA", "patch"))
                     with self._g("Sanity", "sanity", classes="col"):
                         yield Box(stage("CDC", "Spec, RTL") + "  → waivers")
                         yield Box(stage("RDC", "Spec, RTL") + "  → waivers")

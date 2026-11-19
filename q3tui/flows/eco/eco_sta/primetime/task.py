@@ -1,4 +1,4 @@
-"""Task `primetime` of eco_sta: STA of the Post NETLIST with PrimeTime (tool role `eco_sta`): setup and hold paths, all violators, the global
+"""Task `primetime` of eco_sta: STA of the ECO NETLIST with PrimeTime (tool role `eco_sta`): setup and hold paths, all violators, the global
 summary (`eco/reports/sta_*.rpt`, `eco/reports/sta.md`). Only setup fails the step (before placement a hold violation is reported, not fixed)."""
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from q3tui.flows.eco.lib import tcl
 from q3tui.flows.eco.lib.base import STA_JSON
 from q3tui.pipeline.base import StepContext, StepFailed
 
-TASK = ("primetime", "PrimeTime on the Post NETLIST with the ORG constraints: setup / hold (hold reported only, before placement)")
+TASK = ("primetime", "PrimeTime on the ECO NETLIST with the ORG constraints: setup / hold (hold reported only, before placement)")
 REPORTS = ("sta_setup.rpt", "sta_hold.rpt", "sta_constraints.rpt", "sta_global.rpt", "sta_check_timing.rpt")
 
 
 def sta_md(result: dict, fixes: list[str], note: str) -> str:
     s, h = result.get("setup") or {}, result.get("hold") or {}
-    lines = ["# STA of the Post NETLIST (PrimeTime)", "", f"- Verdict: **{note}**",
+    lines = ["# STA of the ECO NETLIST (PrimeTime)", "", f"- Verdict: **{note}**",
              f"- Setup: worst slack {s.get('slack_ns', '?')} ns ({'met' if s.get('met') else 'VIOLATED'}), {s.get('startpoint', '?')} → {s.get('endpoint', '?')}",
              f"- Hold: worst slack {h.get('slack_ns', '?')} ns ({'met' if h.get('met') else 'violated: reported only, before placement'})",
              f"- Violations: {len(result.get('setup_violations', []))} setup, {len(result.get('hold_violations', []))} hold "
@@ -32,7 +32,7 @@ async def run(step, ctx: StepContext) -> dict | None:
     engine, project = ctx.engine, ctx.project
     top, libs = step.top(engine), step.need_libraries(engine)
     tools = await step.need_tool(engine, "eco_sta", "module synopsys/primeTime")
-    work, rep, post = step.build_dir(engine), step.reports_dir(engine), step.post_netlist(engine)
+    work, rep, post = step.build_dir(engine), step.reports_dir(engine), step.eco_netlist(engine)
     sdc = step.sdc(engine)
     if sdc is None:
         step.task(ctx, "primetime", "not run: no constraints", "failed")

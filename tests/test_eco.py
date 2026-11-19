@@ -35,7 +35,7 @@ NETLIST = """module blk ( i_clk, i_rst_n, i_a, i_v, o_y, o_r );
 endmodule
 """
 SPEC = "# blk\n\n## Outputs\n\no_r is always 1.\n"
-# Design Compiler: writes the Post NETLIST (the ORG netlist + the edit files it sourced and their edits, as comments); an edit naming BAD is an error
+# Design Compiler: writes the ECO NETLIST (the ORG netlist + the edit files it sourced and their edits, as comments); an edit naming BAD is an error
 FAKE_DC = """import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text()
@@ -58,7 +58,7 @@ Path(sys.argv[2], 'lec.rpt').write_text('points\\n')
 print('Verification ' + res)
 print('  12 Passing compare points' if res == 'SUCCEEDED' else '  3 Failing compare points')
 """
-# PrimeTime: setup met once a timing fix was sourced into the Post NETLIST
+# PrimeTime: setup met once a timing fix was sourced into the ECO NETLIST
 FAKE_PT = """import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text()
@@ -341,6 +341,22 @@ async def test_every_step_has_a_report_in_the_tui(proj, tmp_path):
         assert [r[0] for r in got] == [n for n, _ in step.tasks] and all(len(r) == 5 and tab.detail(app, r[0]) for r in got), step.name
         assert step.name in tasks, step.name
     assert tasks["eco_rtl"]["plan"]["status"] == "done" and tasks["eco_eq2"]["formality"]["status"] == "done"
+
+
+async def test_an_unattended_eco_answers_the_dv_flows_questions(proj, monkeypatch):
+    # (--yes: the dv / Sanity run inside eco_verify takes the defaults of its blocking questions, as the ECO goes on without you)
+    from types import SimpleNamespace
+    from q3tui.flows.eco.eco_verify.dv import task as dv
+    seen = []
+
+    async def fake_run(self, yes=False, **kw):
+        seen.append((yes, self.project.cfg.pipeline.auto_answer))
+        return "complete"
+    monkeypatch.setattr(Engine, "run", fake_run)
+    eng = Engine(Project.open(proj.root))
+    ctx = SimpleNamespace(engine=eng, project=eng.project)
+    assert await dv.other(ctx, "dv", True) == "complete" and await dv.other(ctx, "dv", False) == "complete"
+    assert seen == [(True, True), (False, False)] and eng.project.cfg.pipeline.auto_answer is False
 
 
 def test_every_task_is_a_folder_of_its_step():

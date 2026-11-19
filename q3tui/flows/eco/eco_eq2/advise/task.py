@@ -15,12 +15,12 @@ async def run(step, ctx: StepContext, result: dict, prev: dict):
     engine, project = ctx.engine, ctx.project
     rep = step.reports_dir(engine)
     advice = await eq.advise(step, ctx, PROMPT,
-                             f"EQ(2): RTL(F) (reference, {project.rel(step.rtl_f_filelist(engine))}) against the Post NETLIST "
-                             f"{project.rel(step.post_netlist(engine))} (the ORG netlist {project.rel(step.org_netlist(engine))} with the patch "
+                             f"EQ(2): RTL(F) (reference, {project.rel(step.rtl_f_filelist(engine))}) against the ECO NETLIST "
+                             f"{project.rel(step.eco_netlist(engine))} (the ORG netlist {project.rel(step.org_netlist(engine))} with the patch "
                              f"{project.rel(step.patch_file(engine))}) is {result['status'].replace('_', ' ')}. Why, and who fixes it?",
                              [rep / "eq2_lec.rpt", rep / "eq2_fm.log", step.rtl_diff(engine), step.patch_file(engine)])
     auto = list(prev.get("auto") or [])  # (the fixes auto-answer sent since EQ(2) last passed)
-    (rep / "eq2.md").write_text(eq.advice_md("EQ(2): RTL(F) vs Post NETLIST — FAILED", result, advice)
+    (rep / "eq2.md").write_text(eq.advice_md("EQ(2): RTL(F) vs ECO NETLIST — FAILED", result, advice)
                                 + "".join(f"\nAuto-answer round {a['round']}: the recommended fix went to `{a['to']}`: {a['fix']}\n" for a in auto))
     step.task(ctx, "advise", f"{advice.summary} → {STEP_OF.get(advice.owner, 'eco_patch')}")
     return advice

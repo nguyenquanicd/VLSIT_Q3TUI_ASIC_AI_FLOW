@@ -20,10 +20,14 @@ def pull_requests(ctx: StepContext) -> None:
 
 
 async def other(ctx: StepContext, name: str, yes: bool) -> str:
-    """Run the flow `name` on this project (its own engine; this one saved before, its requests pulled after)."""
+    """Run the flow `name` on this project (its own engine; this one saved before, its requests pulled after). Unattended (`yes`): its
+    blocking questions take their defaults too (auto-answer for that run), as the ECO run goes on without you."""
     from q3tui import flows
     from q3tui.pipeline.engine import Engine
     ctx.engine.save()
+    pc = ctx.project.cfg.pipeline
+    was = pc.auto_answer
+    pc.auto_answer = was or yes
     try:
         eng = Engine(ctx.project, ctx.engine.bus, flow=flows.load_flow(name, ctx.project.root))
         try:
@@ -31,6 +35,7 @@ async def other(ctx: StepContext, name: str, yes: bool) -> str:
         except StepFailed as exc:
             return f"failed: {exc}"
     finally:
+        pc.auto_answer = was
         pull_requests(ctx)
 
 

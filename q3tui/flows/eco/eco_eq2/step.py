@@ -1,4 +1,4 @@
-"""ECO step `eco_eq2`: EQ(2), the Post NETLIST against RTL(F) (Formality). Not equivalent: an LLM reads the report with the RTL change and the
+"""ECO step `eco_eq2`: EQ(2), the ECO NETLIST against RTL(F) (Formality). Not equivalent: an LLM reads the report with the RTL change and the
 patch (`eco/reports/eq2.md`: causes, who owns the fix, the recommended fix) and you are asked how to fix it: the recommended fix, the other step,
 your own words (to the step the analysis names; `patch:` / `rtl:` first to choose), or stop. Your answer goes to that step once; the fix loop
 then runs it and EQ(2) again. Under auto-answer (pipeline.auto_answer, gate mode auto_answer, --yes) the recommended fix is sent without asking.
@@ -17,14 +17,14 @@ from q3tui.pipeline.base import StepContext
 
 class Step(EcoStep):
     name = "eco_eq2"
-    title = "EQ(2): RTL(F) vs Post NETLIST"
+    title = "EQ(2): RTL(F) vs ECO NETLIST"
     deps = ("eco_apply",)
     tasks = (formality.TASK, advise.TASK, route_task.TASK)
     tool_roles = ("asic_lec",)
     hashed_options = ("message_filter", "extra_tcl")
 
     def inputs(self, engine) -> list[Path]:
-        return [self.rtl_f_filelist(engine), *self.rtl_f_files(engine), self.post_netlist(engine), self._q_paths(engine)[1]]
+        return [self.rtl_f_filelist(engine), *self.rtl_f_files(engine), self.eco_netlist(engine), self._q_paths(engine)[1]]
 
     def outputs(self, engine) -> list[Path]:
         return [f for f in (self.artifact(engine, EQ2_JSON), self.reports_dir(engine) / "eq2.md") if f.is_file()]
@@ -33,8 +33,8 @@ class Step(EcoStep):
         return [*self.outputs(engine), *self._q_paths(engine)]
 
     def missing_input(self, engine) -> str | None:
-        if not self.post_netlist(engine).is_file() or (self.read(engine, APPLY_JSON, {}) or {}).get("status") != "pass":
-            return "the Post NETLIST is needed first (step eco_apply)"
+        if not self.eco_netlist(engine).is_file() or (self.read(engine, APPLY_JSON, {}) or {}).get("status") != "pass":
+            return "the ECO NETLIST is needed first (step eco_apply)"
         return None
 
     async def run(self, ctx: StepContext) -> None:

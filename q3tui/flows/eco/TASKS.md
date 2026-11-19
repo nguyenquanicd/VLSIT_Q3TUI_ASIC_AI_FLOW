@@ -68,13 +68,13 @@ q3tui/flows/eco/                 workflow: FLOW.md, addon.py, panels.py, lib/ (d
 
 | Task | Làm gì |
 |---|---|
-| `dc` | Design Compiler áp patch lên ORG netlist ra Post NETLIST; lỗi quay về `eco_patch`. |
+| `dc` | Design Compiler áp patch lên ORG netlist ra ECO NETLIST; lỗi quay về `eco_patch`. |
 
 ## eco_eq2
 
 | Task | Làm gì |
 |---|---|
-| `formality` | Formality so RTL mới với Post NETLIST. |
+| `formality` | Formality so RTL mới với ECO NETLIST. |
 | `advise` | Khi không khớp: AI tìm nguyên nhân và step nên sửa (`eco_rtl` hay `eco_patch`). |
 | `route` | Chuyển lỗi về đúng step đó, theo câu trả lời của bạn hoặc đề xuất (auto-answer). |
 
@@ -82,5 +82,5 @@ q3tui/flows/eco/                 workflow: FLOW.md, addon.py, panels.py, lib/ (d
 
 | Task | Làm gì |
 |---|---|
-| `primetime` | PrimeTime kiểm setup / hold của Post NETLIST với constraint ORG. |
+| `primetime` | PrimeTime kiểm setup / hold của ECO NETLIST với constraint ORG. |
 | `fix` | Khi vi phạm setup: AI viết lệnh sửa timing, rồi quay về `eco_apply`. |

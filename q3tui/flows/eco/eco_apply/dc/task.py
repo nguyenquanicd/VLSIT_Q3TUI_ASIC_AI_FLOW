@@ -1,5 +1,5 @@
 """Task `dc` of eco_apply: Design Compiler (tool role `asic_synth`) reads the ORG netlist, links it, sources the patch and then the timing
-fixes of eco_sta in order, and writes the Post NETLIST — no compile. Errors of the patch go back to eco_patch (the fix loop, bounded); an
+fixes of eco_sta in order, and writes the ECO NETLIST — no compile. Errors of the patch go back to eco_patch (the fix loop, bounded); an
 error of a timing fix removes that fix and fails the step."""
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from q3tui.flows.eco.lib import tcl
 from q3tui.flows.eco.lib.base import APPLY_JSON
 from q3tui.pipeline.base import StepContext, StepFailed
 
-TASK = ("dc", "Design Compiler applies the patch (+ timing fixes) to the ORG netlist and writes the Post NETLIST — no compile; "
+TASK = ("dc", "Design Compiler applies the patch (+ timing fixes) to the ORG netlist and writes the ECO NETLIST — no compile; "
               "its error lines go back to eco_patch")
 
 
@@ -18,7 +18,7 @@ async def run(step, ctx: StepContext) -> None:
     engine, project = ctx.engine, ctx.project
     top, libs = step.top(engine), step.need_libraries(engine)
     tools = await step.need_tool(engine, "asic_synth", "module synopsys/syn")
-    work, post, patch = step.build_dir(engine), step.post_netlist(engine), step.patch_file(engine)
+    work, post, patch = step.build_dir(engine), step.eco_netlist(engine), step.patch_file(engine)
     fixes = step.sta_fixes(engine)
     prev = step.read(engine, APPLY_JSON, {}) or {}
     post.unlink(missing_ok=True)
@@ -39,16 +39,16 @@ async def run(step, ctx: StepContext) -> None:
     if done:
         step.write(engine, APPLY_JSON, {"status": "pass", "patch_sha256": patch_sha, "fixes": [project.rel(f) for f in fixes],
                                         "netlist": project.rel(post), "log": project.rel(rep / "apply_dc.log")})
-        ctx.emit("log", message=f"Post NETLIST: {project.rel(post)}")
-        step.task(ctx, "dc", f"{what}: Post NETLIST {project.rel(post)}")
+        ctx.emit("log", message=f"ECO NETLIST: {project.rel(post)}")
+        step.task(ctx, "dc", f"{what}: ECO NETLIST {project.rel(post)}")
         step.reset_rounds(ctx)
         return
     post.unlink(missing_ok=True)
     if not errors:
-        step.task(ctx, "dc", "no Post NETLIST written", "failed")
+        step.task(ctx, "dc", "no ECO NETLIST written", "failed")
         from q3tui.eda import tools as toolmod
         toolmod.check_broken(res, "asic_synth")
-        raise StepFailed(f"Design Compiler wrote no Post NETLIST (log: {project.rel(rep / 'apply_dc.log')})")
+        raise StepFailed(f"Design Compiler wrote no ECO NETLIST (log: {project.rel(rep / 'apply_dc.log')})")
     step.write(engine, APPLY_JSON, {"status": "failed", "errors": errors, "patch_sha256": patch_sha, "log": project.rel(rep / "apply_dc.log")})
     if fixes and prev.get("status") == "pass" and prev.get("patch_sha256") == patch_sha:  # the patch applied before: the new timing fix fails
         bad = fixes[-1]

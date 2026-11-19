@@ -51,7 +51,7 @@ def run(step, ctx: StepContext, r, summary: str) -> str:
     diff = unified_diff(project, pairs)
     old = step.rtl_diff(engine).read_text(errors="replace") if r.update and step.rtl_diff(engine).is_file() else None
     if old is not None and old == diff:
-        # (the same RTL(F): the patch, Post NETLIST and EQ(2) would not run again, the fix loop would stall on the old result)
+        # (the same RTL(F): the patch, ECO NETLIST and EQ(2) would not run again, the fix loop would stall on the old result)
         step.task(ctx, "check", "the revised RTL(F) is the same as before", "failed")
         raise StepFailed(f"the revised RTL(F) is the same as before ({summary[:200]}): fix eco/rtl/ by hand or give eco_rtl another hint")
     step.rtl_diff(engine).write_text(diff)

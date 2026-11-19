@@ -72,9 +72,9 @@ def run(step, ctx: StepContext, result: dict, advice, prev: dict) -> None:
     fix = advice.fix or advice.summary
     rec = STEP_OF.get(advice.owner, "eco_patch")
     rtl_opt = (f"{FIX_RTL} (Recommended): {fix}" if rec == "eco_rtl" else f"{FIX_RTL} (RTL(F) does not do what the requirement asks)",
-               "a change request to eco_rtl; the patch, Post NETLIST and EQ(2) follow")
+               "a change request to eco_rtl; the patch, ECO NETLIST and EQ(2) follow")
     patch_opt = (f"{FIX_PATCH} (Recommended): {fix}" if rec == "eco_patch" else f"{FIX_PATCH} (the edits do not implement the RTL change)",
-                 "a change request to eco_patch; Post NETLIST and EQ(2) follow")
+                 "a change request to eco_patch; ECO NETLIST and EQ(2) follow")
     options = [rtl_opt, patch_opt] if rec == "eco_rtl" else [patch_opt, rtl_opt]
     options += [(f"{OWN}: <type how to fix it>", f"your words go to {rec} (start with `patch:` or `rtl:` to choose the step)"),
                 (f"{STOP}: I fix it by hand", "nothing is sent; run again after your change")]
@@ -93,7 +93,7 @@ def run(step, ctx: StepContext, result: dict, advice, prev: dict) -> None:
         step.task(ctx, "route", f"auto-answer: the recommended fix → {rec} (round {n + 1})", "handed")
         ctx.emit("warning", message=f"EQ(2) failed: {advice.summary[:200]} → recommended fix to {rec} (auto-answer, round {n + 1})")
         return
-    qid = step.ask(engine, f"fail:{sha256_file(step.post_netlist(engine))[:12]}:{sha256_file(step.rtl_f_filelist(engine))[:8]}", "ECOEQ2_",
+    qid = step.ask(engine, f"fail:{sha256_file(step.eco_netlist(engine))[:12]}:{sha256_file(step.rtl_f_filelist(engine))[:8]}", "ECOEQ2_",
                    f"EQ(2) failed ({result.get('failing', '?')} failing point(s)): {advice.summary} Recommended: {fix} (→ {rec}). "
                    f"Take it, pick the other step, or type your own fix.", options)
     asks[qid] = {"owner": advice.owner, "fix": fix, "recommended": rec, "sent": False}

@@ -15,7 +15,7 @@ PROMPT = task_prompt(__file__)
 async def run(step, ctx: StepContext, sta: dict) -> None:
     engine, project = ctx.engine, ctx.project
     result, fixes, sdc, top = sta["result"], sta["fixes"], sta["sdc"], sta["top"]
-    rep, net = step.reports_dir(engine), step.post_netlist(engine)
+    rep, net = step.reports_dir(engine), step.eco_netlist(engine)
     meta, n = step.rounds(ctx)
     if n >= step.round_limit(ctx):
         step.reset_rounds(ctx)
@@ -23,7 +23,7 @@ async def run(step, ctx: StepContext, sta: dict) -> None:
         step.write(engine, STA_JSON, {"status": "fail", **result, "fixes": fixes})
         step.task(ctx, "fix", f"fix rounds used up ({n})", "failed")
         raise StepFailed(f"STA: setup still violated after {n} fix round(s) (worst {result['setup'].get('slack_ns')} ns): see eco/reports/sta.md")
-    task = "\n".join([f"## Setup violations of the Post NETLIST {project.rel(net)} (top `{top}`, constraints {project.rel(sdc)})",
+    task = "\n".join([f"## Setup violations of the ECO NETLIST {project.rel(net)} (top `{top}`, constraints {project.rel(sdc)})",
                       f"Worst slack {result['setup'].get('slack_ns')} ns, {result['setup'].get('startpoint')} → {result['setup'].get('endpoint')}.",
                       f"Read the paths in {project.rel(rep / 'sta_setup.rpt')} and the violators in {project.rel(rep / 'sta_constraints.rpt')}; "
                       f"Grep the netlist for the cells on them.", edits.cells_block(net),
