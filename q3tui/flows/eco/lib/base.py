@@ -6,7 +6,7 @@ from pathlib import Path
 
 import anyio
 
-from q3tui.core.project import read_json
+from q3tui.core.project import read_json, sha256_json
 from q3tui.flows.asic.lib.base import AsicStep
 from q3tui.pipeline.base import StepFailed
 from q3tui.steps.common import Question, QuestionOption, assign_question_ids, load_answers, StepQuestions
@@ -20,6 +20,7 @@ EQ2_JSON = "eco_eq2.json"
 STA_JSON = "eco_sta.json"
 SPEC_JSON = "eco_spec.json"
 VERIFY_JSON = "eco_verify.json"
+CONCERN_KEEP, CONCERN_OWN = "Keep the change", "My answer"  # (the options of a concern question: ask_concerns)
 
 # the inputs when you take the defaults: what the asic flow leaves (`{top}`: the top module)
 DEFAULTS = {"rtl": "src/rtl/filelist.f", "netlist": "build/syn/asic/netlist/{top}.v", "requirement": "eco/requirement.md"}
@@ -147,8 +148,28 @@ class EcoStep(StepQuestions, AsicStep):
             return "no top module (eco_inputs: options.top)"
         return None
 
+    def asic_view(self, engine, files: list[Path]) -> list[Path]:
+        """RTL files as the synthesis read them: a memory wrapper the asic flow implemented with macros (`asic_macro`) replaced by its
+        ASIC body, whether it is the project's file (src/rtl/…) or its ORG copy in ref/<name>/ (the netlist has the macros, so an
+        equivalence check against the behavioural wrapper cannot pass). shortcut: an ECO that edits a memory wrapper itself is not seen
+        by EQ (the ASIC body stands for it); such an ECO needs asic_macro to run again first."""
+        root = engine.project.root
+        impl = {w["file"]: root / w["asic_file"] for w in (self.macros(engine).get("wrappers") or {}).values()
+                if w.get("file") and w.get("asic_file") and (root / w["asic_file"]).is_file()}
+        if not impl:
+            return files
+        ref = self.ref_dir(engine)
+        prefix = f"{engine.project.rel(ref)}/" if ref else None
+
+        def key(f: Path) -> str:
+            rel = engine.project.rel(f)
+            return rel[len(prefix):] if prefix and rel.startswith(prefix) else rel
+
+        return [impl.get(key(f), f) for f in files]
+
     def need_libraries(self, engine) -> list[str]:
-        libs = self.libraries(engine)
+        # (+ the .db of the memory macros asic_macro compiled: the netlist instantiates them)
+        libs = list(dict.fromkeys([*self.libraries(engine), *self.macro_dbs(engine)]))
         if not libs:
             raise StepFailed("no library: set `library` (the .db of the standard cells) of eco_inputs (Settings, or q3tui.yaml step_options)")
         missing = [x for x in libs if not Path(x).is_file()]
@@ -241,6 +262,53 @@ class EcoStep(StepQuestions, AsicStep):
             return None, options[0][0]
         qid = self.ask(ctx.engine, key, prefix, question, options)
         return qid, self.answers(ctx.engine).get(qid)
+
+    # -- the concerns of an AI change (eco_spec, eco_rtl): each one a question to you -----------------------------------------------
+    def ask_concerns(self, ctx, key: dict, concerns: list[str], what: str) -> dict:
+        """Each concern the AI reported with its change becomes a blocking question: keep the change, or your answer (it goes back to
+        this step as a change request). {question id: {"concern": …}}. Under auto-answer nobody is asked: the change is kept, and said.
+        `key` names the change (its diff in it: the same concern of a later revision is a new question)."""
+        if self.auto_answer(ctx.engine):
+            for c in concerns:
+                ctx.emit("warning", message=f"auto-answer: {what} concern: {c[:200]} → {CONCERN_KEEP}")
+            return {}
+        k = sha256_json(key)[:12]
+        asks = {}
+        for c in concerns:
+            # (a prefix per step: question ids are answered by id across the flow — ECOCSPEC1, ECOCRTL1)
+            qid = self.ask(ctx.engine, f"concern:{k}:{sha256_json(c)[:12]}", f"ECOC{self.name.removeprefix('eco_').upper()}", (
+                f"{what}: the AI reports a concern with its change — {c} Keep the change as it is, or tell what to do?"),
+                [(f"{CONCERN_KEEP} (Recommended)", "the concern is accepted as it is: nothing changes"),
+                 (f"{CONCERN_OWN}: <type what to change or decide>", f"your words go back to {self.name} as a change request")])
+            asks[qid] = {"concern": c}
+            ctx.emit("warning", message=f"{what}: concern — answer {qid}: {c[:200]}")
+        return asks
+
+    def concern_answers(self, ctx, prev: dict, key: dict) -> tuple[dict, list[str], list[str]]:
+        """(the concern questions of the last change, your answers not acted on yet as change requests, the questions still open).
+        Only the questions of the same requirement / ORG design (`key`) count; each answer is used once (`used`)."""
+        asks = {q: dict(a) for q, a in (prev.get("concern_asks") or {}).items()} if prev.get("key") == key else {}
+        answers = self.answers(ctx.engine)
+        requests, open_ = [], []
+        for qid, a in asks.items():
+            if a.get("used"):
+                continue
+            answer = answers.get(qid)
+            if answer is None:
+                open_.append(qid)
+                continue
+            a.update(used=True, answer=answer)
+            if answer_is(answer, CONCERN_KEEP, "keep", "giữ"):
+                continue
+            words = answer.strip()
+            if answer_is(words, CONCERN_OWN):
+                words = words[len(CONCERN_OWN):].lstrip(" :-").strip()
+                words = "" if words.startswith("<") else words
+            if not words:
+                ctx.emit("warning", message=f"{qid}: no answer typed — the change is kept; send a change request to {self.name} yourself")
+                continue
+            requests.append(f"From your answer to {qid} (a concern of the last change: {a['concern']}): {words}")
+        return asks, requests, open_
 
     def _asks_file(self) -> str:
         return f"questions/{self.name}.keys.json"

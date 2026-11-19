@@ -64,7 +64,13 @@ class Step(EcoStep):
         docs = [project.spec_dir / r.name for r in refs]
         key = {"requirement": sha256_file(req), "org": {project.rel(r): sha256_file(r) for r in refs}}
         prev = self.read(engine, SPEC_JSON, {}) or {}
-        feedback = list(ctx.feedback)
+        asks, answered, open_ = self.concern_answers(ctx, prev, key)
+        feedback = [*ctx.feedback, *answered]
+        if asks and not feedback and not ctx.regenerate:  # (a run for your answers to the concerns: each one kept, or still open)
+            self.write(engine, SPEC_JSON, {**prev, "concern_asks": asks})
+            ctx.emit("warning" if open_ else "log", message=f"spec update: answer {', '.join(open_)} (the concerns of the change), then run again"
+                     if open_ else "spec update: every concern answered — the change is kept")
+            return
         update = bool(feedback) and not ctx.regenerate and prev.get("key") == key
         if not update:  # (from the ORG spec again)
             changed = [d for d, r in zip(docs, refs) if not d.is_file() or d.read_bytes() != r.read_bytes()]
@@ -96,7 +102,6 @@ class Step(EcoStep):
         self.spec_diff(engine).write_text(diff)
         self.write(engine, SPEC_JSON, {"status": "updated" if diff else "unchanged", "key": key, "summary": out.summary,
                                        "changes": [c.model_dump() for c in out.changes], "concerns": out.concerns,
-                                       "diff_lines": diff.count("\n")})
+                                       "diff_lines": diff.count("\n"),
+                                       "concern_asks": {**asks, **self.ask_concerns(ctx, {"key": key, "diff": diff}, out.concerns, "spec update")}})
         ctx.emit("log", message=f"spec update: {out.summary[:200]} ({diff.count(chr(10))} diff lines, see {project.rel(self.spec_diff(engine))})")
-        for c in out.concerns:
-            ctx.emit("warning", message=f"spec update: {c}")

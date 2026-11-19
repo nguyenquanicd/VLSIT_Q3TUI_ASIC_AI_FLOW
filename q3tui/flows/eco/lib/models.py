@@ -32,7 +32,9 @@ class RtlUpdate(BaseModel):
     """eco_rtl: the RTL(F) files were edited in place."""
     summary: str = Field(description="The change in a few sentences: what the requirement asks and how the RTL now does it")
     changes: list[FileChange] = Field(default_factory=list)
-    concerns: list[str] = Field(default_factory=list, description="Anything the requirement leaves open, or a risk of the change")
+    concerns: list[str] = Field(default_factory=list, description=(
+        "Anything the requirement leaves open, or a risk of the change. Each one is asked to the user as a question (keep the change, "
+        "or their answer): one short self-contained point each, saying what you assumed"))
 
 
 class RtlAlternative(BaseModel):

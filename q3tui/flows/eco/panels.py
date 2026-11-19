@@ -223,9 +223,23 @@ def _change_rows(name, diff_rel):
             out.append(("plan", "Planned change", _one_line(d["change"]), _st("info")))
         out += [(f"c{i}", f"Change · {c.get('file', '?').rsplit('/', 1)[-1]}", _one_line(c.get("what")), _st("pass", "done"))
                 for i, c in enumerate(d.get("changes") or [])]
-        out += [(f"k{i}", "Concern", _one_line(c), _st("warn", "read")) for i, c in enumerate(d.get("concerns") or [])]
+        out += [(f"k{i}", "Concern", _one_line(c), _concern_status(d, c)) for i, c in enumerate(d.get("concerns") or [])]
         return out
     return rows
+
+
+def _concern_ask(d: dict, concern: str) -> tuple[str | None, dict]:
+    """(the question id, its record) a concern of the last change was asked as (lib/base.py ask_concerns), or (None, {})."""
+    return next(((q, a) for q, a in reversed(list((d.get("concern_asks") or {}).items())) if a.get("concern") == concern), (None, {}))
+
+
+def _concern_status(d: dict, concern: str):
+    qid, a = _concern_ask(d, concern)
+    if not qid:
+        return _st("warn", "read")
+    if not a.get("used"):
+        return _st("wait", f"answer {qid}")
+    return _st("pass", "kept") if str(a.get("answer", "")).lower().startswith("keep") else _st("info", "sent back")
 
 
 def _hunks(diff: str, file: str) -> str:
@@ -248,7 +262,12 @@ def _change_detail(name, diff_rel):
             c = (d.get("changes") or [])[int(key[1:])]
             return f"## `{c.get('file')}`\n\n{c.get('what', '')}\n\n{_code(_hunks(diff or '', c.get('file', '')), 'diff') if diff else ''}"
         if key.startswith("k") and key[1:].isdigit():
-            return f"## Concern\n\n{(d.get('concerns') or [])[int(key[1:])]}\n\n_The step finished; check whether this needs a follow-up._"
+            c = (d.get("concerns") or [])[int(key[1:])]
+            qid, a = _concern_ask(d, c)
+            how = (f"_Asked as {qid} (Questions tab): keep the change, or type what to change._" if qid and not a.get("used")
+                   else f"_Your answer to {qid}:_ {a.get('answer')}" if qid
+                   else "_Not asked (auto-answer kept the change); check whether this needs a follow-up._")
+            return f"## Concern\n\n{c}\n\n{how}"
         return f"**`{diff_rel}`** — {_diff_stat(diff)}\n\n{body}"
     return detail
 

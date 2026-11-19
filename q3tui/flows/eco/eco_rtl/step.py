@@ -121,9 +121,17 @@ class Step(EcoStep):
         prev = self.read(engine, RTL_JSON, {}) or {}
         key = {"requirement": sha256_file(req), "org": {project.rel(f): sha256_file(f) for f in self.org_rtl_files(engine)}}
         pending = self.read(engine, PLAN_JSON, {}) or {}
-        feedback = list(ctx.feedback)
+        asks, answered, open_ = self.concern_answers(ctx, prev, key)
+        if answered:  # (your answers to the concerns: change requests from now on, kept in the plan if it asks first)
+            self.write(engine, RTL_JSON, {**prev, "concern_asks": asks})
+        feedback = [*ctx.feedback, *answered]
         if not feedback and pending.get("key") == key and pending.get("feedback") and not ctx.regenerate:
             feedback = list(pending["feedback"])  # (the change requests the question was about: consumed by the run that asked)
+        if asks and not feedback and not ctx.regenerate:  # (a run for your answers to the concerns: each one kept, or still open)
+            self.write(engine, RTL_JSON, {**prev, "concern_asks": asks})
+            ctx.emit("warning" if open_ else "log", message=f"RTL(F): answer {', '.join(open_)} (the concerns of the change), then run again"
+                     if open_ else "RTL(F): every concern answered — the change is kept")
+            return
         update = bool(feedback) and not ctx.regenerate and prev.get("key") == key and self.rtl_f_filelist(engine).is_file()
         # (a fresh copy before the plan: the plan reads the copies in eco/rtl/, the ORG RTL may be outside the project)
         mapping = prev.get("map") if update else self._fresh_copy(engine)
@@ -132,7 +140,8 @@ class Step(EcoStep):
             return  # (waiting for your answer)
         if update and change.strip().lower().startswith("no rtl change"):
             # (a dv / Sanity request the plan judged not the ECO's to fix: RTL(F) stays; eco_verify reports it instead of looping)
-            self.write(engine, RTL_JSON, {**prev, "declined": [*prev.get("declined", []), {"requests": feedback, "why": change}]})
+            self.write(engine, RTL_JSON, {**prev, "concern_asks": asks,
+                                          "declined": [*prev.get("declined", []), {"requests": feedback, "why": change}]})
             self.artifact(engine, PLAN_JSON).unlink(missing_ok=True)
             ctx.emit("warning", message=f"RTL(F) kept as it is: {change[:300]}")
             return
@@ -161,11 +170,10 @@ class Step(EcoStep):
         if not diff:
             raise StepFailed(f"RTL(F) is the ORG RTL: no change made for the requirement ({out.summary[:300]})")
         self.write(engine, RTL_JSON, {"key": key, "map": mapping, "summary": out.summary, "changes": [c.model_dump() for c in out.changes],
-                                      "concerns": out.concerns, "diff_lines": diff.count("\n"), "change": change})
+                                      "concerns": out.concerns, "diff_lines": diff.count("\n"), "change": change,
+                                      "concern_asks": {**asks, **self.ask_concerns(ctx, {"key": key, "diff": diff}, out.concerns, "RTL(F)")}})
         self.artifact(engine, PLAN_JSON).unlink(missing_ok=True)  # (done: the next request is planned again)
         ctx.emit("log", message=f"RTL(F): {out.summary[:200]} ({len(out.changes)} file(s), see {project.rel(self.rtl_diff(engine))})")
-        for c in out.concerns:
-            ctx.emit("warning", message=f"RTL(F): {c}")
 
     async def _decide(self, ctx: StepContext, key: dict, feedback: list[str], update: bool, req: Path, mapping: dict) -> str | None:
         """The change to make: the plan's, or — when the request prescribes a way and a smaller change exists — your choice (None while

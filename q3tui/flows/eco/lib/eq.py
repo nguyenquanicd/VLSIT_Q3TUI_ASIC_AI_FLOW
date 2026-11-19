@@ -17,6 +17,10 @@ async def run_formality(step, ctx, ref_files: list[Path], netlist: Path, tag: st
     engine, project = ctx.engine, ctx.project
     top = step.top(engine)
     libs = step.need_libraries(engine)
+    asic = step.asic_view(engine, ref_files)  # (memory wrappers as their macro bodies, as asic_lec reads them)
+    if asic != ref_files:
+        ctx.emit("log", message=f"{tag}: {sum(a != r for a, r in zip(asic, ref_files))} memory wrapper(s) read as their macro body (asic_macro)")
+    ref_files = asic
     tools = await step.need_tool(engine, "asic_lec", "module synopsys/formality")
     work = step.build_dir(engine)
     for n in ("lec.rpt", "fm.log"):

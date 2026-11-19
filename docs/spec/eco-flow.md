@@ -14,6 +14,10 @@ ORG netlist ─┘                                  ▲   ▲            │    
                                                                                                       setup fail: timing fix (AI)
 ```
 
+Memory macros: when the asic flow implemented a memory wrapper with SRAM macros (`asic_macro`, `schemas/asic_macro.json`), EQ(1) and EQ(2) read
+that wrapper as its ASIC body (`lib/base.py` `asic_view`, the project's file or its copy in `ref/`), and DC / Formality / PrimeTime get the macros'
+`.db` with the library (`need_libraries`). An ECO that edits a memory wrapper itself is not seen by EQ (run asic_macro again first).
+
 No NETLIST(F): the patch is written from the RTL diff and the ORG netlist. The `.svf` beside the ORG netlist (DC's guidance) is kept with
 it and read by EQ(1) and EQ(2): without it Formality cannot match DC's register merges and FSM recoding. No check of the size of the Post
 NETLIST against the ORG netlist.
@@ -38,6 +42,12 @@ The mode follows from where the ORG RTL is (`eco_inputs`, `lib/ref.py`):
   review (`fix_rtl`; `spec` decisions → `eco_spec`) go to the ECO flow's `eco_rtl` (`flows/dv/triage.py`, `flows/sanity/addon.py`,
   `ref.eco_owner`), never to the rtl flow's generator; the dv flow does not run the ECO flow within its own run (no recursion: `eco_verify`
   runs dv).
+
+**The concerns of an AI change are your questions** (`eco_spec`, `eco_rtl`; `lib/base.py` `ask_concerns` / `concern_answers`). Each concern
+the AI reports with its spec or RTL(F) change (something the requirement leaves open, a risk, an assumption) becomes a blocking question
+(`ECOCSPEC<n>` / `ECOCRTL<n>`): "Keep the change" (Recommended) or "My answer: …" (typed). The flow waits for every answer. Your words go
+back to the same step as a change request (the change is revised, its new concerns are asked again); "keep" changes nothing. Each answer
+is used once (`concern_asks` in `schemas/eco_spec.json` / `eco_rtl.json`). Auto-answer keeps the change and logs each concern.
 
 ## Steps
 
@@ -69,7 +79,8 @@ Every ECO step has two tabs before Files / Questions (`q3tui/flows/eco/panels.py
   each change, each concern and the diff against `ref/` (eco_spec, eco_rtl), the dv tests and the CDC / RDC reports (eco_verify), the netlist
   edits and how they work (eco_patch), the errors and check_design (eco_apply), the setup / hold paths and the violators (eco_sta).
 - **ECO**: the whole flow, one row per step with its result in one line ("9/9 steps done · 2 with notes to read"); the highlighted step's
-  rows on the right. "check" marks a step that passed with concerns to read (eco_spec, eco_rtl).
+  rows on the right. "check" marks a step that passed with concerns (eco_spec, eco_rtl); each concern row says "answer <id>", "kept"
+  or "sent back".
 
 ## Settings
 

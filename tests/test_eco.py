@@ -78,6 +78,7 @@ class EcoLLM:
         self.first_patch = None  # (a first answer that is refused: the stage answers again with `patch`)
         self.alt = None  # (the plan of eco_rtl finds this smaller change than the one asked)
         self.stages, self.same, self.patch = [], False, ["disconnect_net o_r U2/Z", "create_cell U3 gf/TIEL_X1", "connect_net o_r U3/ZN"]
+        self.concerns = {}  # (stage name -> the concerns its first answer reports)
 
     async def __call__(self, stage, cfg, emit):
         from q3tui.llm.runtime import StageResult
@@ -102,6 +103,8 @@ class EcoLLM:
             out = NetlistEdits(commands=["size_cell U1 gf/MUX2_X4"], notes="upsize the mux")
         else:
             out = EqAdvice(summary="o_r still driven by the TIEH cell.", owner="patch", fix="disconnect U2 from o_r")
+        if isinstance(out, RtlUpdate):
+            out.concerns = self.concerns.pop(stage.name, [])
         return StageResult("ok", out, 0.0, 1, "s")
 
 
@@ -221,6 +224,43 @@ def test_eq2_answers_go_to_their_step():
     assert route("Stop: I fix it by hand") is None
     assert own_words("My own fix: <type how to fix it>") == "" and own_words("My own fix: tie U3 low") == "tie U3 low"
     assert own_words("disconnect U2") == "disconnect U2"
+
+
+async def test_the_concerns_of_a_change_are_your_questions(proj, llm):
+    # (a concern of eco_spec answered with your words: a change request on the spec; one of eco_rtl kept: RTL(F) stays)
+    llm.concerns = {"eco_spec": ["The reset value of o_r is not said."], "eco_rtl": ["U2 is left without a load."]}
+    eng = Engine(proj)
+    for _ in range(5):  # (the inputs and EQ(1) answered, up to the spec's question)
+        await eng.run()
+        if _open(eng, "eco_spec"):
+            break
+        for q in [q for q in eng.questions() if q["status"] == "open"]:
+            eng.answer(q["id"], {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)"}.get(q["step"]) or q["options"][0]["label"])
+    [q] = _open(eng, "eco_spec")
+    assert q["id"].startswith("ECOC") and "reset value of o_r" in q["question"] and q["blocking"]
+    assert not (proj.schemas_dir / "eco_rtl.json").exists()  # (the flow waits for your answer)
+    eng = await _drive(eng, {"eco_spec": "My answer: o_r is 0 from reset on.", "eco_rtl": "Keep the change (Recommended)"})
+    assert all(v.status == "done" for v in _status(eng).values()), [(v.name, v.status, v.detail) for v in _status(eng).values()]
+    specs = [s for s in llm.stages if s.name == "eco_spec"]
+    assert len(specs) == 2 and "o_r is 0 from reset on." in specs[1].prompt and "## Change requests" in specs[1].prompt
+    rtl = json.loads((proj.schemas_dir / "eco_rtl.json").read_text())
+    assert [a["answer"] for a in rtl["concern_asks"].values()] == ["Keep the change (Recommended)"]
+    assert all(a["used"] for a in json.loads((proj.schemas_dir / "eco_spec.json").read_text())["concern_asks"].values())
+
+
+async def test_eq_reads_a_memory_wrapper_as_its_macro_body(proj):
+    # (asic_macro implemented blk.sv with a macro: the netlist has the macro, so EQ(1) / EQ(2) read the ASIC body and the macro's .db)
+    body = proj.root / "build" / "syn" / "asic" / "macros" / "blk_sram.sv"
+    body.parent.mkdir(parents=True)
+    body.write_text(RTL)
+    (proj.root / "mem.db").write_text("fake macro library\n")
+    (proj.schemas_dir / "asic_macro.json").write_text(json.dumps({"wrappers": {"blk": {
+        "file": "src/rtl/blk.sv", "asic_file": "build/syn/asic/macros/blk_sram.sv", "db": "mem.db", "macro": "SRAM"}}}))
+    eng = await _drive(Engine(proj), {"eco_inputs": "Use the defaults", "eco_eq1": "Run EQ(1)"})
+    assert all(v.status == "done" for v in _status(eng).values())
+    for step in ("eco_eq1", "eco_eq2"):
+        tcl = (proj.build_dir / "eco" / step / "lec.tcl").read_text()
+        assert "blk_sram.sv" in tcl and "mem.db" in tcl and "src/rtl/blk.sv" not in tcl, step
 
 
 def test_a_passed_asic_lec_stands_for_eq1(proj):
