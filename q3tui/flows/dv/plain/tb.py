@@ -25,10 +25,11 @@ from q3tui.core.project import read_json, sha256_json, write_json
 from q3tui.steps.common import Question, assign_question_ids, drop_settled, load_answers, render_questions, settled_block, split_feedback
 from q3tui.flows.spec.lib import artifacts
 from q3tui.flows.dv.plain import gen as tb_gen
+from q3tui.flows.dv.plain import topapi
 from q3tui.flows.dv.plain import plan as tb_plan
 from q3tui.flows.dv.plain import task as tb_prompts
 from q3tui.flows.spec.lib.base import VlsitStep
-from q3tui.flows.dv.plain.plan import TbUnitResult
+from q3tui.flows.dv.plain.plan import TbReview, TbUnitResult
 
 
 @dataclass
@@ -50,6 +51,10 @@ class _Run:
     wrote: set[str] = field(default_factory=set)
     top_changed: set[str] | None = None  # (tb_top changed for its own change requests only: the names of its interface that changed; None: anything may have)
     llm_calls: int = 0
+    skills: str = ""  # the tc-quality skill's prompt index (plan, write and review stages)
+    skill_dirs: list[Path] = field(default_factory=list)
+    top_api: str = ""  # tb_top's digest for the test-case writers and reviewers (topapi.section)
+    hash_answers: dict[str, str] | None = None  # the answers that are about content (not the code's own questions, like "it does not compile")
 
     def tb_path(self, name: str) -> Path:
         return self.lay.tb / name
@@ -65,7 +70,9 @@ class PlainTb(VlsitStep):
     artifact = "selected_testplan.json"
     gate_fields = {"gate_4_approved": True, "gate_4_at": ""}
     tool_roles = ("sim",)
-    checks_version = 3  # 2: the filelist lists tb_top only (test cases are included, not sources); 3: `TC_SUMMARY ends with ;
+    checks_version = 4  # 2: the filelist lists tb_top only (test cases are included, not sources); 3: `TC_SUMMARY ends with ;
+    # 4: the test-quality checks (`tb_plan.quality_problems`: no constant-true check, an `// FM<k>:` tag per planned failure mode)
+    #    + the result macros count the checks that ran (`TC_HIT`), `TC_SEED`, a non-zero exit when a test failed (gen.COMMON)
 
     # -- files -------------------------------------------------------------------------------------
 
@@ -123,7 +130,13 @@ class PlainTb(VlsitStep):
         ctx = run.ctx
         return Stage(name=name, system_prompt=tb_prompts.WRITE_SYSTEM, prompt=prompt, cwd=ctx.project.root,
                      builtin_tools=["Read", "Grep", "Glob", "Write", "Edit"], output_model=TbUnitResult, deny_dirs=self._deny(run),
-                     write_dirs=[run.lay.tb], write_files=files, max_turns=ctx.cfg.tb.max_turns)
+                     add_dirs=run.skill_dirs, write_dirs=[run.lay.tb], write_files=files, max_turns=ctx.cfg.tb.max_turns)
+
+    def _review_stage(self, run: _Run, name: str, prompt: str) -> Stage:
+        """The fresh, read-only test-quality reviewer (a stage name with `review`: never the writer's session)."""
+        ctx = run.ctx
+        return Stage(name=name, system_prompt=tb_prompts.REVIEW_SYSTEM, prompt=prompt, cwd=ctx.project.root, builtin_tools=["Read", "Grep", "Glob"],
+                     output_model=TbReview, deny_dirs=self._deny(run), add_dirs=run.skill_dirs, max_turns=ctx.cfg.tb.max_turns)
 
     # -- run -------------------------------------------------------------------------------------------
 
@@ -151,6 +164,10 @@ class PlainTb(VlsitStep):
         run = _Run(ctx, lay, tools, spec, params, reqs, [project.rel(p) for p in project.spec_documents()],
                    (spec.get("metadata") or {}).get("top_module"), load_answers(answers_path), settled_block(engine.settled_questions(self.name)),
                    general, by_unit, meta)
+        run.skills, run.skill_dirs = tb_prompts.quality_skills(project)
+        # (rv32iv: answering the compile question "run tb again" changed every test case's hash, and all 68 were written again)
+        code_ids = {q.get("id") for q in read_json(q_json, default=[]) or [] if q.get("code")}
+        run.hash_answers = {k: v for k, v in run.answers.items() if k not in code_ids}
         lay.tb.mkdir(parents=True, exist_ok=True)
         (lay.tb / "tests").mkdir(parents=True, exist_ok=True)
         if not run.top:
@@ -205,10 +222,11 @@ class PlainTb(VlsitStep):
 
         ctx, project = run.ctx, run.ctx.project
         path = run.tb_path("tb_top.sv")
-        h = sha256_json({"top": run.top, "params": run.params, "answers": run.answers,
-                         "spec": [p.read_text() if p.suffix in (".md", ".txt") else p.name for p in project.spec_documents()]})
+        spec_text = [p.read_text() if p.suffix in (".md", ".txt") else p.name for p in project.spec_documents()]
+        h = sha256_json({"top": run.top, "params": run.params, "answers": run.hash_answers, "spec": spec_text})
+        legacy = sha256_json({"top": run.top, "params": run.params, "answers": run.answers, "spec": spec_text})  # (the hash before code answers were left out)
         saved = run.meta.get("top_hash")
-        todo = bool(ctx.regenerate or run.general or "top" in run.by_unit or not path.is_file() or saved != h)
+        todo = bool(ctx.regenerate or run.general or "top" in run.by_unit or not path.is_file() or saved not in (h, legacy))
         problems = ""
         if not todo:
             problems = "\n".join(f"- {p}" for p in tb_gen.top_problems(path.read_text()))
@@ -226,7 +244,8 @@ class PlainTb(VlsitStep):
             ctx.emit("log", message="writing tb_top.sv …")
             res = await ctx.llm(self._write_stage(run, "tb_top", tb_prompts.top_prompt(
                 path=project.rel(path), top=run.top, params=run.params, spec_files=run.spec_files, answers=run.answers, settled=run.settled,
-                feedback=[*run.general, *run.by_unit.get("top", [])], problems=problems, existing=path.is_file(), cases=selected), [path]))
+                feedback=[*run.general, *run.by_unit.get("top", [])], problems=problems, existing=path.is_file(), cases=selected,
+                skills=run.skills), [path]))
         run.llm_calls += 1
         run.asked["top"] = res.output.questions if res.output else []
         for attempt in range(ctx.cfg.tb.max_fix_attempts):
@@ -242,6 +261,13 @@ class PlainTb(VlsitStep):
             raise StepFailed("tb_top.sv does not meet the framework contract: " + "; ".join(tb_gen.top_problems(path.read_text() if path.is_file() else "")))
         run.meta["top_hash"] = h
         run.wrote.add("top")
+        if before and not small and not (ctx.regenerate or run.general):
+            # a rewrite because its inputs changed (a spec section, an answer): the test cases using a task / signal / macro whose declaration
+            # changed are rewritten, not all of them (rv32iv: two spec sections changed → tb_top rewritten → all 68 test cases, ~$15)
+            run.top_changed = tb_gen.interface_changes(before, path.read_text())
+            ctx.emit("log", message="tb_top.sv rewritten: " + ("every test case is checked against it" if run.top_changed is None else
+                                                               f"{len(run.top_changed)} declaration(s) changed, the test cases using them are rewritten"
+                                                               if run.top_changed else "no task, signal or macro the test cases use changed: they stay"))
         if small:
             run.top_changed = tb_gen.interface_changes(before, path.read_text())
             ctx.emit("log", message="tb_top.sv changed: " + ("the test cases are checked against it" if run.top_changed is None else
@@ -260,8 +286,9 @@ class PlainTb(VlsitStep):
 
     # -- test case files --------------------------------------------------------------------------------------
 
-    def _tc_hash(self, run: _Run, c: dict) -> str:
-        return sha256_json({"tc": c, "reqs": {r: run.reqs.get(r, "") for r in c["req_ids"]}, "params": run.params, "answers": run.answers})
+    def _tc_hash(self, run: _Run, c: dict, legacy: bool = False) -> str:
+        answers = run.answers if legacy or run.hash_answers is None else run.hash_answers
+        return sha256_json({"tc": c, "reqs": {r: run.reqs.get(r, "") for r in c["req_ids"]}, "params": run.params, "answers": answers})
 
     def _tc_problems(self, run: _Run, c: dict) -> list[str]:
         p = run.tc_path(c)
@@ -275,6 +302,7 @@ class PlainTb(VlsitStep):
             out.append(f"{p.name}: no `TC_CHECK in the test case (every test case must check something)")
         if c["tc_id"] not in text.splitlines()[0]:
             out.append(f"{p.name}: the first line must be `// {c['tc_id']} | {', '.join(c['req_ids'])}`")
+        out += [f"{p.name}: {q}" for q in tb_plan.quality_problems(c, text)]
         return out
 
     async def _write_cases(self, run: _Run, selected: list[dict]) -> None:
@@ -286,7 +314,7 @@ class PlainTb(VlsitStep):
         for c in selected:
             h = self._tc_hash(run, c)
             scoped = c["tc_id"] in run.by_unit or tb_plan.file_name(c) in run.by_unit
-            if ctx.regenerate or run.general or scoped or not run.tc_path(c).is_file() or hashes.get(c["tc_id"]) != h or self._top_touches(run, c):
+            if ctx.regenerate or run.general or scoped or not run.tc_path(c).is_file() or hashes.get(c["tc_id"]) not in (h, self._tc_hash(run, c, legacy=True)) or self._top_touches(run, c):
                 todo.append((c, h))
         # (a test case file that changed outside this step or fails the code checks is repaired too)
         for c in selected:
@@ -298,6 +326,9 @@ class PlainTb(VlsitStep):
         groups = [todo[i:i + size] for i in range(0, len(todo), size)]
         limiter = anyio.CapacityLimiter(max(1, ctx.cfg.tb.parallel))
         top_path = project.rel(run.tb_path("tb_top.sv"))
+        top_file = run.tb_path("tb_top.sv")
+        # what tb_top offers, by code (topapi): every writer and reviewer read all of it (rv32iv: 82k characters each)
+        run.top_api = topapi.section(top_file.read_text(errors="replace"), top_path) if top_file.is_file() else ""
 
         async def one(k: int, group: list[tuple[dict, str]]) -> None:
             async with limiter:
@@ -308,7 +339,8 @@ class PlainTb(VlsitStep):
                 res = await ctx.llm(self._write_stage(run, f"tb_g{k + 1}", tb_prompts.group_prompt(
                     cases=cs, paths=paths, reqs=run.reqs, params=run.params, spec_files=run.spec_files, top_path=top_path,
                     answers=run.answers, settled=run.settled, feedback=fb, problems="",
-                    existing={c["tc_id"] for c in cs if run.tc_path(c).is_file()}), [run.tc_path(c) for c in cs]))
+                    existing={c["tc_id"] for c in cs if run.tc_path(c).is_file()}, skills=run.skills, top_api=run.top_api),
+                    [run.tc_path(c) for c in cs]))
                 run.llm_calls += 1
                 run.asked[f"g{k + 1}"] = res.output.questions if res.output else []
                 for attempt in range(ctx.cfg.tb.max_fix_attempts):
@@ -323,6 +355,7 @@ class PlainTb(VlsitStep):
                         label=", ".join(bad), problems="\n".join(f"- {p}" for v in bad.values() for p in v), files=files),
                         [run.tc_path(c) for c in cs if c["tc_id"] in bad]))
                     run.llm_calls += 1
+                await self._review(run, k, cs, paths, top_path)
                 for c, h in group:
                     if not self._tc_problems(run, c):
                         hashes[c["tc_id"]] = h
@@ -336,6 +369,58 @@ class PlainTb(VlsitStep):
         if left:
             raise StepFailed("test case files fail the framework checks after the fix rounds:\n" + "\n".join(
                 f"- {k}: {'; '.join(v)}" for k, v in left.items()))
+
+    async def _review(self, run: _Run, k: int, cs: list[dict], paths: dict[str, str], top_path: str) -> None:
+        """A fresh reviewer reads the test cases just written against the tc-quality skill; its `must` findings (a check no DUT bug can fail, a
+        planned failure mode without a check) go to a fix session, `tb.review_rounds` times. What is left is recorded per test case
+        (`quality_findings` in selected_testplan.json) and warned about: the test still runs, the finding says what it does not prove."""
+        ctx, project = run.ctx, run.ctx.project
+        store = run.meta.setdefault("review", {})
+        for c in cs:
+            store.pop(c["tc_id"], None)  # (rewritten: an old review no longer applies)
+        rounds = ctx.cfg.tb.review_rounds
+        if rounds <= 0:
+            return
+        todo = [c for c in cs if not self._tc_problems(run, c)]  # (a file that still fails the framework checks is not worth a review)
+        findings: dict[str, list[dict]] = {}  # tc_id -> the latest review's findings on it
+        for r in range(rounds + 1):
+            if not todo:
+                break
+            res = await ctx.llm(self._review_stage(run, f"tb_review_g{k + 1}" + (f"_{r + 1}" if r else ""), tb_prompts.review_prompt(
+                cases=todo, paths={c["tc_id"]: paths[c["tc_id"]] for c in todo}, reqs=run.reqs, spec_files=run.spec_files, top_path=top_path,
+                skills=run.skills, top_api=run.top_api)))
+            run.llm_calls += 1
+            if res.output and res.output.questions:
+                run.asked[f"review_g{k + 1}"] = list(res.output.questions)
+            for c in todo:
+                findings[c["tc_id"]] = [f.model_dump() for f in (res.output.findings if res.output else []) if f.tc_id == c["tc_id"]]
+            must = [f for c in todo for f in findings[c["tc_id"]] if f["severity"] == "must"]
+            if not must or r == rounds:
+                break
+            bad = {f["tc_id"] for f in must}
+            todo = [c for c in todo if c["tc_id"] in bad]  # (the next review reads the fixed ones only; the others' findings stay)
+            ctx.emit("warning", message=f"review: {len(must)} test-quality finding(s) in {', '.join(sorted(bad))}; fixing …")
+            await ctx.llm(self._write_stage(run, f"tb_fix_g{k + 1}_q{r + 1}", tb_prompts.fix_prompt(
+                label=", ".join(sorted(bad)), problems=tb_prompts.review_fix_problems(must),
+                files={project.rel(run.tc_path(c)): run.tc_path(c).read_text() for c in todo}), [run.tc_path(c) for c in todo]))
+            run.llm_calls += 1
+            for c in todo:
+                for _ in range(ctx.cfg.tb.max_fix_attempts):  # (the fix must keep the framework checks)
+                    probs = self._tc_problems(run, c)
+                    if not probs:
+                        break
+                    await ctx.llm(self._write_stage(run, f"tb_fix_{run.tc_path(c).stem}", tb_prompts.fix_prompt(
+                        label=c["tc_id"], problems="\n".join(f"- {p}" for p in probs),
+                        files={project.rel(run.tc_path(c)): run.tc_path(c).read_text()}), [run.tc_path(c)]))
+                    run.llm_calls += 1
+            todo = [c for c in todo if not self._tc_problems(run, c)]
+        flat = [f for fs in findings.values() for f in fs]
+        for f in flat:
+            store.setdefault(f["tc_id"], []).append({k2: f[k2] for k2 in ("rule", "severity", "problem", "fix")})
+        left = [f for f in flat if f["severity"] == "must"]
+        if left:
+            ctx.emit("warning", message=f"review: {len(left)} test-quality finding(s) left after {rounds} fix round(s): "
+                                        + "; ".join(f"{f['tc_id']}: {f['problem'][:120]}" for f in left[:5]))
 
     # -- compile check --------------------------------------------------------------------------------------------
 
@@ -358,7 +443,10 @@ class PlainTb(VlsitStep):
         external: list[str] = []
         errors: list = []
         res = None
-        for attempt in range(ctx.cfg.tb.max_fix_attempts + 1):
+        # the budget is per file: a compiler stops at the first syntax error, so each round shows the next broken file (rv32iv: tc_012, tc_018,
+        # tc_018 again took the 3 rounds; tc_040 — and tc_063 / tc_064, never shown — were left for a question to the user)
+        tries: dict[str, int] = {}
+        for _ in range(ctx.cfg.tb.max_fix_attempts * max(1, len(selected)) + 1):
             res = await anyio.to_thread.run_sync(lambda: self._compile(run, selected))
             errors = [d for d in res.diagnostics if d.severity == "error"]
             by_file, external = {}, []
@@ -373,9 +461,12 @@ class PlainTb(VlsitStep):
                     external.append(f"{name}: {msg}" if name else msg)  # RTL or unknown: not ours
             if not errors:
                 external.append(f"the compile failed (rc={res.returncode}) without a diagnostic; see {project.rel(Path(res.log_path))}")
-            if not by_file or attempt == ctx.cfg.tb.max_fix_attempts:
+            by_file_left = {k: v for k, v in by_file.items() if tries.get(k, 0) < ctx.cfg.tb.max_fix_attempts}
+            if not by_file_left:
                 break
-            ctx.emit("warning", message=f"compile: {sum(map(len, by_file.values()))} error(s) in {', '.join(by_file)}; fixing …")
+            for k in by_file_left:
+                tries[k] = tries.get(k, 0) + 1
+            ctx.emit("warning", message=f"compile: {sum(map(len, by_file_left.values()))} error(s) in {', '.join(by_file_left)}; fixing …")
             limiter = anyio.CapacityLimiter(max(1, ctx.cfg.tb.parallel))
 
             async def fix(path: Path, msgs: list[str]):
@@ -386,7 +477,7 @@ class PlainTb(VlsitStep):
                     run.wrote.add(path.stem)
 
             async with anyio.create_task_group() as tg:
-                for name, msgs in by_file.items():
+                for name, msgs in by_file_left.items():
                     path = lay.tb / "tests" / name if (lay.tb / "tests" / name).is_file() else lay.tb / name
                     tg.start_soon(fix, path, msgs)
         self._run_script(run, selected)
@@ -426,6 +517,9 @@ class PlainTb(VlsitStep):
             tcs.append({
                 "tc_id": c["tc_id"], "name": c["name"], "title": c["name"], "description": c.get("description", ""),
                 "req_ids": c["req_ids"], "selected": sel, "conditional_param": c.get("conditional_param"),
+                "failure_modes": c.get("failure_modes") or [], "observe": c.get("observe") or "",
+                "test_type": c.get("test_type") or "directed", "functions": c.get("functions") or [],
+                **({"quality_findings": run.meta["review"][c["tc_id"]]} if sel and (run.meta.get("review") or {}).get(c["tc_id"]) else {}),
                 **({"file": project.rel(run.tc_path(c))} if sel else {}),
                 "compile_status": ("not selected" if not sel else "fail" if fname in bad_files else
                                    "skipped" if compile_info["status"] == "skipped" else "pass" if compile_info["status"] == "pass" else "fail")})
@@ -446,10 +540,16 @@ class PlainTb(VlsitStep):
         q_raw = read_json(self._q_paths(run.ctx.engine)[0], default=[]) or []
         if compile_info["status"] == "fail":
             where = compile_info.get("errors", [])[:3] + compile_info.get("external", [])[:3]
-            out.append(Question(id="", question="The testbench does not compile against the RTL (after the fix rounds): "
-                                + " | ".join(where) + ". Which side is wrong — the testbench (spec reading) or the RTL (port / interface names)?",
-                                blocking=True, default_assumption="Regenerate the testbench from the spec once the RTL interface is checked",
-                                kind="design_choice"))
+            if compile_info.get("external"):  # an error in the RTL or a tool problem: which side is wrong is a question
+                out.append(Question(id="", question="The testbench does not compile against the RTL (after the fix rounds): "
+                                    + " | ".join(where) + ". Which side is wrong — the testbench (spec reading) or the RTL (port / interface names)?",
+                                    blocking=True, default_assumption="Regenerate the testbench from the spec once the RTL interface is checked",
+                                    kind="design_choice"))
+            else:  # only testbench files: never the RTL's fault (a syntax error in a test case file)
+                out.append(Question(id="", question="Test case file(s) still do not compile after the fix rounds (a testbench error, not the RTL): "
+                                    + " | ".join(where) + ". Run tb again (it fixes them first), or change the file(s) by hand?",
+                                    blocking=True, default_assumption="Run tb again: the files that do not compile are fixed first",
+                                    kind="design_choice"))
         return out
 
     def _write_questions(self, run: _Run, q_json: Path, answers_path: Path, q_md: Path, code_questions: list[Question]) -> None:

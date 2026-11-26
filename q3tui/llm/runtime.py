@@ -446,6 +446,9 @@ def _validate(stage: Stage, result: ResultMessage, texts: list[str]) -> tuple[Ba
         return None, f"The structured output failed schema validation ({problems}). {how} — every required field present."
 
 
+KEEP = "<!-- keep -->"  # a prompt section the team's dedupe always sends in full (llm/roles.py)
+
+
 async def run_stage(stage: Stage, cfg: Config, emit: StepEmitter) -> StageResult:
     """Run one LLM stage; stream progress as events; return validated output.
 
@@ -458,6 +461,8 @@ async def run_stage(stage: Stage, cfg: Config, emit: StepEmitter) -> StageResult
         await anyio.to_thread.run_sync(provider.prepare, cfg)
     except provider.ProviderError as exc:
         raise StageError(f"{stage.name}: {exc}", 0.0) from None
+    if KEEP in stage.prompt:  # (the team's dedupe marker: a fresh session sends every section in full anyway)
+        stage = dataclasses.replace(stage, prompt=stage.prompt.replace(KEEP, ""))
     options = build_options(stage, cfg, emit)
     emit("stage", name=stage.name, status="llm_start", model=cfg.llm.model)
     try:

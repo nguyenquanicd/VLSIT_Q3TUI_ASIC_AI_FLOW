@@ -22,7 +22,7 @@ from q3tui.flows.dv.plain import gen as tb_gen
 from q3tui.flows.dv.plain import plan as tb_plan
 from q3tui.flows.rtl.rtl.plan import RtlPlan, PlanModule, levels, plan_from_spec
 from q3tui.flows.rtl.rtl.gen import VModuleResult
-from q3tui.flows.dv.plain.plan import TbCase, TbExcluded, TbPlan, TbUnitResult
+from q3tui.flows.dv.plain.plan import ReqFunctions, TbCase, TbExcluded, TbFinding, TbPlan, TbReview, TbUnitResult
 from tests.fakes import FakeLLM
 from tests.vlsit_fakes import register
 from q3tui.steps import register_kind
@@ -105,6 +105,17 @@ elif mode == "failslow":   # (TC-002 fails at once, TC-001 takes long)
         print(f"TC_DETAIL {tc} FAIL: still wrong"); print(f"TC_RESULT {tc} FAIL")
     else:
         time.sleep(30); print(f"TC_RESULT {tc} PASS")
+elif mode == "mut":   # (a mutant: a test fails when the RTL it was compiled with carries the marker; sys.argv[4] is the workdir)
+    fl = os.path.join(sys.argv[4], "filelist_tb_abs.f")
+    rtl = [l.strip() for l in open(fl) if l.strip() and not l.startswith("+")] if os.path.isfile(fl) else []
+    import glob
+    src = glob.glob(os.path.join(sys.argv[3], "src/tb/tests", f"tc_{tc.split('-')[1]}_*.sv"))
+    line = next((i for i, l in enumerate(open(src[0]), 1) if "`TC_CHECK" in l), 1) if src else 1
+    print(f"TC_CHECKS {tc} n=1"); print(f"TC_HIT {tc} {src[0] if src else 'x.sv'}:{line} 1")
+    if any("MUT_CATCH" in open(f).read() for f in rtl if os.path.isfile(f)):
+        print(f"TC_DETAIL {tc} FAIL: o_y wrong"); print(f"TC_RESULT {tc} FAIL")
+    else:
+        print(f"TC_RESULT {tc} PASS")
 elif mode == "fail" or (mode == "failtc2" and tc == "TC-002"):
     print(f"TC_DETAIL {tc} FAIL: the checked value was wrong"); print(f"TC_RESULT {tc} FAIL")
 else:
@@ -114,7 +125,7 @@ else:
 
 def tools_yaml(d: Path, synth_role=True, lint_role=True, run_mode="pass") -> str:
     py = sys.executable
-    roles = [f"    run: {{cmd: '{py} {d}/run.py {{tc}} {run_mode} {{project}}', parse: generic}}"]
+    roles = [f"    run: {{cmd: '{py} {d}/run.py {{tc}} {run_mode} {{project}} {{workdir}}', parse: generic}}"]
     if lint_role:
         roles.append(f"    lint: {{cmd: '{py} {d}/lint.py {{filelist}} {{top}}', parse: verilator}}")
     roles.append(f"    sim: {{cmd: '{py} {d}/sim.py {{filelist}}', parse: iverilog}}")
@@ -160,7 +171,7 @@ def _rtl_text(fake, name: str, bad: str | None) -> str:
 def _tc_text(path: Path, bad: bool) -> str:
     m = re.match(r"tc_(\d+)_(\w+)\.sv", path.name)
     tid, task = f"TC-{m.group(1)}", f"tc_{m.group(1)}_{m.group(2)}"
-    return f"// {tid} | REQ-001\ntask automatic {task}();\n  `TC_CHECK(1'b1, \"ok\")\n{'  SYNTAX_ERR' if bad else ''}endtask\n"
+    return f"// {tid} | REQ-001\ntask automatic {task}();\n  // FM1: q stuck\n  `TC_CHECK(dut_q === 1'b1, \"ok\")\n{'  SYNTAX_ERR' if bad else ''}endtask\n"
 
 
 TB_TOP = """// tb_top
@@ -221,7 +232,31 @@ def vlsit_handler(fake, stage, emit):
     if n == "tb_plan":
         fake.vlsit_tb_plan_calls += 1
         cases = fake.vlsit_tb_plans.pop(0) if len(fake.vlsit_tb_plans) > 1 else fake.vlsit_tb_plans[0]
-        return StageResult("", TbPlan(test_cases=[TbCase(**c) for c in cases], excluded=[TbExcluded(**e) for e in getattr(fake, "vlsit_tb_excluded", [])]), 0.0, 1, "s")
+        inv = getattr(fake, "vlsit_tb_inventory", [])
+        inv = inv.pop(0) if inv and isinstance(inv[0], list) and len(inv) > 1 else (inv[0] if inv and isinstance(inv[0], list) else inv)
+        from q3tui.flows.dv.plain.plan import TbPlanPatch, TbRemoved
+
+        if stage.output_model is TbPlanPatch:  # (an update: the fake re-sends its rows; the ones it no longer lists are removed)
+            listed = {c.get("tc_id") for c in cases}
+            prev = [m for m in re.findall(r"^- (TC-\d+) ", stage.prompt, re.M) if m not in listed]
+            return StageResult("", TbPlanPatch(inventory=[ReqFunctions(**r) for r in inv], test_cases=[TbCase(**c) for c in cases],
+                                               removed=[TbRemoved(tc_id=t) for t in prev],
+                                               excluded=[TbExcluded(**e) for e in getattr(fake, "vlsit_tb_excluded", [])]), 0.0, 1, "s")
+        return StageResult("", TbPlan(inventory=[ReqFunctions(**r) for r in inv], test_cases=[TbCase(**c) for c in cases],
+                                      excluded=[TbExcluded(**e) for e in getattr(fake, "vlsit_tb_excluded", [])]), 0.0, 1, "s")
+    if n.startswith("tb_plan_questions"):
+        from q3tui.flows.dv.plain.plan import QuestionSweep
+        from q3tui.steps.common import Question
+
+        rounds = getattr(fake, "vlsit_qa", [])
+        out = rounds.pop(0) if rounds else []
+        return StageResult("", QuestionSweep(questions=[Question(id="", blocking=False, default_assumption=q.get("default", ""), question=q["q"])
+                                                        for q in out]), 0.0, 1, "s")
+    if n.startswith("tb_plan_review"):
+        fake.vlsit_plan_review_calls = getattr(fake, "vlsit_plan_review_calls", 0) + 1
+        found = getattr(fake, "vlsit_plan_review_findings", [])
+        out = found.pop(0) if len(found) > 1 else (found[0] if found else [])
+        return StageResult("", TbReview(findings=[TbFinding(**f) for f in out]), 0.0, 1, "s")
     if n in ("tb_top", "tb_top_fix"):
         stage.write_files[0].write_text(TB_TOP if not fake.vlsit_top_bad else "module tb_top; endmodule\n")
         if n == "tb_top_fix" or fake.vlsit_top_bad:
@@ -229,6 +264,22 @@ def vlsit_handler(fake, stage, emit):
         if n == "tb_top_fix":
             stage.write_files[0].write_text(TB_TOP)
         return StageResult("", TbUnitResult(summary="top"), 0.0, 1, "s")
+    if n == "dv_mutants":
+        from q3tui.flows.dv.plain.mutation import Mutant, MutantPlan
+
+        fake.vlsit_mutant_calls = getattr(fake, "vlsit_mutant_calls", 0) + 1
+        ms = getattr(fake, "vlsit_mutants", [])
+        return StageResult("", MutantPlan(mutants=[Mutant(**m) for m in ms]), 0.0, 1, "s")
+    if n == "dv_mutant_review":
+        from q3tui.flows.dv.plain.mutation import SurvivorReview, SurvivorVerdict
+
+        fake.vlsit_survivor_calls = getattr(fake, "vlsit_survivor_calls", 0) + 1
+        return StageResult("", SurvivorReview(verdicts=[SurvivorVerdict(**v) for v in getattr(fake, "vlsit_survivors", [])]), 0.0, 1, "s")
+    if n.startswith("tb_review_"):
+        fake.vlsit_review_calls = getattr(fake, "vlsit_review_calls", 0) + 1
+        found = getattr(fake, "vlsit_review_findings", [])
+        out = found.pop(0) if len(found) > 1 else (found[0] if found else [])
+        return StageResult("", TbReview(findings=[TbFinding(**f) for f in out]), 0.0, 1, "s")
     if n.startswith("tb_"):  # tb_g<k>, tb_fix_<stem>, tb_fix_g<k>
         for p in [f for f in stage.write_files if f.name != "NOTES.md"]:  # (a role session adds its notes file)
             bad = fake.vlsit_tc_bad.get(p.name, 0) > 0 and not n.startswith("tb_fix")
@@ -348,7 +399,7 @@ def test_tb_happy_path(tmp_path, tools_dir, llm):
     assert plan["metadata"]["gate_4_approved"] is False and plan["result_format"] == "TC_RESULT <tc_id> PASS|FAIL"
     assert [t["compile_status"] for t in plan["test_cases"]] == ["pass", "pass"]
     # independence: spec + requirements only
-    c = calls(llm, "tb_plan")[0]
+    c = [c for c in llm.calls if c.name == "tb_plan"][0]
     rtl, sva = tmp_path / "src" / "rtl", tmp_path / "src" / "sva"
     assert rtl in c.deny_dirs and sva in c.deny_dirs and c.builtin_tools == ["Read", "Grep", "Glob"]
     g = calls(llm, "tb_g1")[0]
@@ -377,7 +428,7 @@ def test_tb_uncovered_requirement_asks_again_then_blocks(tmp_path, tools_dir, ll
     llm.vlsit_tb_plans = [[{"tc_id": "TC-001", "name": "a_reg", "req_ids": ["REQ-001"]}]]
     eng = make_engine(tmp_path, tools_dir)
     run_tb(eng)
-    assert llm.vlsit_tb_plan_calls == 2 and "Chưa có TC cover" in calls(llm, "tb_plan")[1].prompt
+    assert llm.vlsit_tb_plan_calls == 2 and "Chưa có TC cover" in [c for c in llm.calls if c.name == "tb_plan"][1].prompt
     qs = eng.by_name["testplan"].question_list(eng)
     assert len(qs) == 1 and qs[0]["blocking"] and "REQ-002, REQ-003" in qs[0]["question"] and eng.by_name["tb"].question_list(eng) == []
     # once answered, it is not asked again for the same requirements
@@ -411,8 +462,20 @@ def test_tb_persistent_compile_error_blocks_with_a_question(tmp_path, tools_dir,
     plan = json.loads((tmp_path / "schemas" / "selected_testplan.json").read_text())
     assert plan["compile_check"]["status"] == "fail" and plan["test_cases"][0]["compile_status"] == "fail"
     qs = eng.by_name["tb"].question_list(eng)
-    assert len(qs) == 1 and qs[0]["blocking"] and "does not compile" in qs[0]["question"]
+    assert len(qs) == 1 and qs[0]["blocking"] and "not compile" in qs[0]["question"]
+    assert "not the RTL" in qs[0]["question"] and "Which side is wrong" not in qs[0]["question"]  # (a test case file: never the RTL's fault)
     assert eng.state.gates["tb"].for_questions or eng.state.gates["tb"].status == "open"   # the auto gate waits for the answer
+
+
+def test_each_broken_file_gets_its_own_fix_budget_when_the_compiler_stops_at_the_first_error(tmp_path, tools_dir, llm):
+    # rv32iv: the compiler showed one broken file per round; 3 rounds went to two files and the third was left as a question
+    llm.vlsit_tc_bad = {"tc_001_a_reg.sv": 1, "tc_002_b_reg.sv": 1}
+    eng = make_engine(tmp_path, tools_dir, extra_cfg="tb: {max_fix_attempts: 1}\n")
+    with_rtl(tmp_path, eng, llm)
+    run_tb(eng)
+    assert len(calls(llm, "tb_fix_tc_001_a_reg")) == 1 and len(calls(llm, "tb_fix_tc_002_b_reg")) == 1
+    plan = json.loads((tmp_path / "schemas" / "selected_testplan.json").read_text())
+    assert plan["compile_check"]["status"] == "pass" and eng.by_name["tb"].question_list(eng) == []
 
 
 def test_tb_error_inside_the_rtl_is_not_fixed_by_the_testbench(tmp_path, tools_dir, llm):
@@ -444,7 +507,8 @@ def test_tb_updates_only_what_changed(tmp_path, tools_dir, llm):
     eng.request_change("tb", "[tb:TC-002] also check the reset value")
     run_tb(eng)
     new = llm.calls[n:]
-    assert [c.name for c in new] == ["tb_g1"] and new[0].write_files == [tmp_path / "src/tb/tests/tc_002_b_reg.sv"]
+    assert [c.name for c in new] == ["tb_g1", "tb_review_g1"] and new[0].write_files == [tmp_path / "src/tb/tests/tc_002_b_reg.sv"]
+    assert "tc_002_b_reg.sv" in new[1].prompt and "tc_001" not in new[1].prompt  # (the review reads only what was rewritten)
     assert "also check the reset value" in new[0].prompt
     # a removed test case: its file goes (backed up)
     llm.vlsit_tb_plans = [[{"tc_id": "TC-001", "name": "a_reg", "req_ids": ["REQ-001", "REQ-002", "REQ-003"]}]]
@@ -477,9 +541,10 @@ def test_the_dv_flow_has_the_testplan_step_with_a_human_gate():
     from q3tui import flows
 
     flow = flows.load_flow("dv")
-    assert [s.id for s in flow.steps] == ["spec", "parse", "config", "testplan", "tb", "prepare", "simulate"] and flows.validate(flow) == []
+    assert [s.id for s in flow.steps] == ["spec", "parse", "config", "testplan", "tb", "prepare", "simulate", "signoff"] and flows.validate(flow) == []
     assert flow.spec("testplan").kind == "dv_testplan" and flow.spec("testplan").deps == ["config"] and flow.spec("testplan").gate == "human"
     assert flow.spec("tb").deps == ["testplan"]
+    assert flow.spec("signoff").kind == "dv_signoff" and flow.spec("signoff").deps == ["simulate"] and flow.spec("signoff").gate == "human"
 
 
 def test_tb_waits_for_the_test_plan_and_rewrites_only_what_the_plan_changed(tmp_path, tools_dir, llm):
@@ -1142,3 +1207,336 @@ def test_a_prepare_bug_without_a_prepare_step_is_a_question(tmp_path, tools_dir,
     with pytest.raises(StepFailed, match="need your decision"):
         run_step(eng, "simulate")
     assert not eng.state.feedback.get("prepare") and not eng.state.feedback.get("tb")
+
+
+# -- test quality: failure modes in the plan, the tc-quality skill, code checks, the fresh reviewer ---------------------------------------
+
+def test_quality_problems_by_code():
+    c = {"tc_id": "TC-001", "name": "a", "req_ids": [], "failure_modes": ["q stuck at 0", "q one cycle late"]}
+    text = "// TC-001 | REQ-001\ntask automatic tc_001_a();\n  // FM1: stuck\n  `TC_CHECK(1'b1, \"x\")\nendtask\n"
+    probs = tb_plan.quality_problems(c, text)
+    assert any("constant 1" in p for p in probs) and any("FM2 (q one cycle late)" in p for p in probs) and not any("FM1 " in p for p in probs)
+    assert tb_plan.quality_problems(c, "// FM1: a\n// FM2: b\n`TC_CHECK(q === 1'b1, \"x\")") == []
+    assert tb_plan.quality_problems({"tc_id": "TC-001", "name": "a"}, "`TC_CHECK(q, \"x\")") == []  # (an old plan: no failure modes)
+    _, warns = tb_plan.normalize([TbCase(name="a", req_ids=["REQ-001"])], {"REQ-001"})
+    assert any("no failure mode" in w for w in warns)
+
+
+def test_plan_and_writers_get_the_quality_skill_and_failure_modes(tmp_path, tools_dir, llm):
+    eng = make_engine(tmp_path, tools_dir)
+    llm.vlsit_tb_plans = [[{"tc_id": "TC-001", "name": "a_reg", "req_ids": ["REQ-001", "REQ-002", "REQ-003"],
+                            "failure_modes": ["q stuck"], "observe": "port q"}]]
+    run_tb(eng)
+    plan = [c for c in llm.calls if c.name == "tb_plan"][0]
+    assert "tc-quality" in plan.prompt and any(d.name == "skills" for d in plan.add_dirs)
+    g = calls(llm, "tb_g1")[0]
+    assert "FM1: q stuck" in g.prompt and "Quan sát qua: port q" in g.prompt and "tc-quality" in g.prompt
+    r = calls(llm, "tb_review_g1")[0]
+    assert r.builtin_tools == ["Read", "Grep", "Glob"] and "FM1: q stuck" in r.prompt
+    from q3tui.llm.roles import role_of
+    assert role_of("tb_review_g1") is None  # (fresh: never the writer's session)
+    tc = json.loads((tmp_path / "schemas/selected_testplan.json").read_text())["test_cases"][0]
+    assert tc["failure_modes"] == ["q stuck"] and tc["observe"] == "port q" and "quality_findings" not in tc
+
+
+def test_review_must_findings_go_to_a_fix_then_are_recorded(tmp_path, tools_dir, llm):
+    eng = make_engine(tmp_path, tools_dir)
+    must = {"tc_id": "TC-001", "rule": "Q2", "severity": "must", "problem": "reset check without precondition", "fix": "check the flag is set first"}
+    should = {"tc_id": "TC-001", "rule": "Q4", "severity": "should", "problem": "no carry across bytes", "fix": "use 0x00FF+1"}
+    llm.vlsit_review_findings = [[must], [should]]  # (round 1: a must; after the fix: only a should)
+    run_tb(eng)
+    names = [c.name for c in llm.calls]
+    fix = [c for c in llm.calls if c.name == "tb_fix_g1_q1"]
+    assert fix and "[Q2] reset check without precondition" in fix[0].prompt and "check the flag is set first" in fix[0].prompt
+    assert fix[0].write_files == [tmp_path / "src/tb/tests/tc_001_a_reg.sv"]
+    assert names.count("tb_review_g1") == 1 and "tb_review_g1_2" in names
+    tcs = {t["tc_id"]: t for t in json.loads((tmp_path / "schemas/selected_testplan.json").read_text())["test_cases"]}
+    assert tcs["TC-001"]["quality_findings"] == [{k: should[k] for k in ("rule", "severity", "problem", "fix")}]
+    assert "quality_findings" not in tcs["TC-002"]
+
+
+def test_review_can_be_switched_off(tmp_path, tools_dir, llm):
+    eng = make_engine(tmp_path, tools_dir, extra_cfg="tb: {review_rounds: 0}\n")
+    run_tb(eng)
+    assert not calls(llm, "tb_review_g1")
+
+
+# -- test types, check activity, exit status, mutation and the verification report ---------------------------------------------------
+
+def test_plan_test_types_and_functions():
+    cases, warns = tb_plan.normalize([TbCase(name="a", req_ids=["REQ-001"], test_type="Constrained-Random", functions=["add", "add", " sub "],
+                                             failure_modes=["x"]),
+                                      TbCase(name="b", req_ids=["REQ-001"], test_type="smoke", failure_modes=["y"])], {"REQ-001"})
+    assert cases[0].test_type == "constrained_random" and cases[0].functions == ["add", "sub"]
+    assert cases[1].test_type == "directed" and any("unknown test_type 'smoke'" in w for w in warns)
+    only = [{"tc_id": f"TC-{i:03d}", "req_ids": ["REQ-001"], "test_type": "directed", "failure_modes": ["x"]} for i in range(6)]
+    w = tb_plan.plan_warnings(only, {}, set())
+    assert any("only directed" in x for x in w) and any("no constrained_random" in x for x in w)
+    assert any("REQ-002" in x for x in tb_plan.plan_warnings([{"tc_id": "TC-001", "req_ids": ["REQ-002"], "test_type": "stress"}], {}, set()))
+
+
+def test_result_macros_count_checks_and_exit_non_zero():
+    c = tb_gen.COMMON
+    assert "`__FILE__" in c and "`__LINE__" in c and "TC_CHECKS %s n=%0d" in c and "TC_HIT %s %s %0d" in c and "TC_SEED %s %0d" in c
+    assert "$fatal(1" in c and "if (cond) begin end else begin tc_fail_f = 1" in c  # (an X / Z condition fails, a non-zero multi-bit one passes)
+    assert all("\\" not in ln for ln in c.splitlines() if ln.startswith("`define"))  # (one line per macro)
+
+
+def test_judge_reads_the_checks_before_the_exit_code():
+    from q3tui.flows.dv.plain.simulate import judge
+
+    fail = "TC_DETAIL TC-001 FAIL: q was 3, expected 4\nTC_RESULT TC-001 FAIL\n"
+    assert judge(fail, 1, [0], "TC-001") == ("FAIL", "q was 3, expected 4")  # (VER-08: the $fatal exit names the failed check)
+    assert judge("TC_CHECKS TC-001 n=0\nTC_RESULT TC-001 PASS\n", 0, [0], "TC-001")[0] == "FAIL"   # (nothing was checked)
+    assert judge("TC_CHECKS TC-001 n=2\nTC_RESULT TC-001 PASS\n", 0, [0], "TC-001") == ("PASS", "")
+    assert judge("TC_RESULT TC-001 PASS\n", 0, [0], "TC-001") == ("PASS", "")   # (a testbench built before the counters)
+    assert judge("TC_RESULT TC-001 PASS\n", 3, [0], "TC-001")[0] == "FAIL"
+
+
+def test_check_activity_maps_hits_to_checks_and_failure_modes(tmp_path):
+    from q3tui.flows.dv.plain import activity
+
+    f = tmp_path / "tc_001_a.sv"
+    f.write_text("// TC-001 | REQ-001\ntask automatic tc_001_a();\n  // FM1: stuck\n  `TC_CHECK(q === 1, \"a\")\n"
+                 "  if (mode) begin\n    // FM2: late\n    `TC_CHECK(q === 2,\n              \"b\")\n  end\n  // `TC_CHECK(0, \"off\")\nendtask\n")
+    log = "TC_SEED TC-001 77\nTC_CHECKS TC-001 n=3\nTC_HIT TC-001 /abs/src/tb/tests/tc_001_a.sv:4 3\nTC_HIT TC-001 tb_top.sv:90 1\nTC_RESULT TC-001 PASS\n"
+    a = activity.parse(log, "TC-001", f, ["q stuck", "q one cycle late"])
+    assert a["checks"] == 2 and a["unreached"] == [7] and a["fm_unchecked"] == ["FM2 (q one cycle late)"] and a["seeds"] == [77]
+    # (a check over several lines: the simulator may give its last line)
+    b = activity.parse(log.replace("tc_001_a.sv:4 3", "tc_001_a.sv:4 3\nTC_HIT TC-001 tc_001_a.sv:8 1"), "TC-001", f, ["q stuck", "q one cycle late"])
+    assert b["unreached"] == [] and b["fm_unchecked"] == []
+    assert activity.parse("TC_RESULT TC-001 PASS\n", "TC-001", f) is None
+
+
+SIGNOFF_FLOW = """name: t
+steps:
+  - {id: rtl, kind: rtl_gen, options: {rules: [rtl_rule.md]}}
+  - {id: testplan, kind: dv_testplan, gate: auto, deps: []}
+  - {id: tb, kind: dv_tb, gate: auto, deps: [rtl, testplan]}
+  - {id: simulate, kind: dv_simulate, gate: auto, deps: [tb]}
+  - {id: signoff, kind: dv_signoff, gate: human, deps: [simulate]}
+"""
+
+MUTANTS = [
+    {"id": "", "req_ids": ["REQ-001"], "kind": "wrong_operator", "description": "a is inverted", "file": "src/rtl/leaf_a.sv",
+     "find": "reg_q <= i_a;", "replace": "reg_q <= ~i_a; /*MUT_CATCH*/"},
+    {"id": "", "req_ids": ["REQ-002"], "kind": "stuck_signal", "description": "b keeps its old value after reset", "file": "src/rtl/leaf_b.sv",
+     "find": "reg_q <= i_a;", "replace": "reg_q <= i_a ^ 1'b0;"},
+    {"id": "", "req_ids": ["REQ-002"], "kind": "other", "description": "nowhere", "file": "src/rtl/leaf_b.sv", "find": "no such text", "replace": "x"},
+]
+
+
+def _signoff_engine(tmp_path, tools_dir, llm, extra_cfg=""):
+    eng = make_engine(tmp_path, tools_dir, extra_cfg=extra_cfg, run_mode="mut")
+    (tmp_path / "flows" / "t.yaml").write_text(SIGNOFF_FLOW)
+    eng = Engine(Project.open(tmp_path))
+    run_step(eng, "rtl")
+    run_tb(eng)
+    run_step(eng, "simulate")
+    return eng
+
+
+def test_signoff_mutation_catches_survives_and_hands_back(tmp_path, tools_dir, llm):
+    llm.vlsit_mutants = MUTANTS
+    llm.vlsit_survivors = [{"mutant_id": "M-002", "verdict": "missed", "reason": "no test reads b after the reset", "tc_id": "TC-002",
+                            "request": "after reset, drive i_a and check o_y follows it one cycle later"}]
+    eng = _signoff_engine(tmp_path, tools_dir, llm, extra_cfg="tb: {mutants: 2}\n")
+    rtl_before = (tmp_path / "src/rtl/leaf_a.sv").read_text()
+    run_step(eng, "signoff")
+    assert (tmp_path / "src/rtl/leaf_a.sv").read_text() == rtl_before and "MUT_CATCH" not in rtl_before  # (never the delivered RTL)
+    m = json.loads((tmp_path / "schemas/dv_mutation.json").read_text())
+    assert m["status"] == "done" and [x["id"] for x in m["mutants"]] == ["M-001", "M-002"] and m["rejected"] == []  # (two asked: the third is not needed)
+    assert m["results"]["M-001"]["status"] == "caught" and m["results"]["M-001"]["by"] == "TC-001" and "o_y wrong" in m["results"]["M-001"]["check"]
+    assert m["results"]["M-002"]["status"] == "survived" and m["score"]["score"] == 0.5
+    assert m["score"]["per_req"]["REQ-001"]["status"] == "pass" and m["score"]["per_req"]["REQ-002"]["status"] == "below"
+    assert (tmp_path / "build/sim/mutate/M-001/rtl/leaf_a.sv").read_text().count("MUT_CATCH") == 1
+    mut = calls(llm, "dv_mutants")[0]
+    assert tmp_path / "src/tb" in mut.deny_dirs and "bug-injection" in mut.prompt  # (the mutant author never sees the testbench)
+    from q3tui.llm.roles import role_of
+    assert role_of("dv_mutants") is None and role_of("dv_mutant_review") is None
+    # the missed bug goes back to that test case, in spec terms; the loop runs tb, simulate and signoff again
+    fb = eng.state.feedback["tb"]
+    assert len(fb) == 1 and fb[0].startswith("[tb:TC-002] From mutation testing (M-002, REQ-002)") and "one cycle later" in fb[0]
+    assert eng.state.step_meta["signoff"]["loop"] is True
+    rep = json.loads((tmp_path / "schemas/dv_verification_report.json").read_text())
+    cov = {c["req_id"]: c for c in rep["coverage_summary"]}
+    assert cov["REQ-001"]["status"] == "verified" and cov["REQ-002"]["status"] == "partial" and cov["REQ-002"]["mutation_score"] == 0.0
+    assert any(x.startswith("M-002 (REQ-002): a bug no test caught") for x in rep["not_verified"])
+    assert rep["summary"]["tests_by_type"] == {"directed": 2} and "## Not verified" in (tmp_path / "reports/dv_verification_report.md").read_text()
+    # nothing changed: the mutants and their results are kept (no LLM, no runs); the same mutant is not handed over twice
+    eng.state.feedback.pop("tb", None)
+    n_llm, n = len(llm.calls), llm.vlsit_mutant_calls
+    run_step(eng, "signoff")
+    assert llm.vlsit_mutant_calls == n and len(llm.calls) == n_llm and not eng.state.feedback.get("tb")
+
+
+def test_signoff_waits_for_passing_tests_and_reports_failures(tmp_path, tools_dir, llm):
+    eng = make_engine(tmp_path, tools_dir, run_mode="failtc2")
+    (tmp_path / "flows" / "t.yaml").write_text(SIGNOFF_FLOW)
+    eng = Engine(Project.open(tmp_path))
+    llm.vlsit_triage_verdicts = [{"id": "TC-002", "verdict": "rtl_bug", "module": "leaf_b", "summary": "b is not registered", "request": "register b"}]
+    run_step(eng, "rtl")
+    run_tb(eng)
+    with contextlib.suppress(StepFailed):
+        run_step(eng, "simulate")
+    run_step(eng, "signoff")
+    m = json.loads((tmp_path / "schemas/dv_mutation.json").read_text())
+    assert m["status"] == "not_run" and "TC-002" in m["note"] and not calls(llm, "dv_mutants")
+    rep = json.loads((tmp_path / "schemas/dv_verification_report.json").read_text())
+    fa = rep["failure_analysis"]
+    assert len(fa) == 1 and fa[0]["tc_ids"] == ["TC-002"] and fa[0]["category"] == "dut" and fa[0]["review"]["advisory"] is True
+    assert {c["req_id"]: c["status"] for c in rep["coverage_summary"]}["REQ-002"] == "failing"
+
+
+def test_signoff_mutation_switched_off(tmp_path, tools_dir, llm):
+    eng = _signoff_engine(tmp_path, tools_dir, llm, extra_cfg="tb: {mutants: 0}\n")
+    run_step(eng, "signoff")
+    assert json.loads((tmp_path / "schemas/dv_mutation.json").read_text())["status"] == "off" and not calls(llm, "dv_mutants")
+    assert "mutation: off" in "\n".join(json.loads((tmp_path / "schemas/dv_verification_report.json").read_text())["not_verified"])
+
+
+# -- the function inventory and the plan reviewer -----------------------------------------------------------------------------------------
+
+def test_function_gaps_ignore_random_tests_and_excluded_requirements():
+    inv = [{"req_id": "REQ-001", "functions": ["push", "Pop", "flush"]}, {"req_id": "REQ-002", "functions": ["crc"]}]
+    cases = [{"tc_id": "TC-001", "functions": ["push", "pop"], "test_type": "directed"},
+             {"tc_id": "TC-002", "functions": ["flush", "crc"], "test_type": "constrained_random"}]
+    assert tb_plan.function_gaps(cases, inv, set()) == {"REQ-001": ["flush"], "REQ-002": ["crc"]}  # (a random test alone is no directed check)
+    assert tb_plan.function_gaps(cases, inv, {"REQ-002"}) == {"REQ-001": ["flush"]}
+    assert tb_plan.normalize_inventory([ReqFunctions(req_id="REQ-001", functions=["push", "PUSH", " "]), ReqFunctions(req_id="REQ-9", functions=["x"])],
+                                       {"REQ-001"}) == [{"req_id": "REQ-001", "functions": ["push"]}]
+    assert tb_plan.normalize_inventory([], {"REQ-001"}, inv[:1]) == inv[:1]  # (an answer without an inventory keeps the earlier one)
+
+
+def test_inventory_functions_without_a_directed_test_are_asked_for(tmp_path, tools_dir, llm):
+    llm.vlsit_tb_inventory = [{"req_id": "REQ-001", "functions": ["load", "clear"]}]
+    llm.vlsit_tb_plans = [[{"tc_id": "TC-001", "name": "a_reg", "req_ids": ["REQ-001", "REQ-003"], "functions": ["load"]},
+                           {"tc_id": "TC-002", "name": "b_reg", "req_ids": ["REQ-002"], "functions": ["clear"], "test_type": "constrained_random"}]]
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    plans = [c for c in llm.calls if c.name == "tb_plan"]
+    assert len(plans) == 2 and "REQ-001: clear" in plans[1].prompt and "Function inventory" in plans[1].prompt
+    plan = json.loads((tmp_path / "schemas" / "test_plan.json").read_text())
+    assert plan["inventory"] == [{"req_id": "REQ-001", "functions": ["load", "clear"]}] and plan["function_gaps"] == {"REQ-001": ["clear"]}
+
+
+def test_the_plan_reviewer_is_fresh_and_its_must_findings_go_back_to_the_planner(tmp_path, tools_dir, llm):
+    llm.vlsit_plan_review_findings = [[{"tc_id": "TC-001", "rule": "Q1", "severity": "must", "problem": "FM2 cannot fail: the op is commutative",
+                                        "fix": "drop FM2"}, {"tc_id": "TC-404", "problem": "unknown test case"}], []]
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    names = [c.name for c in llm.calls if c.name.startswith("tb_plan")]
+    assert names == ["tb_plan_questions", "tb_plan", "tb_plan_review", "tb_plan", "tb_plan_review_2"]
+    again = [c for c in llm.calls if c.name == "tb_plan"][1].prompt
+    assert "Reviewer độc lập" in again and "FM2 cannot fail" in again and "TC-404" not in again
+    review = next(c for c in llm.calls if c.name == "tb_plan_review")
+    assert "tc-quality" in review.prompt and review.output_model is TbReview
+    assert json.loads((tmp_path / "schemas" / "test_plan.json").read_text())["review"] == []
+
+
+def test_later_planner_and_reviewer_calls_see_the_questions_already_asked():
+    from q3tui.flows.dv.plain import task as tb_prompts
+
+    base = dict(reqs=[("REQ-001", "functional", "x")], spec_files=["spec/spec.md"])
+    p = tb_prompts.plan_prompt(**base, params={}, top="t", previous=None, changes=[], answers={}, settled="", feedback=[], uncovered=[],
+                               asked=["What is the reset value of CTRL?"])
+    assert "KHÔNG hỏi lại" in p and "reset value of CTRL" in p
+    r = tb_prompts.plan_review_prompt(**base, plan_path="schemas/test_plan.json", inventory=[], cases=[], excluded=[], asked=["Q?"])
+    assert "Câu hỏi đang mở" in r
+    assert "Câu hỏi đang mở" not in tb_prompts.plan_prompt(**base, params={}, top="t", previous=None, changes=[], answers={}, settled="",
+                                                            feedback=[], uncovered=[])
+
+
+# -- Q&A first: the spec's open points are asked, all at once, before any plan -------------------------------------------------------------
+
+def test_the_plan_waits_for_the_q_and_a_then_one_more_sweep_then_plans(tmp_path, tools_dir, llm):
+    llm.vlsit_qa = [[{"q": "Is the counter width 8 or 16 bits?", "default": "16"}, {"q": "May the testbench probe the FSM state? If so, which encoding?",
+                     "default": "no"}], [{"q": "With 16 bits: does it wrap or saturate?", "default": "wrap"}], []]
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    assert [c.name for c in llm.calls if c.name.startswith("tb_plan")] == ["tb_plan_questions"]  # no plan yet
+    qs = eng.by_name["testplan"].question_list(eng)
+    assert [q["question"][:20] for q in qs] == ["Is the counter width", "May the testbench pr"] and all(q["blocking"] for q in qs)
+    assert not (tmp_path / "schemas" / "test_plan.json").exists()
+    eng.answer(qs[0]["id"], "16")
+    run_step(eng, "testplan")  # one still open: no sweep, no plan
+    assert [c.name for c in llm.calls if c.name.startswith("tb_plan")] == ["tb_plan_questions"]
+    eng.answer_all()
+    run_step(eng, "testplan")  # all answered: a second sweep asks what the answers opened
+    assert [c.name for c in llm.calls if c.name.startswith("tb_plan")] == ["tb_plan_questions", "tb_plan_questions_2"]
+    sweep2 = llm.calls[-1].prompt
+    assert "Is the counter width 8 or 16 bits? → 16" in sweep2
+    eng.answer_all()
+    run_step(eng, "testplan")  # round limit reached: the plan
+    names = [c.name for c in llm.calls if c.name.startswith("tb_plan")]
+    assert names[:3] == ["tb_plan_questions", "tb_plan_questions_2", "tb_plan"] and "tb_plan_questions_3" not in names
+    plan_call = next(c for c in llm.calls if c.name == "tb_plan")
+    assert "Q&A trước plan đã xong" in plan_call.prompt and "(With 16 bits: does it wrap or saturate?): wrap" in plan_call.prompt
+    assert (tmp_path / "schemas" / "test_plan.json").exists()
+    assert len(eng.by_name["testplan"].question_list(eng)) == 3  # the Q&A's questions stay in the file, answered
+
+
+def test_an_empty_sweep_goes_straight_to_the_plan(tmp_path, tools_dir, llm):
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    assert [c.name for c in llm.calls if c.name.startswith("tb_plan")][:2] == ["tb_plan_questions", "tb_plan"]
+    llm.calls.clear()
+    run_step(eng, "testplan")  # nothing changed: no new sweep
+    assert not [c for c in llm.calls if c.name.startswith("tb_plan_questions")]
+
+
+def test_the_tb_top_digest_keeps_declarations_and_prototypes_but_not_bodies():
+    from q3tui.flows.dv.plain import topapi
+
+    src = """module tb_top;
+  // ----------------------------------------
+  localparam int   TB_W   = 8;      // width
+  int unsigned     tb_err_cnt = 0;  // violations
+`define TB_DUT dut.u_core
+  always @(posedge clk) begin : mon_bus
+    if (x) begin
+      tb_err_cnt <= tb_err_cnt + 1;
+    end
+  end
+  // bus_wr(addr, data): one write
+  task automatic bus_wr(input logic [7:0] addr,
+                        input logic [7:0] data);
+    secret_body_line = 1;
+  endtask
+  function automatic int f(input int a);
+    return a + 1;
+  endfunction
+endmodule
+"""
+    d = topapi.digest(src)
+    assert "3: localparam int TB_W = 8; // width" in d and "`define TB_DUT" in d and "tb_err_cnt = 0" in d
+    assert "11: // bus_wr(addr, data): one write" in d and "13: input logic [7:0] data);" in d
+    assert "secret_body_line" not in d and "tb_err_cnt + 1" not in d and "return a + 1" not in d
+    assert "body: lines 7–10" in d and "body: lines 14–14" in d and "-----" not in d
+    assert "endmodule" in d
+
+
+def test_a_plan_patch_changes_only_the_cases_it_names_and_keeps_the_rest():
+    prev = [{"tc_id": "TC-001", "name": "a", "req_ids": ["REQ-001"]}, {"tc_id": "TC-002", "name": "b", "req_ids": ["REQ-002"]},
+            {"tc_id": "TC-003", "name": "c", "req_ids": ["REQ-003"]}]
+    out = tb_plan.apply_patch(prev, [TbCase(tc_id="TC-002", name="b2", req_ids=["REQ-002"]), TbCase(name="d", req_ids=["REQ-004"])], ["TC-003"])
+    assert [(c.tc_id, c.name) for c in out] == [("TC-001", "a"), ("TC-002", "b2"), ("", "d")]
+    assert tb_plan.merge_inventory([{"req_id": "REQ-001", "functions": ["x"]}, {"req_id": "REQ-002", "functions": ["y"]}],
+                                   [{"req_id": "REQ-002", "functions": ["y", "z"]}, {"req_id": "REQ-005", "functions": ["w"]}]) == [
+        {"req_id": "REQ-001", "functions": ["x"]}, {"req_id": "REQ-002", "functions": ["y", "z"]}, {"req_id": "REQ-005", "functions": ["w"]}]
+
+
+def test_answering_the_compile_question_does_not_rewrite_every_test_case(tmp_path, tools_dir, llm):
+    # rv32iv: answering "it does not compile: run tb again" changed every test case's hash, and all 68 were written again
+    llm.vlsit_tc_always_bad = {"tc_001_a_reg.sv": 1}
+    eng = make_engine(tmp_path, tools_dir, extra_cfg="tb: {max_fix_attempts: 1}\n")
+    with_rtl(tmp_path, eng, llm)
+    run_tb(eng)
+    qid = eng.by_name["tb"].question_list(eng)[0]["id"]
+    llm.vlsit_tc_always_bad = {}
+    eng.answer(qid, "run tb again")
+    n = len(llm.calls)
+    run_tb(eng)
+    later = [c.name for c in llm.calls[n:]]
+    assert not [x for x in later if x.startswith(("tb_g", "tb_top"))]  # (only the broken file is fixed)
+    assert "tb_fix_tc_001_a_reg" in later

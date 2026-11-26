@@ -15,6 +15,7 @@ KINDS: dict[str, str] = {
     "dv_tb": "q3tui.flows.dv.tb.step:TbStep",
     "dv_prepare": "q3tui.flows.dv.prepare.step:PrepareStep",
     "dv_simulate": "q3tui.flows.dv.simulate.step:SimulateStep",
+    "dv_signoff": "q3tui.flows.dv.signoff.step:SignoffStep",
 }
 
 

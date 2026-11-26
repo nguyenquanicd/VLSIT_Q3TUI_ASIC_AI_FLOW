@@ -29,6 +29,8 @@ summary, `VLSIT_DUT_TB_RESULT`).
 
 ## Judgment
 - Do not "fix" the testbench to match the RTL because that is quicker. A test that agrees with a bug is worthless.
+- A tb_bug request corrects the check to the spec, never weakens it: no `>=` for `==`, no mask, no dropped field or check unless the spec leaves that part
+  open (the `tc-quality` skill, rule Q8). Say what the corrected check must still catch.
 - Never hand over a guess. "I read the whole path and found no wrong gate" is the moment to probe, not to name a module: the fix goes to whoever owns the
   first wrong value you saw.
 - Be specific: the test id, the file and the line or signal, the cycle, expected against seen. One precise request is better than a list of hunches.

@@ -219,6 +219,10 @@ class TBConfig(_Strict):
     max_fix_attempts: int = Field(3, ge=0, le=10)  # extra rounds when the plan / TB checks still fail
     max_turns: int = Field(30, ge=5, le=400)  # agent turns per TB stage
     tests_per_agent: int = Field(6, ge=1, le=100)  # test cases per agent (agents run in parallel)
+    review_rounds: int = Field(1, ge=0, le=5)  # plain testbench: fix rounds after the fresh test-quality reviewer (0 = no review)
+    mutants: int = Field(20, ge=0, le=500)  # signoff: requirement-matched bugs injected into a copy of the RTL (0 = no mutation testing)
+    mutation_threshold: float = Field(0.85, ge=0.0, le=1.0)  # signoff: the score a requirement needs (caught / (compiled − equivalent))
+    mutation_hand_back: bool = True  # signoff: a bug no test catches goes back to tb (or testplan) as a change request
     parallel: int = Field(4, ge=1, le=32)  # test-case agents at once
     sim_parallel: int | None = Field(None, ge=1, le=256)  # simulations at once (`simulate`); None = 80 % of the CPU cores (`sim_jobs`)
 

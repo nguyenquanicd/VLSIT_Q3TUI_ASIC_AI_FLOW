@@ -97,6 +97,10 @@ tb:                               # the dv flow's tb step (docs/spec/dv-flow.md)
   max_fix_attempts: 3             # extra rounds when the plan / TB checks still fail
   max_turns: 30                   # agent turns per TB stage
   tests_per_agent: 6              # test cases per agent (agents run in parallel)
+  review_rounds: 1                # plain testbench: fix rounds after the fresh test-quality reviewer (0 = no review)
+  mutants: 20                     # signoff: requirement-matched bugs injected into a copy of the RTL (0 = no mutation testing)
+  mutation_threshold: 0.85        # signoff: the share of the bugs a requirement's tests must catch
+  mutation_hand_back: true        # signoff: a bug no test catches goes back to tb (or testplan) as a change request
   parallel: 4                     # test-case agents at once
 
 rtl:                              # the rtl flow's rtl step

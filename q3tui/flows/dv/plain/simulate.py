@@ -28,15 +28,22 @@ DETAIL = re.compile(r"^TC_DETAIL\s+(\S+)\s+FAIL:\s*(.*)$", re.M)
 
 
 def judge(text: str, returncode: int | None, ok_codes: list[int], tc_id: str) -> tuple[str, str]:
-    """(status, note) of one run of one test case, from its log."""
-    if returncode not in ok_codes:
-        return "FAIL", f"simulator exit code {returncode}"
+    """(status, note) of one run of one test case, from its log. It passes only when its checks and the simulator's exit status both pass
+    (VER-08: a failed test case makes the simulator exit non-zero — the note is then the failed checks, not the exit code); a test case that
+    ran to its report without evaluating a single check checked nothing: FAIL."""
+    from q3tui.flows.dv.plain import activity
+
     m = next((m for m in RESULT.finditer(text) if m.group(1) == tc_id), None)
-    if m is None:
-        return "FAIL", f"no TC_RESULT line for {tc_id} in the log"
-    if m.group(2) != "PASS":
+    if m is not None and m.group(2) != "PASS":
         details = [d.group(2).strip() for d in DETAIL.finditer(text) if d.group(1) == tc_id]
         return "FAIL", "; ".join(details[:3]) or "the test case reported FAIL"
+    if returncode not in ok_codes:
+        return "FAIL", f"simulator exit code {returncode}"
+    if m is None:
+        return "FAIL", f"no TC_RESULT line for {tc_id} in the log"
+    n = next((int(c.group(2)) for c in activity.CHECKS.finditer(text) if c.group(1) == tc_id), None)
+    if n == 0:
+        return "FAIL", "no check was evaluated: the test case reported PASS without checking anything (its TC_CHECKs were never reached)"
     return "PASS", ""
 
 
@@ -106,7 +113,20 @@ def _hand_blocked(step, ctx, blocked: list[tuple[str, list[str]]]) -> bool:
 
 
 LIVE = "dv_test_results.json"
-FINAL = ("PASS", "FAIL", "TIMEOUT", "BLOCKED", "ERROR")
+ACTIVITY = "dv_check_activity.json"  # per test: the checks that ran, the ones never reached, the failure modes never checked, the seeds
+
+
+def write_activity(path: Path, cases: list[dict], acts: dict[str, dict], status: dict[str, str]) -> None:
+    from q3tui.core.project import write_json
+
+    rows = []
+    for c in cases:
+        a = acts.get(c["tc_id"])
+        rows.append({"tc_id": c["tc_id"], "status": status.get(c["tc_id"], "NOT_RUN"), **({"recorded": False} if a is None else {"recorded": True, **a})})
+    write_json(path, {"tests": rows, "at": artifacts.now()})
+
+
+FINAL =("PASS", "FAIL", "TIMEOUT", "BLOCKED", "ERROR")
 
 
 class _Live:
@@ -253,6 +273,7 @@ async def run(step, ctx) -> None:
     ok_codes = list(tools.roles["run"].ok_returncodes)
     rows, failed, blocked, timed_out, not_run, seen = [], [], [], [], [], {}
     done: dict[str, tuple] = {}  # tc → (res, status, note, missing, broken)
+    acts: dict[str, dict] = {}  # tc → the checks that ran (activity.parse), for the passing and failing runs
     limiter = anyio.CapacityLimiter(ctx.cfg.tb.sim_jobs())  # (tests at once: tb.sim_parallel, default 80 % of the cores)
     # the tests that failed in the run before (a fix was made for them) run first; one that fails again stops the others (killed, or not started):
     # the fix loop goes on with what failed, the tests that failed before still finish (their results go to the same triage)
@@ -299,6 +320,12 @@ async def run(step, ctx) -> None:
         else:
             text = Path(res.log_path).read_text(errors="replace") if res.log_path and Path(res.log_path).is_file() else ""
             status, note = judge(text, res.returncode, ok_codes, tc)
+            from q3tui.flows.dv.plain import activity
+            from q3tui.flows.dv.plain.plan import file_name
+
+            act = activity.parse(text, tc, lay.tb / "tests" / file_name(c), c.get("failure_modes"))
+            if act is not None:
+                acts[tc] = act
             missing = missing_inputs(text, project.root, seen) if status == "FAIL" else []
             if missing:
                 status, note = "BLOCKED", f"missing input(s): {', '.join(missing[:6])}{' …' if len(missing) > 6 else ''}" + (f" (also: {note})" if note else "")
@@ -330,6 +357,11 @@ async def run(step, ctx) -> None:
             outer.cancel_scope.cancel()
     finally:
         live.close()
+    write_activity(lay.schemas / ACTIVITY, cases, acts, {t: d[1] for t, d in done.items()})
+    vacuous = [(t, a["fm_unchecked"]) for t, a in acts.items() if a.get("fm_unchecked") and done[t][1] == "PASS"]
+    if vacuous:
+        ctx.emit("warning", message=f"simulate: {len(vacuous)} passing test(s) never ran the check of a planned failure mode (it was not checked): "
+                                    + "; ".join(f"{t}: {', '.join(f.split(' ')[0] for f in fs)}" for t, fs in vacuous[:6]) + f" (schemas/{ACTIVITY})")
     stale = lay.schemas / "dv_evidence.json"  # (a run of this step replaces the record of the last one: kept until now, the TUI shows it meanwhile)
     if stale.is_file():
         stale.unlink()
