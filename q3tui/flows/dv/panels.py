@@ -40,8 +40,12 @@ def _plain(app: "Q3TUIApp") -> bool:
 def _tests(app: "Q3TUIApp") -> list[dict]:
     """The tests as {tc_id, name, kind, requirement_ids, description, detail}: from the contract, or from the plan."""
     if _plain(app):
-        return [{"tc_id": c.get("tc_id", ""), "name": c.get("name", ""), "kind": "–", "requirement_ids": c.get("req_ids") or [], "description": c.get("description", ""),
-                 "detail": (f"- only when `{c['conditional_param']}` is enabled" if c.get("conditional_param") else "")}
+        return [{"tc_id": c.get("tc_id", ""), "name": c.get("name", ""), "kind": c.get("test_type") or "–", "requirement_ids": c.get("req_ids") or [],
+                 "description": c.get("description", ""),
+                 "detail": "\n".join([*([f"- functions: {', '.join(c['functions'])}"] if c.get("functions") else []),
+                                      *([f"- observes: {c['observe']}"] if c.get("observe") else []),
+                                      *(f"- FM{k}: {f}" for k, f in enumerate(c.get("failure_modes") or [], 1)),
+                                      *([f"- only when `{c['conditional_param']}` is enabled"] if c.get("conditional_param") else [])])}
                 for c in (artifact(app, PLAN, {}) or {}).get("test_cases", []) if isinstance(c, dict)]
     return [{**t, "kind": f"{t.get('kind', '')} · {t.get('milestone', '')}", "detail": (f"- objectives: {', '.join(t.get('objective_ids') or []) or '–'}\n- scoreboard rules: "
              f"{', '.join(t.get('rule_ids') or []) or '–'}" + (f"\n- only when `{t['conditional_param']}` is enabled" if t.get("conditional_param") else ""))}
@@ -393,6 +397,79 @@ def _verdict_urgent(app: "Q3TUIApp") -> int:
     return sum(v.get("verdict") in ("rtl_bug", "spec_issue", "unsure") for v in _verdicts(app))
 
 
+# -- the sign-off: mutation and the verification report --------------------------------------------------------------------------------
+
+
+def _mutation(app: "Q3TUIApp") -> dict:
+    return artifact(app, "dv_mutation.json", {}) or {}
+
+
+def _mutant_rows(app: "Q3TUIApp") -> list[tuple]:
+    d = _mutation(app)
+    out = []
+    for m in d.get("mutants") or []:
+        r = (d.get("results") or {}).get(m["id"]) or {}
+        v = (d.get("survivors") or {}).get(m["id"]) or {}
+        st = r.get("status", "–")
+        style = "green" if st == "caught" else "red" if st == "survived" and v.get("verdict") != "equivalent" else "dim"
+        out.append((m["id"], m["id"], ", ".join(m.get("req_ids") or []) or "–", Text(st + (" (equivalent)" if v.get("verdict") == "equivalent" else ""), style),
+                    r.get("by") or "–", short(m.get("description", ""), 80)))
+    return out
+
+
+def _mutant_detail(app: "Q3TUIApp", key: str) -> str:
+    d = _mutation(app)
+    m = next((m for m in d.get("mutants") or [] if m["id"] == key), None)
+    if m is None:
+        return ""
+    r = (d.get("results") or {}).get(key) or {}
+    v = (d.get("survivors") or {}).get(key) or {}
+    lines = [f"**{key}** — {r.get('status', '–')} ({', '.join(m.get('req_ids') or []) or 'no REQ'}, {m.get('kind') or 'bug'})", "", m.get("description", ""), "",
+             f"`{m['file']}`:", "```diff", *[f"- {ln}" for ln in m["find"].splitlines()], *[f"+ {ln}" for ln in m["replace"].splitlines()], "```"]
+    if r.get("by"):
+        lines += ["", f"caught by {r['by']}: {r.get('check', '')}"]
+    if v:
+        lines += ["", f"review (AI, advisory): **{v.get('verdict')}** — {v.get('reason', '')}", *([f"", f"asked of the testbench: {v['request']}"] if v.get("request") else [])]
+    return "\n".join(lines)
+
+
+def _mutant_urgent(app: "Q3TUIApp") -> int:
+    d = _mutation(app)
+    eq = set(d.get("equivalent") or [])
+    return sum(((d.get("results") or {}).get(m["id"]) or {}).get("status") == "survived" and m["id"] not in eq for m in d.get("mutants") or [])
+
+
+def _mutant_summary(app: "Q3TUIApp") -> str:
+    d = _mutation(app)
+    s = d.get("score") or {}
+    if d.get("status") != "done":
+        return f"mutation: {d.get('status', 'not run')}" + (f" — {d['note']}" if d.get("note") else "")
+    return (f"score {s.get('score')} (threshold {s.get('threshold')}): {s.get('caught')} caught, {s.get('survived')} survived, {s.get('equivalent')} equivalent, "
+            f"{(s.get('mutants') or 0) - (s.get('compiled') or 0)} not compiled · requirements below the threshold: {s.get('below_threshold')}")
+
+
+def _report(app: "Q3TUIApp") -> dict:
+    return artifact(app, "dv_verification_report.json", {}) or {}
+
+
+def _cov_rows(app: "Q3TUIApp") -> list[tuple]:
+    style = {"verified": "green", "partial": "yellow", "failing": "red", "uncovered": "red", "not_run": "yellow"}
+    return [(c["req_id"], c["req_id"], Text(c["status"], style.get(c["status"], "dim")), f"{c['tests_passed']}/{c['tests_total']}",
+             "–" if c.get("mutation_score") is None else str(c["mutation_score"]), str(c.get("mutants", 0))) for c in _report(app).get("coverage_summary") or []]
+
+
+def _cov_detail(app: "Q3TUIApp", key: str) -> str:
+    d = _report(app)
+    tests = [t for t in d.get("tc_results") or [] if key in t.get("req_ids", [])]
+    notes = [x for x in d.get("not_verified") or [] if x.startswith(key + ":") or any(x.startswith(t["tc_id"] + ":") for t in tests)]
+    return "\n".join([f"**{key}**", "", *(f"- {t['tc_id']} `{t['name']}` [{t['test_type']}]: {t['status']}" for t in tests),
+                      *(["", "Not verified:", *(f"- {x}" for x in notes)] if notes else [])])
+
+
+def _cov_urgent(app: "Q3TUIApp") -> int:
+    return sum(c["status"] in ("failing", "uncovered", "partial") for c in _report(app).get("coverage_summary") or [])
+
+
 def _tabs_for(kind: str) -> tuple[TabSpec, ...]:
     if kind == "dv_testplan":
         return (TabSpec("tests", "Tests", ("TC", "Name", "Kind", "REQs", "Description"), _test_rows, _test_detail,
@@ -427,6 +504,14 @@ def _tabs_for(kind: str) -> tuple[TabSpec, ...]:
                 TabSpec("triage", "Triage", ("Test", "Verdict", "Goes to", "RTL module", "Summary"), _verdict_rows, _verdict_detail,
                         "whose fault each failing test is: a testbench bug goes back to tb (the chain runs again), an RTL bug is handed to the rtl flow, a spec issue waits for your answer",
                         urgent=_verdict_urgent, empty="no failing test judged yet"))
+    if kind == "dv_signoff":
+        return (TabSpec("reqs", "Requirements", ("REQ", "Status", "Tests", "Mutation", "Mutants"), _cov_rows, _cov_detail,
+                        "verified: every test passed, every planned failure mode was checked, mutation at the threshold · partial: a check never ran or too few bugs caught · "
+                        "the whole report: reports/dv_verification_report.md (with what was not verified) — approve the step to sign it off",
+                        urgent=_cov_urgent, empty="no dv_verification_report.json yet — run (r)"),
+                TabSpec("mutants", "Mutants", ("Mutant", "REQs", "Result", "Caught by", "Bug"), _mutant_rows, _mutant_detail,
+                        "bugs injected into a copy of the RTL (never src/rtl): caught by a test, or survived — a missing check (handed back to tb) or equivalent (AI review, advisory)",
+                        urgent=_mutant_urgent, summary=_mutant_summary, empty="no mutants yet — the tests must pass first (tb.mutants: 0 switches it off)"))
     return ()
 
 
@@ -437,5 +522,5 @@ def _builder(kind: str):
     return build
 
 
-for _kind in ("dv_testplan", "dv_tb", "dv_prepare", "dv_simulate"):
+for _kind in ("dv_testplan", "dv_tb", "dv_prepare", "dv_simulate", "dv_signoff"):
     register_panel(_kind, _builder(_kind))

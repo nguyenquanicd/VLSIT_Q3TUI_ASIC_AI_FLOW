@@ -46,8 +46,11 @@ FLOW_FRESH = re.compile(r"review")
 
 # unit-level work (one module's RTL, one block's model, one unit's plan / testbench): its own small session, resumed
 # for that unit's fixes (the steps keep those per module / piece) — not the role's one session, which on rv32im grew
-# to hundreds of k tokens that every stimulus turn re-read (team.unit_sessions: own)
-UNIT_LEVEL = re.compile(r"^(unit_|rtl_(?!review)|model_|tb_(stimulus|checker)$|vplan_)")
+# to hundreds of k tokens that every stimulus turn re-read (team.unit_sessions: own).
+# The plain dv testbench too: tb_plan (its prompt carries the previous plan, the answers, the findings), tb_top, each
+# group of test cases and their fixes — on rv32iv they resumed the verifier's session (500–700k tokens of earlier
+# planning) and every turn of 11 group writers re-read it: 81M cached tokens, $31 for one tb step, the usage limit hit
+UNIT_LEVEL = re.compile(r"^(unit_|rtl_(?!review)|model_|tb_(stimulus|checker)$|vplan_|tb_plan(_questions(_\d+)?)?$|tb_top|tb_g\d|tb_fix_)")
 
 
 def unit_level(stage_name: str) -> bool:
@@ -128,12 +131,22 @@ COMPACT_KEEP = ("Keep: the design decisions and conventions you follow, each uni
 
 
 def notes_path(project, role: str) -> Path:
-    if role == "reviewer":  # (its own notes, next to the RTL it reviews)
-        return project.rtl_dir / "REVIEW_NOTES.md"
+    """A role's notes: in .q3tui/team/<role>/ (denied to every other stage; the role's own session may read and write it).
+    They used to sit in the role's folder (tb/NOTES.md, …), where every unit session listed and read them: on rv32iv each
+    test-group writer read the verifier's 28k characters of old planning notes. An old file there is moved on first use."""
     if role == "flow":
         return project.schemas_dir / "NOTES.md"
-    return {"architect": project.arch_dir, "modeler": project.model_dir, "designer": project.rtl_dir,
-            "verifier": project.tb_dir}[role] / "NOTES.md"
+    path = project.state_dir / "team" / role / "NOTES.md"
+    legacy = (project.rtl_dir / "REVIEW_NOTES.md" if role == "reviewer" else
+              {"architect": project.arch_dir, "modeler": project.model_dir, "designer": project.rtl_dir,
+               "verifier": project.tb_dir}[role] / "NOTES.md")
+    if legacy.is_file() and not path.is_file():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            legacy.replace(path)
+        except OSError:
+            return legacy
+    return path
 
 
 def role_denied(project, role: str) -> list[Path]:
@@ -394,6 +407,9 @@ class Team:
 
         out = []
         for block in _blocks(text):
+            if KEEP in block:  # (a reviewer's finding sent again means "still not fixed", never "nothing new": rv32iv's planner
+                out.append(block.replace(KEEP, "").rstrip(" "))  # got its findings as "[unchanged …]" and resubmitted the same plan)
+                continue
             h = _hash(block)
             if len(block) >= limit and h in sent:
                 first = block.strip().splitlines()[0][:100]
@@ -428,6 +444,9 @@ class Team:
                 **{t.name: t for t in (stage.sdk_tools if stage else [])}}
         known.update(mine)
         return [mine.get(name) or dataclasses.replace(t, handler=_unavailable(name)) for name, t in known.items()]
+
+
+KEEP = runtime.KEEP  # a prompt section that is always sent in full: what a task must act on (a reviewer's findings, what is missing)
 
 
 def _blocks(text: str) -> list[str]:

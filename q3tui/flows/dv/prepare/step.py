@@ -158,6 +158,12 @@ class PrepareStep(VlsitStep):
             parts.append(f"Toolchain: RISCV_PREFIX={tc.prefix}, SPIKE={tc.spike}. Build with the `build` tool until it says clean.")
         else:
             parts.append("The tools are not there yet (" + "; ".join(why_not) + "): write the sources and the Makefile, no `build` tool this time.")
+        # an interrupted run (no manifest yet) left files in src/sw: continue from them, never start over (rv32iv: a 9-minute run stopped for the
+        # usage limit; the next one would have written the Makefile, the linker script and the generators again)
+        partial = sorted(project.rel(f) for f in _sw_files(sw)) if (not old and not ctx.regenerate) else []
+        if partial:
+            parts += ["", f"An earlier run of this task was interrupted: `{project.rel(sw)}/` already has these files from it — read them and go on "
+                          "from there (complete, fix, add what is missing); do not write them again from scratch:", *(f"- {f}" for f in partial[:60])]
         if update:
             parts += ["", f"`{project.rel(sw)}/` already has the programs of the last run (manifest: schemas/{MANIFEST}): change only what the changes below need."]
             if changed:

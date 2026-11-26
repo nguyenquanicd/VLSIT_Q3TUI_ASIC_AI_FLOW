@@ -173,3 +173,29 @@ def in_range(value: str, valid_range: str) -> bool:
         except NotEvaluable:
             return True
     return True
+
+
+
+def derived_values(rules: list[str], values: dict[str, str], texts: list[str]) -> dict[str, str]:
+    """Values of the names the rules use that are not parameters, from their definitions in the spec's own text
+    ("`LPARA_LANE_W` = 32", "LPARA_ROW_LB = $clog2(PARA_VLEN/8)"), evaluated against the parameters. rv32iv: constraint C3 names the derived
+    LPARA_LANE_W and blocked the configuration with a question its requirements answer. A name with no evaluable definition is left out."""
+    names = {n for r in rules for n in re.findall(r"\b[A-Z][A-Z0-9_]*\b", r) if n not in values}
+    env: dict[str, int] = {}
+    for k, v in values.items():
+        try:
+            env[k] = to_int(v)
+        except NotEvaluable:
+            pass
+    text = "\n".join(texts)
+    out: dict[str, str] = {}
+    for _ in range(3):  # (a definition may use another derived name)
+        for n in sorted(names - set(out)):
+            for m in re.finditer(rf"`?\b{re.escape(n)}\b`?\s*=\s*`?([^`,;\n]+?)`?\s*(?=[,;\n]|\s+and\b|\.(?:\s|$)|$)", text):
+                try:
+                    env[n] = _eval(m.group(1), env)
+                except NotEvaluable:
+                    continue
+                out[n] = str(env[n])
+                break
+    return out

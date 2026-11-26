@@ -206,3 +206,14 @@ def test_a_full_reset_starts_the_flow_session_over(tmp_path, llm):
     state = json.loads((tmp_path / ".q3tui" / "team" / "roles.json").read_text())["flow"]
     assert state["session"] is None and state["tasks"] == 0 and state["sent"] == []
     assert not roles.notes_path(eng.project, "flow").is_file()
+
+
+def test_a_constraint_on_a_derived_parameter_takes_its_value_from_the_requirements():
+    # rv32iv: C3 `PARA_VLEN % (PARA_LANE_COUNT * LPARA_LANE_W) == 0` blocked the config with a question the spec answers (LPARA_LANE_W = 32)
+    from q3tui.flows.spec.lib.constraints import derived_values, evaluate
+
+    texts = ["The derived parameters shall be `LPARA_LANE_W` = 32, `LPARA_ROW_LB` = $clog2(PARA_VLEN/8) and `LPARA_X` = see below."]
+    vals = {"PARA_VLEN": "256", "PARA_LANE_COUNT": "4"}
+    dv = derived_values(["PARA_VLEN % (PARA_LANE_COUNT * LPARA_LANE_W) == 0", "LPARA_ROW_LB == 5", "LPARA_X > 0"], vals, texts)
+    assert dv == {"LPARA_LANE_W": "32", "LPARA_ROW_LB": "5"}
+    assert evaluate("PARA_VLEN % (PARA_LANE_COUNT * LPARA_LANE_W) == 0", {**vals, **dv}) == (True, "holds")

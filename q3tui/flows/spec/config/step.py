@@ -24,7 +24,7 @@ from q3tui.core.project import sha256_json, write_json
 from q3tui.steps.common import Question, QuestionOption, assign_question_ids, load_answers
 from q3tui.flows.spec.lib import artifacts
 from q3tui.flows.spec.lib.base import VlsitStep, rule_dirs
-from q3tui.flows.spec.lib.constraints import NotEvaluable, evaluate, in_range, to_int
+from q3tui.flows.spec.lib.constraints import NotEvaluable, derived_values, evaluate, in_range, to_int
 
 CONFIRM = {"yes", "y", "ok", "confirm", "confirmed", "holds", "true", "đúng", "có"}
 
@@ -282,9 +282,13 @@ class ConfigStep(VlsitStep):
                                  "feature_ids_affected": p.get("feature_ids", []),
                                  "change_reason": o["reason"] if o else None}
         values = {n: e["value"] for n, e in params.items()}
+        # derived local parameters a rule names (LPARA_LANE_W = 32): their values come from the requirements' own definitions
+        rule_env = {**values, **derived_values([c["rule"] for c in spec.get("constraints", [])], values,
+                                               [r.get("text", "") for r in spec.get("requirements", [])]
+                                               + [p.get("description", "") + "\n" + p.get("valid_range", "") for p in spec["parameters"]])}
         constraints, questions = {}, []
         for c in spec.get("constraints", []):
-            verdict, detail = evaluate(c["rule"], values)
+            verdict, detail = evaluate(c["rule"], rule_env)
             if verdict is None and c["id"] in confirmed:
                 verdict, detail = True, "confirmed by the user (code cannot evaluate the rule)"
             constraints[c["id"]] = {"rule": c["rule"], "pass": bool(verdict), "detail": detail}

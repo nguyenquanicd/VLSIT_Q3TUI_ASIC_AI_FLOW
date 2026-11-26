@@ -2,12 +2,12 @@
 
 Design verification on its own: a testbench built from the spec, the requirements and the configuration, never from the RTL (the RTL is a black box DUT until the
 testbench is compiled with it). Pick it with `pipeline.flow: dv`. Its front half reuses the [spec flow](spec-flow.md)'s steps (spec, parse, config: code in
-`flows/spec/`); `testplan`, `tb`, `prepare` and `simulate` are the flow's own (`flows/dv/<step>/`). The DV work comes from the `tb_env_dev_taidao` branch (the UVM testbench
+`flows/spec/`); `testplan`, `tb`, `prepare`, `simulate` and `signoff` are the flow's own (`flows/dv/<step>/`). The DV work comes from the `tb_env_dev_taidao` branch (the UVM testbench
 and the `axi4_sram_ctrl` example).
 
 ```text
-spec ─► parse ─► config ─► testplan ─► tb ─► prepare ─► simulate
- human   human     auto      human     auto    auto       auto
+spec ─► parse ─► config ─► testplan ─► tb ─► prepare ─► simulate ─► signoff
+ human   human     auto      human     auto    auto       auto       human
 ```
 
 ## Two kinds of testbench
@@ -77,11 +77,56 @@ change the expected behavior.
   coding rule, an SDC / synthesis constraint, a document) is **left out by the planner with its reason** (`excluded` in `test_plan.json`, status `excluded` on the Requirements tab):
   it is not uncovered and nothing is asked about it: you review the list with the plan. The gate is human: you review the plan before any file is written; a change
   request or an answer updates it, and `tb` rewrites only the test cases that changed (a scoped change for one stays `[tb:TC-002] …`).
-- **`tb`**: code writes the result macros, the test includes and the runner; the LLM writes `tb_top.sv` and, in groups, the test case files (only its own files); code checks them
-  (`task automatic <name>()`, a `` `TC_CHECK ``, the `// TC-001 | REQ-…` first line) and compiles with the tool role `sim` against `src/rtl` (a missing RTL skips the compile, and
+  Each test case also has a **`test_type`** (`directed`, `combined` — features that share a resource, a state machine or a clock domain —, `constrained_random`,
+  `fault_injection`, `stress`; an unknown one is taken as directed, with a warning) and its **`functions`** (the DUT functions it exercises: one check per
+  function, so a failure names it), as in the reference flow's test plan. `test_plan.json` counts the tests per type and keeps the plan's warnings (`plan.plan_warnings`:
+  a directed-only plan, no constrained_random or fault_injection test in a plan of six or more, requirements whose tests name no failure mode).
+  **Q&A first**: before any plan, a sweep (stage `tb_plan_questions`, `QA_SYSTEM`) walks every requirement, interface, register, FSM, error
+  case and parameter of the spec and asks, at once, every point that changes a test's expected value, stimulus or observation. Follow-ups that depend
+  on an answer are folded into the same question (its options answer the whole branch), and points a test can avoid needing are not asked. These
+  questions are blocking (`code: qa` in the questions file): no plan is made and the gate cannot be approved until each one is answered (`q3tui
+  answer all` takes the defaults). When all are answered, one more sweep asks only what the answers opened (`QA_ROUNDS` = 2 sweeps in all; a sweep
+  with nothing to ask ends it; a changed requirement or parameter starts it again); then the plan is made. The planner sees each answer with
+  its question. After the Q&A, the planner asks only when a test case cannot be written correctly without the answer, and the reviewer only when a
+  `must` finding depends on it.
+  **Function inventory**: before the test cases the planner lists, per requirement, every function it names or implies (each instruction of an
+  instruction set, each register, mode and error case: `inventory` in `test_plan.json`). Code checks that each one is in the `functions` of a test case
+  that is not `constrained_random` (a random test adds depth, it does not replace a directed check — rv32iv's first plan reached `lui`, `auipc` and every
+  ALU op only through its random program) and asks the planner once more for the missing ones; what is still missing is `function_gaps`, with a warning.
+  **Plan review**: a fresh, read-only reviewer (stage `tb_plan_review`, the skill `tc-quality`, the spec, never the planner's session) checks the
+  inventory against the requirements, failure modes no legal input can show (a swap of a commutative op's operands), expected values the spec does not
+  give (a `spec_gap` question instead), missing preconditions / bounds / FSM encodings, internal signals the spec does not name, and depth (a large
+  stimulus space without a constrained-random test; a published standard whose conformance suite is not used). Its `must` findings go back to the
+  planner, then the plan is reviewed again, up to `tb.review_rounds`; what is left is `review` in `test_plan.json`, with a warning.
+- **Test quality** (the playbook skill `tc-quality`, `flows/dv/skills/tc-quality/SKILL.md`; yours in `config/skills/` wins): a test case is worth
+  something only if a plausible DUT bug makes it fail. The planner, the writers and the reviewer all get the skill (rules Q1–Q10: observe the DUT,
+  never the testbench's own drives or constants; prove the precondition of a "cleared / did not happen" check; observe where the bug would differ;
+  distinguishing stimulus — carries across lanes, sign bits, values unlike the defaults; every side effect and every "must not happen"; illegal
+  inputs partitioned by field; every monitor counter in the shared end-of-test check; expected values from the spec; every wait times out into a
+  failure). The plan lists each test case's **`failure_modes`** (the DUT bugs it catches, each "bug → the check that sees it") and **`observe`**
+  (where it sees the result); a test case without a failure mode is a warning of `testplan`. A requirement only an elaboration or a separate
+  build can show (illegal parameters rejected by `$error`) is `excluded`, never a simulation test case that prints PASS. These rules came from the
+  review of a generated rv32iv testbench (reset checks with no precondition, carry-free vector adds, monitor counters never checked, parameter
+  "tests" that never elaborated).
+- **`tb`**: code writes the result macros, the test includes and the runner; the LLM writes `tb_top.sv` and, in groups, the test case files (only its own files; each group writer and reviewer gets tb_top's digest by code —
+  `plain/topapi.py`: declarations, macros, task prototypes with their comments and line numbers, no bodies — and reads a body only when it needs it); code checks them
+  (`task automatic <name>()`, a `` `TC_CHECK ``, the `// TC-001 | REQ-…` first line; by `plan.quality_problems`: no `` `TC_CHECK `` on a constant 1,
+  and an `// FM<k>:` tag above the check that catches each planned failure mode). Then a **fresh, read-only reviewer** (stage `tb_review_g<k>`,
+  never the writer's session; it sees the spec, the requirements, tb_top and the test cases, not the RTL) reads the test cases just written
+  against the skill: its `must` findings (a check no DUT bug can fail, a planned failure mode without a check, a missing precondition) go to a fix
+  session (`tb_fix_g<k>_q<r>`) and the fixed ones are reviewed again, `tb.review_rounds` times (Settings → TB "Quality review rounds", default 1,
+  0 = no review). What is left (and every `should` finding) is recorded as `quality_findings` on the test case in `selected_testplan.json` and
+  warned about: the test still runs, the finding says what it does not prove. Only rewritten test cases are reviewed. The step then compiles with the tool role `sim` against `src/rtl` (a missing RTL skips the compile, and
   `simulate` then waits). An error inside the RTL is not fixed by the testbench: it is a question. `run.sh` and `filelist.f` are generated.
 - **`simulate`**: each selected test case runs with `+TC=<id>`; `TC_RESULT <id> PASS|FAIL` (and `TC_DETAIL <id> FAIL: <msg>` for each failed check) is read from the log. No result line is a
-  FAIL, never a guess. A failure is a finding about the DUT or the testbench, never a reason to change the expected behavior. A failed test whose log names an input file
+  FAIL, never a guess. **The result macros** (`plain/gen.COMMON`, written by code): a `` `TC_CHECK `` whose condition is X / Z fails; every check counts itself under
+  `` `__FILE__ ``:`` `__LINE__ `` and `` `TC_REPORT `` prints `TC_CHECKS <id> n=<k>` and one `TC_HIT <id> <file>:<line> <n>` per check that ran; `` `TC_SEED(seed) `` logs a
+  random test's seed; `` `TC_SUMMARY `` makes the simulator **exit non-zero** when a test case failed (`$fatal`, rule VER-08: a test passes only when its checks and the
+  exit status both pass — `plain/simulate.judge` reads the failed checks before the exit code, so the note still names them). **Check activity** (`plain/activity.py`,
+  the reference flow's `property_activity` for checks): a test case that reported PASS without evaluating a single check is FAIL; a check of its file that never ran
+  (a branch or loop the stimulus never reached) is recorded, and a planned failure mode whose `// FM<k>` check never ran is warned about — the test passed without
+  checking it (`schemas/dv_check_activity.json`, per test: checks run, the ones never reached, the failure modes never checked, the seeds). A testbench compiled before
+  the counters has no `TC_CHECKS` line: nothing is judged from it. A failure is a finding about the DUT or the testbench, never a reason to change the expected behavior. A failed test whose log names an input file
   that exists nowhere in the project (a program list, a hex image, a golden-model export; `plain/simulate.missing_inputs`, by code) is **BLOCKED**: it is not triaged, nothing is
   handed back (the testbench cannot make those files), the step warns with the files and `reports/dv_test_results.md` lists it. Blocked tests alone do not fail the step; their
   other checks are judged once the inputs exist. Only the testbench's own failure lines (`TC_DETAIL`) name a missing file when the log has them: a file the
@@ -97,6 +142,34 @@ change the expected behavior.
   slots that are left. When one of them that was FAIL fails again (its fix did not work), the tests that did not fail before stop (the running simulators are
   killed through `run_role(…, stop=)`, the others are not started: NOT_RUN, no evidence, in the report) while the ones that failed before finish, so the
   same triage gets all of them; the fix loop goes on. A cancelled run (Ctrl-C, `x` in the TUI) kills its simulators the same way instead of waiting for them.
+
+## Sign-off: the `signoff` step (`flows/dv/signoff/`, kind `dv_signoff`)
+
+How strong the testbench is and what was verified (rules VER-11 and VER-12 of the reference flow); plain testbench (UVM: `dv_mutation.json` says N/A).
+
+- **Mutation** (`plain/mutation.py`). An LLM stage (`dv_mutants`, fresh; the spec, the requirements and the RTL — never the testbench, `deny_dirs`: a bug chosen to fit
+  or dodge the tests would measure nothing; the playbook skill `bug-injection`) proposes `tb.mutants` requirement-matched bugs as data: a file, an exact `find` text, its
+  `replace`, the requirements it breaks, what a test would see. Code checks each (an RTL file, `find` occurs once, not a duplicate; a rejected one is asked for again
+  while too few are valid), copies the RTL to `build/sim/mutate/<id>/rtl` with the bug (**never `src/rtl`**, nor `src/tb/filelist.f`), compiles the testbench with
+  it (role `sim`) and runs the tests that passed (role `run`, `tb.sim_parallel` mutants at once): the tests of its requirements first, then the others, until one
+  fails. **Caught**: a test failed or timed out (the test and its failed check are recorded). **Not compiled**: never counted as caught. **Survived**: every test
+  passed; a fresh reviewer (`dv_mutant_review`, advisory; it sees the RTL, the mutant and the testbench) says **equivalent** (no behaviour the spec defines differs:
+  left out of the score), **missed** (a change request `[tb:<tc>] From mutation testing (M-002, REQ-…): …` in spec terms — the testbench's writers never see the RTL —
+  for the test case it names, or to `testplan` for a new one; the fix loop runs tb, simulate and signoff again; a mutant is handed over once, and one still not caught
+  after its change is reported) or **unsure** (counts as not caught). `tb.mutation_hand_back: false` only reports. The **score** is caught / (compiled − equivalent),
+  overall and per requirement, against `tb.mutation_threshold` (0.85): a requirement below it is `partial`. `schemas/dv_mutation.json`, `reports/dv_mutation.md`.
+  Mutation waits (`not_run`) while a selected test does not pass (BLOCKED ones are left out): a failing testbench's strength means nothing. `tb.mutants: 0` switches it off.
+  Updates, not re-runs: the mutants that still apply to the RTL are kept (the LLM is asked only for the missing ones) and a result is kept while the RTL and the
+  testbench (`gen.sources_hash`) and the edit are the same.
+- **The verification report** (`plain/report.py`, by code: `schemas/dv_verification_report.json`, `reports/dv_verification_report.md`): the sources it was derived from;
+  the tests by status and by type; every test with its purpose, type, functions, requirements, status, checks run, failure modes never checked, seeds and cause; the
+  **failure analysis**, one row per distinct signature with its category (`dut`, `testbench`, `specification`, `environment`, `tool`, `unclassified`; from the
+  triage's verdict: rtl_bug → dut, tb_bug / prepare_bug → testbench, spec_issue → specification; TIMEOUT / BLOCKED → environment, ERROR → tool), evidence, cause,
+  action and the AI triage as an advisory review; the **coverage per requirement** (tests passed, mutation score, status: `verified` — every test passed, every planned
+  failure mode's check ran, mutation at the threshold —, `partial`, `failing`, `not_run`, `uncovered`, `excluded`); and **what was not verified**: the requirements
+  left out of simulation with their reason, the uncovered ones, the failure modes and checks that never ran, the reviewer's open quality findings, the bugs no test
+  caught, the requirements below the threshold or with no mutant, formal proof and code coverage (not in this flow).
+- The gate is **human**: you sign it off (`gate_signoff_approved` in the report). The AI reviews in it are advisory.
 
 ## Test programs: the `prepare` step (`flows/dv/prepare/`, kind `dv_prepare`)
 
@@ -174,10 +247,10 @@ to look: a testbench fix goes to `tb_top` and the test), so a run without you en
 | `spec/`, `schemas/structured_spec.json`, `schemas/final_config.json` | The inputs of `testplan`: the spec flow's results (the testbench sees only these). |
 | `src/rtl/` | The released RTL, the DUT: read by code only, by the last phase of `tb` (top, ports, parameters, files). It comes from the [rtl flow](rtl-flow.md). |
 | `src/tb/` (`project.tb_dir`) | The testbench: plain SystemVerilog files (`tb_top.sv`, `tests/`, `run.sh`), or the UVM scaffold, the integration (wrapper, `filelist_dut.f`) and the tests. |
-| `schemas/` | plain: `test_plan.json` (`testplan`), `selected_testplan.json` (`tb`). UVM: `testplan`: `golden_manifest.json`, `verification_contract.json`, `dv_review.json`, `questions/testplan.*`. `tb`: `tb_architecture.json`, `vip_integration.json`, `dv_worklist.json`, `dv_validation.json`, `dut_integration.json`, `dv_tb_evidence.json`. `prepare`: `sw_manifest.json`. `simulate`: `dv_evidence.json`, `dv_triage.json`, `dv_test_results.json` (plain: every test's status, live). |
-| `reports/` | Rendered by code: `dv_review_report.md` (`testplan`); `tb_architecture.md`, `dut_conformance_report.md` (`tb`); `dv_test_results.md` (`simulate`). |
+| `schemas/` | plain: `test_plan.json` (`testplan`), `selected_testplan.json` (`tb`). UVM: `testplan`: `golden_manifest.json`, `verification_contract.json`, `dv_review.json`, `questions/testplan.*`. `tb`: `tb_architecture.json`, `vip_integration.json`, `dv_worklist.json`, `dv_validation.json`, `dut_integration.json`, `dv_tb_evidence.json`. `prepare`: `sw_manifest.json`. `simulate`: `dv_evidence.json`, `dv_triage.json`, `dv_test_results.json` (plain: every test's status, live), `dv_check_activity.json` (plain). `signoff`: `dv_mutation.json`, `dv_verification_report.json`. |
+| `reports/` | Rendered by code: `dv_review_report.md` (`testplan`); `tb_architecture.md`, `dut_conformance_report.md` (`tb`); `dv_test_results.md` (`simulate`); `dv_mutation.md`, `dv_verification_report.md` (`signoff`). |
 | `src/sw/` | The test programs `prepare` writes (sources, scripts, Makefile); built into its `prog_dir` under `build/` (`build/sw/sw_build.log`). |
-| `build/sim/` | Compile and simulation logs (`tb_uvm/*.log`) |
+| `build/sim/` | Compile and simulation logs (`tb_uvm/*.log`); `mutate/<id>/` the mutants' RTL copies, compiles and runs (`signoff`) |
 
 ## Independence (enforced)
 
@@ -196,13 +269,14 @@ in the last phase of `tb`; a spec / RTL difference is reported as a conformance 
 - `pipeline.step_options.tb.uvm_vip` (the nested group, for what the dialog does not have): `vip` (path, kind, revision, env, config), `standards`, `integration`
   (`rtl_dir`, `top`, `incdirs`, `defines`, `simulator`, `smoke_test`, `param_map`, `port_map`), `semantic.scope` (`smoke` | `all`). The flat options are laid over the
   group (a value set in the dialog wins).
-- `tb:` section of `q3tui.yaml`: `max_fix_attempts` (3), `max_turns` (30), `parallel` (4); the TB tab of the settings dialog. `project.tb_dir` (default `src/tb`).
+- `tb:` section of `q3tui.yaml`: `max_fix_attempts` (3), `max_turns` (30), `parallel` (4), `review_rounds` (1), `mutants` (20), `mutation_threshold` (0.85),
+  `mutation_hand_back` (true); the TB tab of the settings dialog. `project.tb_dir` (default `src/tb`).
 - **The simv is the RTL as it is now** (plain). The RTL is an input of `tb` (its writers never see it — `deny_dirs` — and skip their LLM stages by their own hashes, which
   leave the RTL out): a changed RTL makes `tb` stale and compiles it again, without writing the testbench again. Each compile that passes stamps the sources it was built
   from (`build/sim/tb/compiled.json`: the hash of the RTL filelist's files and of `src/tb/`); `simulate` compiles again first when they changed since (an RTL changed by
   hand, or no stamp), and fails ("run step tb") when that compile fails. On rv32iv_sm `tb` stayed "up to date" after the rtl flow's fix, and ten rounds ran a simv older
   than the fix.
-- Tool roles (`config/tools.json`, see [flows.md](flows.md) "Tools"): plain: `sim` (compile `tb_top` with the RTL; its log is read by the `parse` of the role) and `run` (run the simv with `+TC={tc}`); UVM: `sim_uvm` (compile with the VIP and the RTL) and `run_uvm` (run one UVM test): VCS; `prepare`: `sw_build` (make), `riscv_gcc`, `iss` (Spike), see above. `q3tui tools init`
+- Tool roles (`config/tools.json`, see [flows.md](flows.md) "Tools"): plain: `sim` (compile `tb_top` with the RTL; its log is read by the `parse` of the role) and `run` (run the simv with `+TC={tc}`; both use `{workdir}` for the simv, so `signoff` compiles and runs each mutant in its own folder); UVM: `sim_uvm` (compile with the VIP and the RTL) and `run_uvm` (run one UVM test): VCS; `prepare`: `sw_build` (make), `riscv_gcc`, `iss` (Spike), see above. `q3tui tools init`
   writes templates. Tests that need real VCS are skipped unless it is set up (`Q3TUI_VCS_MODULE`).
 
 ## TUI (`flows/dv/panels.py`)
@@ -219,17 +293,19 @@ Read-only tables over what the steps wrote, before the usual Files / Questions t
 | `prepare` | **Programs** | each test that loads files: ready / missing / external / not built, the files (`sw_manifest.json`) | a test's files are not ready |
 | `simulate` | **Tests** | plain: every selected test: PENDING / RUNNING (with its time so far, yellow past 1.5× its estimate) / PASS / FAIL / TIMEOUT / BLOCKED / ERROR / NOT_RUN, the estimate (**Est.**: its time in the run before), the result of the run before, the note; a line with the counts and the time left (the estimates of the running and pending tests on the run's slots, in their start order; a test without an estimate counts as their median) (`dv_test_results.json`, rewritten as each test starts and ends; the plan's tests not run yet: `–`) | a test did not pass |
 | `simulate` | **Evidence** | each run: status read from the log, UVM_ERROR / UVM_FATAL, log (`dv_evidence.json`) | a run is not PASS |
+| `signoff` | **Requirements** | each requirement: verified / partial / failing / not_run / uncovered / excluded, tests passed, mutation score, mutants (`dv_verification_report.json`); the detail pane has its tests and what was not verified | a requirement is failing, uncovered or partial |
+| `signoff` | **Mutants** | each mutant: requirements, caught / survived / not_compiled (equivalent), the test that caught it, the bug; the detail pane has the edit and the review; a line with the score (`dv_mutation.json`) | a bug survived that is not equivalent |
 | `simulate` | **Triage** | each judged failure: verdict, where it goes, RTL module, summary (`dv_triage.json`) | an RTL bug, a spec issue or an unsure verdict waits for someone |
 
 The tables are empty (with a note on what writes them) until the step has run.
 
 ## Gates
 
-`parse` and `testplan` are human (gate 1, and the review of the contract); `config`, `tb`, `prepare` and `simulate` sign themselves when their checks pass (gate modes:
-`pipeline.gate_modes`).
+`parse` and `testplan` are human (gate 1, and the review of the contract); `config`, `tb`, `prepare` and `simulate` sign themselves when their checks pass;
+`signoff` is human (the sign-off of the verification report) (gate modes: `pipeline.gate_modes`).
 
 ## Not in this flow
 
 - Importing testbench / test files: the importer sorts them (`core/importer.py` kind `tb`), but the flow does not take them yet, so they are reported as not imported.
-- Formal, functional coverage closure, `sva`, `verify` and `doc` of the former VLSIT flow: no assertions step, no RTM / mutation testing, no generated specification
-  document.
+- Formal, functional and code coverage closure, `sva`, `verify` and `doc` of the former VLSIT flow: no assertions step, no RTM, no generated specification
+  document (the verification report says formal proof and code coverage were not run). Mutation testing and the report: `signoff`, plain testbench only.

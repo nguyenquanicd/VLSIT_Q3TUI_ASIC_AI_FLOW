@@ -370,3 +370,48 @@ def test_notes_are_updated_by_section_not_rewritten_whole():
     doc = set_section(doc, "ALU", "## alu\nnow also shifts")                 # replaced in place (its own heading dropped)
     assert doc == "## ALU\n\nnow also shifts\n\n## regfile\n\nx0 reads 0\n"
     assert set_section("# Notes\nintro\n", "div", "restores").startswith("# Notes\nintro\n\n## div")
+
+
+def test_a_section_marked_keep_is_always_sent_in_full(tmp_path, monkeypatch):
+    """rv32iv: the planner got the reviewer's findings as "[unchanged …]" (the same block, sent in an earlier run) and resubmitted its plan."""
+    from q3tui.flows.dv.plain import task as tb_prompts
+
+    assert tb_prompts.KEEP == runtime.KEEP == roles.KEEP
+    (tmp_path / "q3tui.yaml").write_text("team: {enabled: true, dedupe_chars: 50}\n")
+    project = Project.open(tmp_path)
+    rec = Recorder()
+    monkeypatch.setattr(runtime, "run_stage", rec)
+    t = roles.Team(project)
+    findings = "## " + roles.KEEP + "Reviewer findings\n" + "- TC-001: the check cannot fail on any DUT bug\n" * 3
+    context = "## Requirements\n" + "- REQ-001 the FIFO keeps order\n" * 4
+
+    def task():
+        return Stage(name="tb_plan", system_prompt="Plan the tests.", prompt=f"# plan\n{context}\n{findings}", cwd=tmp_path, builtin_tools=["Read"])
+
+    anyio.run(lambda: t.run(task(), "verifier", project.cfg, Emit()))
+    anyio.run(lambda: t.run(task(), "verifier", project.cfg, Emit()))
+    second = rec.stages[-1].prompt
+    assert "- REQ-001 the FIFO keeps order" not in second  # context the session has: a reference
+    assert second.count("the check cannot fail on any DUT bug") == 3 and roles.KEEP not in second  # what to act on: in full, marker gone
+
+
+def test_plain_testbench_writers_and_the_planner_get_their_own_sessions():
+    # rv32iv: tb_g1..g11 resumed the verifier's 600k-token session and re-read it every turn ($31 for one tb step)
+    from q3tui.llm import roles
+
+    for name in ("tb_plan", "tb_top", "tb_top_fix", "tb_top_change", "tb_g1", "tb_g12", "tb_fix_g3", "tb_fix_g3_q1", "tb_fix_tc_007_alu"):
+        assert roles.role_of(name) == "verifier" and roles.unit_level(name), name
+    assert roles.role_of("tb_plan_review") is None and roles.role_of("tb_review_g1") is None
+    assert roles.unit_level("tb_plan_questions") and roles.unit_level("tb_plan_questions_2") and not roles.unit_level("triage")
+
+
+def test_role_notes_live_in_the_state_folder_and_an_old_file_is_moved(tmp_path):
+    # rv32iv: every test-group writer read the verifier's src/tb/NOTES.md (28k characters of old planning notes)
+    (tmp_path / "q3tui.yaml").write_text("team: {enabled: true}\n")
+    project = Project.open(tmp_path)
+    old = project.tb_dir / "NOTES.md"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text("## tb_plan\n- x\n")
+    p = roles.notes_path(project, "verifier")
+    assert p == project.state_dir / "team" / "verifier" / "NOTES.md" and p.read_text() == "## tb_plan\n- x\n" and not old.exists()
+    assert roles.notes_path(project, "flow") == project.schemas_dir / "NOTES.md"

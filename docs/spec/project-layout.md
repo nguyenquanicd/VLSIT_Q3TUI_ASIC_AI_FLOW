@@ -35,7 +35,7 @@ it any time). Internal state lives in `.q3tui/`. A step names no folder: it asks
 │                             questions/<step>.{json,answers.json,md} for every step, the spec step included; NOTES.md (flow session)
 ├── reviews/                ← what you decided: parse_reviews.json, config_reviews.json,                     yours, kept on reset
 │                             <role>_answers.json (sanity)
-├── reports/                ← readable results rendered by code (sanity <role>_report.md / .csv; the dv flow's tb_architecture.md, dv_review_report.md, dut_conformance_report.md, dv_test_results.md)             generated
+├── reports/                ← readable results rendered by code (sanity <role>_report.md / .csv; the dv flow's tb_architecture.md, dv_review_report.md, dut_conformance_report.md, dv_test_results.md, dv_mutation.md, dv_verification_report.md)             generated
 ├── docs/                   ← the final specification only (specification.md / .pdf; no flow writes it now)  generated
 ├── build/                  ← tool output, safe to delete                                                    disposable
 │   ├── syn/fpga/  syn/asic/    synth.tcl / synth.ys / lec.tcl, reports/*.rpt, netlist/ (.v, .ddc, .svf), sdc/ (the ASIC's own)

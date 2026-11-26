@@ -1,7 +1,9 @@
 """Code-generated parts of the VLSIT testbench: the result macros, the test includes and runner, filelists, run script.
 
-Result format (parsed by `verify`): one line per test case `TC_RESULT <tc_id> PASS|FAIL` (`TC_DETAIL <tc_id> FAIL: <msg>`
-for every failed check) and one `TC_SUMMARY total=<n> failed=<n>`."""
+Result format (parsed by `simulate`): one line per test case `TC_RESULT <tc_id> PASS|FAIL` (`TC_DETAIL <tc_id> FAIL: <msg>`
+for every failed check), `TC_CHECKS <tc_id> n=<checks evaluated>`, one `TC_HIT <tc_id> <file>:<line> <n>` per check that ran (a check never
+reached does not appear: it checked nothing), `TC_SEED <tc_id> <seed>` for a random test, and one `TC_SUMMARY total=<n> failed=<n>`; a failed
+test case makes the simulator exit with a non-zero status (`$fatal`)."""
 
 from __future__ import annotations
 
@@ -19,11 +21,17 @@ string tc_sel_s;   // +TC=<tc_id>: run only that test case (no plusarg: all of t
 bit    tc_sel_f;
 int    tc_total_n  = 0;
 int    tc_failed_n = 0;
+int    tc_chk_n    = 0;   // checks evaluated in the running test case
+int    tc_hit_n[string];  // "<file>:<line>" -> times that check was evaluated (TC_HIT lines: a check never reached checked nothing)
 
-// `TC_CHECK(cond, "message")`: a failed check marks the running test case FAIL (the test goes on to its next check)
-`define TC_CHECK(cond, msg) if (!(cond)) begin tc_fail_f = 1; $display("TC_DETAIL %s FAIL: %s", tc_id_s, msg); end
-`define TC_REPORT begin tc_total_n++; if (tc_fail_f) begin tc_failed_n++; $display("TC_RESULT %s FAIL", tc_id_s); end else $display("TC_RESULT %s PASS", tc_id_s); end
-`define TC_SUMMARY $display("TC_SUMMARY total=%0d failed=%0d", tc_total_n, tc_failed_n);
+// `TC_CHECK(cond, "message")`: a failed check marks the running test case FAIL (the test goes on to its next check); a condition that is X / Z fails too
+`define TC_CHECK(cond, msg) begin tc_chk_n++; tc_hit_n[$sformatf("%s:%0d", `__FILE__, `__LINE__)]++; if (cond) begin end else begin tc_fail_f = 1; $display("TC_DETAIL %s FAIL: %s", tc_id_s, msg); end end
+// `TC_SEED(seed)`: a random test logs the seed it runs with (the report lists it; +SEED=<n> runs it again).
+// Every macro here is one begin…end statement: it is right with or without a `;` after it
+`define TC_SEED(seed) begin $display("TC_SEED %s %0d", tc_id_s, seed); end
+`define TC_REPORT begin tc_total_n++; $display("TC_CHECKS %s n=%0d", tc_id_s, tc_chk_n); foreach (tc_hit_n[k]) $display("TC_HIT %s %s %0d", tc_id_s, k, tc_hit_n[k]); tc_hit_n.delete(); tc_chk_n = 0; if (tc_fail_f) begin tc_failed_n++; $display("TC_RESULT %s FAIL", tc_id_s); end else $display("TC_RESULT %s PASS", tc_id_s); end
+// `TC_SUMMARY`: the totals; a failed test case makes the simulator exit with a non-zero status (a failure is never only a log line)
+`define TC_SUMMARY begin $display("TC_SUMMARY total=%0d failed=%0d", tc_total_n, tc_failed_n); if (tc_failed_n != 0) $fatal(1, "TC_SUMMARY: %0d test case(s) failed", tc_failed_n); end
 """
 
 INCLUDES = ('`include "tb_common.svh"', '`include "tb_tests.svh"', '`include "tb_run.svh"')

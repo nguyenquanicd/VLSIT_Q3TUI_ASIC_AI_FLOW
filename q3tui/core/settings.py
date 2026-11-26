@@ -139,6 +139,11 @@ TABS: tuple[Tab, ...] = (
         Setting("tb.parallel", "Agents at once", "int", "How many test-case agents run in parallel."),
         Setting("tb.max_fix_attempts", "Fix rounds", "int", "Extra rounds when the plan or TB checks still fail."),
         Setting("tb.max_turns", "Turns per stage", "int", "Agent turns for one TB stage."),
+        Setting("tb.review_rounds", "Quality review rounds", "int", "Plain testbench: a fresh reviewer checks each test case can fail on a DUT bug; "
+                "fix rounds for its findings (0 = no review)."),
+        Setting("tb.mutants", "Mutants", "int", "Sign-off: bugs injected into a copy of the RTL to show the tests can fail (0 = no mutation testing)."),
+        Setting("tb.mutation_threshold", "Mutation threshold", "float", "Sign-off: the share of the bugs a requirement's tests must catch (0.85)."),
+        Setting("tb.mutation_hand_back", "Hand back missed bugs", "bool", "Sign-off: a bug no test catches becomes a change request for the testbench."),
         Setting("tb.sim_parallel", "Simulations at once", "int", "How many test simulations run in parallel. "
                 "Empty = 80 % of the CPU cores.", nullable=True, none_label="80% of cores"),
     )),
