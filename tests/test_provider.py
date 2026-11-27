@@ -123,7 +123,7 @@ def test_claude_api_needs_its_key_and_takes_the_api_base():
         provider.stage_env(cfg, "claude-sonnet-5-5")
     keys.set_key("ANTHROPIC_API_KEY", "sk-ant")
     env = provider.stage_env(cfg, "claude-sonnet-5-5")
-    assert env == {"ANTHROPIC_API_KEY": "sk-ant", "ANTHROPIC_BASE_URL": "https://claude.example/v1"}
+    assert env == {"ANTHROPIC_API_KEY": "sk-ant", "ANTHROPIC_BASE_URL": "https://claude.example/v1", "ANTHROPIC_AUTH_TOKEN": "sk-ant"}
     other = provider.stage_env(cfg, "kimi-k3")  # another model behind a Claude-compatible endpoint: it serves the small calls too
     assert other["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "kimi-k3" and other["ANTHROPIC_SMALL_FAST_MODEL"] == "kimi-k3"
 

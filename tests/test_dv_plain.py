@@ -229,12 +229,33 @@ def vlsit_handler(fake, stage, emit):
         (stage.write_dirs[0] / "b.S").write_text("_start: j _start\n")
         tests = getattr(fake, "vlsit_prepare_tests", [{"tc_id": "TC-002", "files": ["b.list"]}])
         return StageResult("", PrepareResult(prog_dir="build/tb/programs", tests=[TestInputs(**t) for t in tests]), 0.0, 1, "s")
-    if n == "tb_plan":
+    if n == "tb_plan" and stage.output_model is not None and stage.output_model.__name__ == "TbMatrix":
+        # the matrix stage: one group with every requirement of the prompt; every cell n/a unless the test sets its own groups
+        from q3tui.flows.dv.plain.plan import FUNCTION_KINDS, GROUP_KINDS, TbGroup, TbMatrix, TbNA
+
+        fake.vlsit_tb_matrix_calls = getattr(fake, "vlsit_tb_matrix_calls", 0) + 1
+        inv = getattr(fake, "vlsit_tb_inventory", [])
+        inv = inv[0] if inv and isinstance(inv[0], list) else inv
+        groups = getattr(fake, "vlsit_tb_groups", None)
+        if groups is None:
+            reqs = re.findall(r"^- (REQ-\S+) \[", stage.prompt, re.M)
+            na = [TbNA(function=f, kind=k, reason="fake") for r in inv for f in r["functions"] for k in FUNCTION_KINDS]
+            na += [TbNA(function="", kind=k, reason="fake") for k in GROUP_KINDS]
+            groups = [TbGroup(name="main", title="all", req_ids=reqs, not_applicable=na)]
+        else:
+            groups = [TbGroup(**g) for g in groups]
+        return StageResult("", TbMatrix(inventory=[ReqFunctions(**r) for r in inv], groups=groups,
+                                        excluded=[TbExcluded(**e) for e in getattr(fake, "vlsit_tb_excluded", [])]), 0.0, 1, "s")
+    if n == "tb_plan" or re.fullmatch(r"tb_plan_g\d+(_c\d+)?", n):
         fake.vlsit_tb_plan_calls += 1
         cases = fake.vlsit_tb_plans.pop(0) if len(fake.vlsit_tb_plans) > 1 else fake.vlsit_tb_plans[0]
         inv = getattr(fake, "vlsit_tb_inventory", [])
         inv = inv.pop(0) if inv and isinstance(inv[0], list) and len(inv) > 1 else (inv[0] if inv and isinstance(inv[0], list) else inv)
-        from q3tui.flows.dv.plain.plan import TbPlanPatch, TbRemoved
+        from q3tui.flows.dv.plain.plan import TbGroupPlan, TbPlanPatch, TbRemoved
+
+        if stage.output_model is TbGroupPlan:  # (a group's batch: its tests, new or resent)
+            return StageResult("", TbGroupPlan(test_cases=[TbCase(**c) for c in cases],
+                                               excluded=[TbExcluded(**e) for e in getattr(fake, "vlsit_tb_excluded", [])]), 0.0, 1, "s")
 
         if stage.output_model is TbPlanPatch:  # (an update: the fake re-sends its rows; the ones it no longer lists are removed)
             listed = {c.get("tc_id") for c in cases}
@@ -428,7 +449,7 @@ def test_tb_uncovered_requirement_asks_again_then_blocks(tmp_path, tools_dir, ll
     llm.vlsit_tb_plans = [[{"tc_id": "TC-001", "name": "a_reg", "req_ids": ["REQ-001"]}]]
     eng = make_engine(tmp_path, tools_dir)
     run_tb(eng)
-    assert llm.vlsit_tb_plan_calls == 2 and "Chưa có TC cover" in [c for c in llm.calls if c.name == "tb_plan"][1].prompt
+    assert llm.vlsit_tb_plan_calls == 2 and "REQ-002: no test case covers it" in [c for c in llm.calls if c.name == "tb_plan_g1"][1].prompt
     qs = eng.by_name["testplan"].question_list(eng)
     assert len(qs) == 1 and qs[0]["blocking"] and "REQ-002, REQ-003" in qs[0]["question"] and eng.by_name["tb"].question_list(eng) == []
     # once answered, it is not asked again for the same requirements
@@ -1414,8 +1435,8 @@ def test_inventory_functions_without_a_directed_test_are_asked_for(tmp_path, too
                            {"tc_id": "TC-002", "name": "b_reg", "req_ids": ["REQ-002"], "functions": ["clear"], "test_type": "constrained_random"}]]
     eng = make_engine(tmp_path, tools_dir)
     run_step(eng, "testplan")
-    plans = [c for c in llm.calls if c.name == "tb_plan"]
-    assert len(plans) == 2 and "REQ-001: clear" in plans[1].prompt and "Function inventory" in plans[1].prompt
+    plans = [c for c in llm.calls if c.name == "tb_plan_g1"]
+    assert len(plans) == 2 and "REQ-001: clear — no directed test" in plans[1].prompt and "Chức năng (inventory)" in plans[1].prompt
     plan = json.loads((tmp_path / "schemas" / "test_plan.json").read_text())
     assert plan["inventory"] == [{"req_id": "REQ-001", "functions": ["load", "clear"]}] and plan["function_gaps"] == {"REQ-001": ["clear"]}
 
@@ -1426,7 +1447,7 @@ def test_the_plan_reviewer_is_fresh_and_its_must_findings_go_back_to_the_planner
     eng = make_engine(tmp_path, tools_dir)
     run_step(eng, "testplan")
     names = [c.name for c in llm.calls if c.name.startswith("tb_plan")]
-    assert names == ["tb_plan_questions", "tb_plan", "tb_plan_review", "tb_plan", "tb_plan_review_2"]
+    assert names == ["tb_plan_questions", "tb_plan", "tb_plan_g1", "tb_plan_review", "tb_plan", "tb_plan_review_2"]
     again = [c for c in llm.calls if c.name == "tb_plan"][1].prompt
     assert "Reviewer độc lập" in again and "FM2 cannot fail" in again and "TC-404" not in again
     review = next(c for c in llm.calls if c.name == "tb_plan_review")
@@ -1441,7 +1462,7 @@ def test_later_planner_and_reviewer_calls_see_the_questions_already_asked():
     p = tb_prompts.plan_prompt(**base, params={}, top="t", previous=None, changes=[], answers={}, settled="", feedback=[], uncovered=[],
                                asked=["What is the reset value of CTRL?"])
     assert "KHÔNG hỏi lại" in p and "reset value of CTRL" in p
-    r = tb_prompts.plan_review_prompt(**base, plan_path="schemas/test_plan.json", inventory=[], cases=[], excluded=[], asked=["Q?"])
+    r = tb_prompts.plan_review_prompt(**base, inventory=[], cases=[], excluded=[], asked=["Q?"])
     assert "Câu hỏi đang mở" in r
     assert "Câu hỏi đang mở" not in tb_prompts.plan_prompt(**base, params={}, top="t", previous=None, changes=[], answers={}, settled="",
                                                             feedback=[], uncovered=[])
@@ -1540,3 +1561,171 @@ def test_answering_the_compile_question_does_not_rewrite_every_test_case(tmp_pat
     later = [c.name for c in llm.calls[n:]]
     assert not [x for x in later if x.startswith(("tb_g", "tb_top"))]  # (only the broken file is fixed)
     assert "tb_fix_tc_001_a_reg" in later
+
+
+def test_the_verification_matrix_lists_every_cell_and_what_covers_it():
+    from q3tui.flows.dv.plain.plan import TbGroup, TbNA, TbRandom, TbRow
+
+    groups, w = tb_plan.normalize_groups([
+        TbGroup(name="FIFO Flags", req_ids=["REQ-001", "REQ-9"], controls=["fifo_en"], random_domains=["push_pop_seq"], shares=["apb"],
+                not_applicable=[TbNA(function="flush", kind="error", reason="flush has no illegal form"), TbNA(function="pop", kind="boundary", reason="")]),
+        TbGroup(name="apb_regs", req_ids=["REQ-002", "REQ-001"], shares=["APB"], live_settings=["thresh"])], {"REQ-001", "REQ-002"})
+    assert [g["name"] for g in groups] == ["fifo_flags", "apb_regs"] and groups[1]["req_ids"] == ["REQ-002"]  # (one group per requirement)
+    assert any("REQ-9" in x for x in w) and len(groups[0]["not_applicable"]) == 1  # (an n/a without a reason does not count)
+    inv = [{"req_id": "REQ-001", "functions": ["push", "pop", "flush"]}, {"req_id": "REQ-002", "functions": ["csr_write"]}]
+    rows = [TbRow(function=f, kind=k) for f in ("push", "pop") for k in ("normal", "error")] + [TbRow(function="push", kind="boundary"),
+                                                                                                TbRow(function="fifo_en", kind="idle"), TbRow(function="pop", kind="reset")]
+    cases, _ = tb_plan.normalize([TbCase(name="flags", group="fifo_flags", req_ids=["REQ-001"], rows=rows,
+                                         random=TbRandom(domain="push_pop_seq", oracle="queue model"))], {"REQ-001", "REQ-002"})
+    c = cases[0].model_dump()
+    assert [r["id"] for r in c["rows"]] == [f"c{k}" for k in range(1, 8)] and c["functions"] == ["push", "pop"]
+    mat = tb_plan.matrix([c], groups, inv, set())
+    gaps = tb_plan.matrix_gaps(mat)
+    assert gaps["fifo_flags"] == ["pop: boundary", "flush: normal", "flush: boundary", "stress"]
+    assert gaps["apb_regs"] == ["csr_write: normal", "csr_write: boundary", "csr_write: error", "reset", "stress", "thresh: live_change",
+                                "interaction with fifo_flags (shares apb)"]  # (a pair is asked of one of its groups)
+    cell = next(x for x in mat[0]["cells"] if x["kind"] == "random")
+    assert cell["status"] == "covered" and cell["by"] == ["TC-001"]
+    s = tb_plan.matrix_summary(mat)
+    assert s["na"] == 1 and s["covered"] + s["na"] + s["missing"] == s["cells"]
+    # a combined test of both groups covers the interaction; a requirement in no group is reported
+    both = {**c, "tc_id": "TC-002", "group": "apb_regs", "with_groups": ["fifo_flags"], "rows": [], "random": None}
+    assert "interaction with fifo_flags (shares apb)" not in tb_plan.matrix_gaps(tb_plan.matrix([c, both], groups, inv, set()))["apb_regs"]
+    assert tb_plan.ungrouped(groups, {"REQ-001", "REQ-002", "REQ-003"}, set()) == ["REQ-003"]
+    assert tb_plan.merge_groups(groups, [{**groups[1], "req_ids": ["REQ-002", "REQ-001"]}])[0]["req_ids"] == []  # (moved to the new group)
+
+
+def test_a_planned_case_and_random_part_must_be_in_the_test_file():
+    c = {"tc_id": "TC-001", "name": "a", "rows": [{"id": "c1", "function": "push", "kind": "normal"}, {"id": "c2", "function": "pop", "kind": "error"}],
+         "random": {"domain": "seq", "oracle": "model", "count": 50}}
+    probs = tb_plan.quality_problems(c, '`TC_CASE("c1") `TC_CHECK(q === 1, "x")')
+    assert any("c2 (pop: error)" in p and "c1" not in p.split(":", 1)[1].split("(")[0] for p in probs)
+    assert any("tc_rand_n" in p for p in probs)
+    ok = '`TC_CASE("c1") `TC_CASE( "c2") s = tc_seed(1); `TC_SEED(s) for (int i = 0; i < tc_rand_n(50); i++) `TC_CHECK(q === 1, "x")'
+    assert tb_plan.quality_problems(c, ok) == []
+
+
+def test_case_results_are_parsed_per_test():
+    from q3tui.flows.dv.plain import activity
+
+    log = "TC_CHECKS TC-001 n=6\nTC_CASES TC-001 run=6 failed=2\nTC_CASE_FAIL TC-001 c2\nTC_CASE_FAIL TC-001 r1\nTC_RESULT TC-001 FAIL\n"
+    a = activity.parse(log, "TC-001", None)
+    assert a["cases"] == {"run": 6, "failed": 2, "failed_ids": ["c2", "r1"]}
+    assert "cases" not in activity.parse("TC_CHECKS TC-002 n=1\n", "TC-002", None)
+    assert "TC_CASE(id)" in tb_gen.COMMON and "function automatic int tc_rand_n" in tb_gen.COMMON
+
+
+def test_an_empty_later_field_leaves_a_test_hash_unchanged():
+    # (an old plan read again gets group / rows / random as empty values: no test is rewritten for it)
+    assert set(tb_plan.LATER_FIELDS) == {"group", "with_groups", "rows", "random"}
+    old = {"tc_id": "TC-001", "name": "a", "req_ids": ["REQ-001"]}
+    new = {**old, "group": "", "with_groups": [], "rows": [], "random": None}
+    strip = lambda c: {k: v for k, v in c.items() if not (k in tb_plan.LATER_FIELDS and not v)}  # noqa: E731 (as PlainTestbench._tc_hash)
+    assert strip(new) == old
+
+
+def test_a_new_plan_is_a_matrix_then_one_batch_per_group_and_missing_cells_go_back_to_their_group(tmp_path, tools_dir, llm):
+    llm.vlsit_tb_groups = [{"name": "regs", "title": "the registers", "req_ids": ["REQ-001", "REQ-002", "REQ-003"], "controls": ["reg_en"],
+                            "not_applicable": [{"function": "", "kind": k, "reason": "fake"} for k in ("reset", "stress")]}]
+    llm.vlsit_tb_plans = [[{"tc_id": "", "name": "a_reg", "req_ids": ["REQ-001", "REQ-002", "REQ-003"],
+                            "rows": [{"id": "c1", "function": "reg_en", "kind": "normal"}]}]]
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    names = [c.name for c in llm.calls if c.name.startswith("tb_plan") and not c.name.startswith(("tb_plan_questions", "tb_plan_review"))]
+    assert names == ["tb_plan", "tb_plan_g1", "tb_plan_g1"]
+    again = [c for c in llm.calls if c.name == "tb_plan_g1"][1].prompt
+    assert "reg_en: idle" in again and "Test hiện có của group" in again and "a_reg" in again
+    plan = json.loads((tmp_path / "schemas" / "test_plan.json").read_text())
+    assert plan["groups"][0]["name"] == "regs" and plan["test_cases"][0]["group"] == "regs"
+    assert plan["matrix_summary"]["missing"] == 1 and any(w.startswith("matrix: 1 cell") for w in plan["warnings"])
+
+
+def test_a_long_gap_list_is_asked_for_in_pieces_and_only_again_while_a_round_covers_something(tmp_path, tools_dir, llm, monkeypatch):
+    from q3tui.flows.dv.plain import planning
+
+    monkeypatch.setattr(planning, "GAP_CELLS", 1)
+    llm.vlsit_tb_groups = [{"name": "regs", "title": "the registers", "req_ids": ["REQ-001", "REQ-002", "REQ-003"], "controls": ["reg_en"]}]
+    llm.vlsit_tb_plans = [[{"tc_id": "", "name": "a_reg", "req_ids": ["REQ-001", "REQ-002", "REQ-003"],
+                            "rows": [{"id": "c1", "function": "reg_en", "kind": "normal"}]}]]
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    names = [c.name for c in llm.calls if c.name.startswith("tb_plan_g")]
+    # idle, reset, stress missing: one call each, in parallel; the fake covers nothing new, so no second round
+    assert names[0] == "tb_plan_g1" and sorted(names[1:]) == ["tb_plan_g1_c1", "tb_plan_g1_c2", "tb_plan_g1_c3"]
+    piece = next(c for c in llm.calls if c.name == "tb_plan_g1_c2").prompt
+    assert "Đây là một phần của danh sách còn thiếu" in piece and piece.count("\n- regs") + piece.count("reg_en: idle") <= 2
+    matrix = next(c for c in llm.calls if c.name == "tb_plan").prompt
+    assert "Group nhỏ: khoảng 5 requirement và 100 ô" in matrix
+
+
+# -- a large plan: reviewed in parallel parts, each with its own tests in full ------------------------------------------------------------
+
+def test_the_plan_review_is_split_by_group_and_each_part_reads_its_tests_in_full():
+    from q3tui.flows.dv.plain import task as tb_prompts
+
+    def tc(i: int, g: str, n: int) -> dict:
+        return {"tc_id": f"TC-{i:03d}", "name": f"t{i}", "group": g, "req_ids": [f"REQ-00{1 if g == 'a' else 2}"], "description": "d",
+                "rows": [{"id": f"c{k + 1}", "function": f"f{k}", "kind": "normal", "stimulus": "s", "expect": f"e{i}_{k}"} for k in range(n)]}
+
+    cases = [tc(1, "a", 100), tc(2, "a", 100), tc(3, "b", 100), tc(4, "b", 300)]
+    chunks = tb_plan.review_chunks(cases, {c["tc_id"] for c in cases})
+    assert chunks == [{"TC-001", "TC-002"}, {"TC-003"}, {"TC-004"}]  # (whole groups together; a group too big is split)
+    assert tb_plan.review_chunks(cases, {"TC-003"}) == [{"TC-003"}]
+    groups = [{"name": "a", "title": "A", "req_ids": ["REQ-001"]}, {"name": "b", "title": "B", "req_ids": ["REQ-002"]}]
+    inv = [{"req_id": "REQ-001", "functions": ["fa"]}, {"req_id": "REQ-002", "functions": ["fb"]}]
+    p = tb_prompts.plan_review_prompt(reqs=[("REQ-001", "f", "x"), ("REQ-002", "f", "y")], spec_files=["spec/spec.md"], inventory=inv, cases=cases,
+                                      excluded=[], changed=chunks[0], groups=groups, whole=True, part=(1, 3))
+    assert "phần 1/3" in p and "e1_0" in p and "e2_99" in p and "e3_0" not in p  # (its tests in full, the others one line)
+    assert "- TC-003 t3 [b] → REQ-002" in p and "REQ-001: fa" in p and "REQ-002: fb" not in p and "`b` — B (review riêng)" in p
+    assert "CẬP NHẬT" not in p and "test_plan.json" not in p  # (no pointer to the whole file: a reviewer read it)
+
+
+def test_the_planning_prompts_name_the_spec_files_the_row_kinds_and_the_requirement_ids():
+    from q3tui.flows.dv.plain import task as tb_prompts
+
+    g = {"name": "a", "title": "A", "req_ids": ["REQ-001"]}
+    p = tb_prompts.group_plan_prompt(group=g, reqs=[("REQ-001", "f", "x", "")], params={}, spec_files=["spec/spec.md"], answers={}, settled="",
+                                     feedback=[], skills="", groups=[g], inventory=[], cases=[])
+    assert "`spec/spec.md` (Grep / Read các file này" in p and "không Grep cả thư mục" in p
+    assert "live_change" in p and "KHÔNG phải một hàng" in p and "nhãn viết trong văn bản spec" in p
+    schema = json.dumps(tb_plan.TbGroupPlan.model_json_schema())
+    assert '"enum": ["normal", "boundary", "error", "reset", "idle", "live_change", "stress", "interaction"]' in schema
+    # a review fix: the tests the findings name in full, the rest one line
+    prev = [{"tc_id": "TC-001", "name": "a", "req_ids": ["REQ-001"], "rows": [{"id": "c1", "function": "f", "kind": "normal", "stimulus": "S1", "expect": "EXPECT_ONE"}]},
+            {"tc_id": "TC-002", "name": "b", "req_ids": ["REQ-001"], "rows": [{"id": "c1", "function": "f", "kind": "boundary", "stimulus": "S2", "expect": "EXPECT_TWO"}]}]
+    fix = tb_prompts.plan_prompt(reqs=[("REQ-001", "f", "x")], params={}, spec_files=[], top=None, previous=prev, changes=[], answers={}, settled="",
+                                 feedback=[], uncovered=[], detail={"TC-002"})
+    assert "EXPECT_TWO" in fix and "EXPECT_ONE" not in fix and "- TC-001 a [directed] → REQ-001:  (1 case(s))" in fix
+
+
+def test_the_tb_option_groups_writes_only_those_groups_tests(tmp_path, tools_dir, llm):
+    """A pilot: `pipeline.step_options.tb.groups` — only those plan groups' tests are written and compiled; an unknown group is an error."""
+    llm.vlsit_tb_plans = [[{"tc_id": "TC-001", "name": "a_reg", "req_ids": ["REQ-001"]},
+                           {"tc_id": "TC-002", "name": "b_reg", "req_ids": ["REQ-002", "REQ-003"]}]]
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    p = tmp_path / "schemas" / "test_plan.json"
+    plan = json.loads(p.read_text())
+    plan["test_cases"][1]["group"] = "other"
+    plan["groups"].append({"name": "other", "title": "", "req_ids": []})
+    p.write_text(json.dumps(plan))
+    eng.by_name["tb"].options = {**eng.by_name["tb"].options, "groups": ["main"]}
+    run_step(eng, "tb")
+    assert (tmp_path / "src/tb/tests/tc_001_a_reg.sv").is_file() and not (tmp_path / "src/tb/tests/tc_002_b_reg.sv").exists()
+    sel = {c["tc_id"]: c for c in json.loads((tmp_path / "schemas" / "selected_testplan.json").read_text())["test_cases"]}
+    assert sel["TC-001"]["selected"] and not sel["TC-002"]["selected"]
+    eng.by_name["tb"].options = {**eng.by_name["tb"].options, "groups": ["nope"]}
+    with pytest.raises(StepFailed, match="no such plan group: nope"):
+        run_step(eng, "tb", regenerate=True)
+
+
+def test_the_planner_never_reads_the_plan_it_writes_and_a_batch_test_keeps_its_group(tmp_path, tools_dir, llm):
+    """A regenerate's group batches read the old test_plan.json and copied its tests with groups the new plan has none of."""
+    llm.vlsit_tb_plans = [[{"tc_id": "", "name": "a_reg", "group": "an_old_group", "req_ids": ["REQ-001", "REQ-002", "REQ-003"]}]]
+    eng = make_engine(tmp_path, tools_dir)
+    run_step(eng, "testplan")
+    plan = json.loads((tmp_path / "schemas" / "test_plan.json").read_text())
+    assert {c["group"] for c in plan["test_cases"]} <= {g["name"] for g in plan["groups"]}
+    for c in llm.calls:
+        if c.name.startswith("tb_plan"):
+            assert (tmp_path / "schemas" / "test_plan.json").resolve() in [d.resolve() for d in c.deny_dirs], c.name

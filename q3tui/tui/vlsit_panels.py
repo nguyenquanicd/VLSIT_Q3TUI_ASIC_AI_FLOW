@@ -93,10 +93,21 @@ class TabSpec:
     widget: type | None = None  # a DataTab subclass (key bindings)
     empty: str = "nothing here yet"
     summary: Callable[["Q3TUIApp"], str] | None = None  # a line in front of the hint that changes with the rows (counts: "60 tests: 55 PASS · 2 FAIL")
+    # collapsible groups of rows: [(name, title, [row keys])] in order (rows in no group follow, ungrouped); none / [] = a flat table
+    groups: Callable[["Q3TUIApp"], list[tuple[str, str, list[str]]]] | None = None
+    group_detail: Callable[["Q3TUIApp", str], str] | None = None  # (app, group name) -> Markdown
+
+
+GROUP_KEY = "§"  # the row key of a group's header row: GROUP_KEY + its name
 
 
 class DataTab(Vertical):
-    """Rows of one JSON artifact (left) and the highlighted row's detail (right)."""
+    """Rows of one JSON artifact (left) and the highlighted row's detail (right). With `TabSpec.groups`: a header row per group that
+    folds its rows (enter / space on it; space on a row folds its group), `[` folds all, `]` unfolds all; folded at first when there are
+    several groups."""
+
+    BINDINGS = [Binding("space", "toggle_group", "Fold group", show=False), Binding("left_square_bracket", "fold_all(True)", "Fold all", show=False),
+                Binding("right_square_bracket", "fold_all(False)", "Unfold all", show=False)]
 
     DEFAULT_CSS = """
     DataTab > Horizontal { height: 1fr; }
@@ -109,6 +120,9 @@ class DataTab(Vertical):
         super().__init__(classes="refreshable", **kw)
         self.tab = tab
         self._shown: tuple | None = None
+        self._folded: set[str] | None = None  # (None: not set yet — folded all when the table first has several groups)
+        self._group_names: list[str] = []
+        self._group_of: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Static(self.tab.hint, classes="hint dt-hint", id="dt-hint")
@@ -148,14 +162,78 @@ class DataTab(Vertical):
             return None
         return table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
 
+    def _grouped(self, rows: list[tuple]) -> list[tuple]:
+        """The rows with a header row in front of each group, a folded group's rows left out."""
+        try:
+            groups = self.tab.groups(self.capp) if self.tab.groups else []
+        except Exception:  # noqa: BLE001 - grouping never breaks the refresh: the flat table
+            groups = []
+        self._group_names = [g[0] for g in groups]
+        self._group_of = {k: name for name, _t, keys in groups for k in keys}
+        if not groups:
+            return rows
+        if self._folded is None:
+            self._folded = set(self._group_names) if len(groups) > 1 else set()
+        by_key = {r[0]: r for r in rows}
+        width = len(self.tab.columns)
+        out: list[tuple] = []
+        for name, title, keys in groups:
+            mine = [by_key[k] for k in keys if k in by_key]
+            folded = name in self._folded
+            head = [Text(f"{'▸' if folded else '▾'} {name}", style="bold"), Text(f"{len(mine)} row(s)", style="dim")]
+            head += [""] * max(0, width - 3) + ([short(title, 70)] if width > 2 else [])
+            out.append((GROUP_KEY + name, *head[:width]))
+            if not folded:
+                out.extend(mine)
+        out.extend(r for r in rows if r[0] not in self._group_of)
+        return out
+
     def refresh_view(self) -> None:
         table = self.query_one(DataTable)
         rows = self.tab.rows(self.capp)
-        fill_table(table, rows)
+        fill_table(table, self._grouped(rows))
         self._detail(force=True)
         if not rows:
             set_markdown(self.query_one(Markdown), f"_{self.tab.empty}_")
         self._refresh_hint()
+
+    def _refold(self, focus: str | None) -> None:
+        """Rebuild after a fold / unfold, the cursor on `focus` (a row key) — not on the rows that just appeared."""
+        table = self.query_one(DataTable)
+        fill_table(table, self._grouped(self.tab.rows(self.capp)))
+        if focus is not None:
+            try:
+                row = table.get_row_index(focus)
+            except Exception:  # noqa: BLE001 - the row is gone: keep where the table put the cursor
+                row = None
+            if row is not None:
+                table.move_cursor(row=row, scroll=False)
+                # an unfolded group: its header at the top, so its rows show below it (not under the bottom edge)
+                table.call_after_refresh(lambda: table.scroll_to(x=0, y=row, animate=False))
+        self._detail(force=True)
+
+    def action_toggle_group(self) -> None:
+        key = self.current_key()
+        if key is None or self._folded is None:
+            return
+        name = key[len(GROUP_KEY):] if key.startswith(GROUP_KEY) else self._group_of.get(key)
+        if name is None:
+            return
+        self._folded ^= {name}
+        self._refold(GROUP_KEY + name)
+
+    def action_fold_all(self, fold: bool) -> None:
+        if self._folded is None or not self._group_names:
+            return
+        key = self.current_key()
+        self._folded = set(self._group_names) if fold else set()
+        name = key[len(GROUP_KEY):] if key and key.startswith(GROUP_KEY) else self._group_of.get(key or "")
+        self._refold(GROUP_KEY + name if fold and name else key)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.row_key.value and str(event.row_key.value).startswith(GROUP_KEY):
+            event.stop()
+            self.action_toggle_group()
 
     def _detail(self, force: bool = False) -> None:
         if self.tab.detail is None:
@@ -164,7 +242,11 @@ class DataTab(Vertical):
         if key is None:
             return
         try:
-            text = self.tab.detail(self.capp, key)
+            if key.startswith(GROUP_KEY):
+                name = key[len(GROUP_KEY):]
+                text = self.tab.group_detail(self.capp, name) if self.tab.group_detail else f"**{name}**"
+            else:
+                text = self.tab.detail(self.capp, key)
         except Exception as exc:  # noqa: BLE001 - a detail pane never breaks the refresh
             text = f"_cannot show {key}: {exc}_"
         set_markdown(self.query_one(Markdown), text)

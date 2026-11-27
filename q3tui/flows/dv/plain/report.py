@@ -46,7 +46,8 @@ def build(project, lay, mutation: dict | None) -> dict:
         row = {"tc_id": tid, "name": c.get("name", ""), "purpose": c.get("description", ""), "test_type": c.get("test_type") or "directed",
                "functions": c.get("functions") or [], "req_ids": c.get("req_ids") or [], "status": st, "note": note,
                "checks_run": a.get("checks_run"), "checks_unreached": len(a.get("unreached") or []), "fm_unchecked": a.get("fm_unchecked") or [],
-               "seeds": a.get("seeds") or [], "quality_findings": c.get("quality_findings") or []}
+               "seeds": a.get("seeds") or [], "quality_findings": c.get("quality_findings") or [], "group": c.get("group") or "",
+               "cases": a.get("cases")}
         if st not in ("PASS", "NOT_RUN", "PENDING"):
             cat = CATEGORY.get((v or {}).get("verdict", ""), STATUS_CATEGORY.get(st, "unclassified"))
             row.update({"failure_category": cat, "cause": (v or {}).get("summary", "") or note, "evidence": (v or {}).get("evidence", "")})
@@ -155,10 +156,13 @@ def render(d: dict) -> str:
                                  f"{m.get('equivalent')} equivalent, {(m.get('mutants') or 0) - (m.get('compiled') or 0)} not compiled of {m.get('mutants')}; "
                                  f"requirements at the threshold {m.get('above_threshold')}, below {m.get('below_threshold')}, n/a {m.get('na')}")
                            if m.get("status") == "done" else _cell(m.get("status"))) + " |",
-           "", "## Tests", "", "| TC | Name | Type | Functions | REQs | Status | Checks run | Unchecked FMs | Seeds | Cause |", "|---|---|---|---|---|---|---|---|---|---|"]
+           "", "## Tests", "", "| TC | Name | Group | Type | Functions | REQs | Status | Cases passed | Checks run | Unchecked FMs | Seeds | Cause |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for t in d["tc_results"]:
-        out.append(f"| {t['tc_id']} | `{t['name']}` | {t['test_type']} | {_cell(', '.join(t['functions']))} | {_cell(', '.join(t['req_ids']))} | {t['status']} | "
-                   f"{_cell(t['checks_run'])} | {_cell(', '.join(f.split(' ')[0] for f in t['fm_unchecked']))} | {_cell(', '.join(map(str, t['seeds'])))} | "
+        cs = t.get("cases")
+        cases = (f"{cs['run'] - cs['failed']}/{cs['run']}" + (f" (failed: {', '.join(cs['failed_ids'][:6])})" if cs["failed_ids"] else "")) if cs else "–"
+        out.append(f"| {t['tc_id']} | `{t['name']}` | {_cell(t.get('group') or '–')} | {t['test_type']} | {_cell(', '.join(t['functions']))} | {_cell(', '.join(t['req_ids']))} | "
+                   f"{t['status']} | {_cell(cases)} | {_cell(t['checks_run'])} | {_cell(', '.join(f.split(' ')[0] for f in t['fm_unchecked']))} | {_cell(', '.join(map(str, t['seeds'])))} | "
                    f"{_cell(t.get('cause', ''))} |")
     out += ["", "## Failure analysis", ""]
     if d["failure_analysis"]:

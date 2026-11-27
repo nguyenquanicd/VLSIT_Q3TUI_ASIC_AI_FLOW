@@ -181,10 +181,18 @@ class PlainTb(VlsitStep):
         if not plan_file:
             raise StepFailed("schemas/test_plan.json is needed (step testplan)")
         cases: list[dict] = list(plan_file.get("test_cases") or [])
-        selected = [c for c in cases if tb_plan.applies(c, params)]
+        applicable = [c for c in cases if tb_plan.applies(c, params)]
         for c in cases:
-            if c not in selected:
+            if c not in applicable:
                 ctx.emit("log", message=f"{c['tc_id']} {c['name']}: left out — {c['conditional_param']} is {params.get(c['conditional_param'])}")
+        # option `groups` (pipeline.step_options.tb.groups): only those plan groups' tests are written now (a pilot; the rest later)
+        only = [str(g) for g in (getattr(self, "options", None) or {}).get("groups") or []]
+        selected = [c for c in applicable if not only or c.get("group") in only]
+        if only:
+            known = {c.get("group") for c in cases}
+            if unknown := [g for g in only if g not in known]:
+                raise StepFailed(f"tb option groups: no such plan group: {', '.join(unknown)} (the plan's: {', '.join(sorted(g for g in known if g))})")
+            ctx.emit("log", message=f"option groups: {len(selected)}/{len(applicable)} test(s), of {', '.join(only)} — the other groups are not written now")
         cov = tb_plan.coverage(selected, spec, {e["req_id"] for e in plan_file.get("excluded") or []})
         if cov["uncovered_req_ids"]:
             ctx.emit("warning", message=f"requirements with no test case: {', '.join(cov['uncovered_req_ids'])} (the test plan step asked about them)")
@@ -193,7 +201,7 @@ class PlainTb(VlsitStep):
         tb_gen.write_framework(lay.tb, selected)
         await self._write_top(run, selected)
         await self._write_cases(run, selected)
-        wanted = {tb_plan.file_name(c) for c in selected}
+        wanted = {tb_plan.file_name(c) for c in applicable}  # (a test of a group left out by `groups` keeps its file)
         for f in sorted((lay.tb / "tests").glob("*.sv")):  # test cases no longer in the plan
             if f.name not in wanted:
                 project.backup([f])
@@ -288,6 +296,8 @@ class PlainTb(VlsitStep):
 
     def _tc_hash(self, run: _Run, c: dict, legacy: bool = False) -> str:
         answers = run.answers if legacy or run.hash_answers is None else run.hash_answers
+        # (a field added to the plan later and still empty leaves the hash as it was: an old plan read again rewrites nothing)
+        c = {k: v for k, v in c.items() if not (k in tb_plan.LATER_FIELDS and not v)}
         return sha256_json({"tc": c, "reqs": {r: run.reqs.get(r, "") for r in c["req_ids"]}, "params": run.params, "answers": answers})
 
     def _tc_problems(self, run: _Run, c: dict) -> list[str]:
@@ -323,7 +333,11 @@ class PlainTb(VlsitStep):
         if not todo:
             return
         size = max(1, ctx.cfg.tb.tests_per_agent)
-        groups = [todo[i:i + size] for i in range(0, len(todo), size)]
+        # one writer per group of the plan (its tests share a setup and the spec sections they read), split when it has more than `size`
+        by_plan: dict[str, list[tuple[dict, str]]] = {}
+        for t in todo:
+            by_plan.setdefault(t[0].get("group") or "", []).append(t)
+        groups = [g[i:i + size] for g in by_plan.values() for i in range(0, len(g), size)]
         limiter = anyio.CapacityLimiter(max(1, ctx.cfg.tb.parallel))
         top_path = project.rel(run.tb_path("tb_top.sv"))
         top_file = run.tb_path("tb_top.sv")

@@ -56,6 +56,25 @@ Quy tắc:
 18. Độ sâu: mỗi phần có không gian kích thích lớn (một tập lệnh / command, một bus với nhiều loại transaction, một datapath số học) có ít nhất một TC
    `constrained_random` với model tham chiếu viết từ spec và đủ nhiều vòng lặp / seed; khi DUT cài đặt một chuẩn đã công bố (một ISA, một giao thức
    bus, một codec) có bộ test tuân thủ (conformance) công khai, lập một TC chạy bộ đó (bước prepare dựng chương trình) bên cạnh các TC tự viết.
+19. Plan lập theo hai bước (prompt nói đang ở bước nào). Bước 1 — ma trận kiểm chứng, CHƯA có test: `inventory`, và `groups`: mỗi group là các
+   requirement liên quan, cùng setup / cùng interface / cùng khối chức năng (thường 2–10 requirement; mỗi requirement đúng một group). Mỗi group ghi
+   `controls` (enable / mode tắt được một phần của nó), `live_settings` (CHỈ setting spec cho đổi khi DUT đang chạy), `random_domains` (không gian
+   kích thích lớn: tập lệnh, dải địa chỉ / dữ liệu, chuỗi command / transaction) và `shares` (tài nguyên dùng chung với group khác: bus, đường ngắt,
+   buffer, pipeline, register file — cùng một tên cho cùng một tài nguyên). Ô ma trận: mỗi chức năng × `normal` / `boundary` / `error`; mỗi group:
+   `reset` (reset giữa chừng) và `stress`; `idle` cho mỗi control; `live_change` cho mỗi live setting; `random` cho mỗi random domain; `interaction`
+   cho mỗi cặp group chung tài nguyên. Ô thật sự không cần → `not_applicable` với lý do lấy từ spec ("mọi giá trị 4 bit đều là command hợp lệ: không
+   có input illegal"), không phải "đơn giản" hay "đã kiểm ở chỗ khác". Code kiểm từng ô và hỏi lại ô còn thiếu. Bước 2 — test của MỘT group.
+20. Một test = một kịch bản với một setup, chạy NHIỀU case: `rows` là bảng case (mỗi hàng: `id`, `function` đúng tên inventory — với idle /
+   live_change là tên control / setting —, `kind`, `stimulus`, `expect`). Các case cùng setup nằm trong một test, không thành nhiều test gần giống
+   nhau; tách test khi setup, chế độ reset hoặc chuỗi giao thức khác nhau. Mỗi hàng phủ một ô ma trận; một case fail không dừng các case khác.
+21. Random: một test có phần `random` (`domain` đúng tên trong `random_domains`, `oracle`, `count`) chạy `count` case hợp lệ ngẫu nhiên từ một seed,
+   mỗi case kiểm bằng oracle (model tham chiếu viết từ spec, hoặc tự kiểm: đọc lại, khứ hồi, bất biến). Ngoài phần random của từng group, plan có ít
+   nhất một test `stress` trộn kịch bản của nhiều group theo thứ tự ngẫu nhiên, có reset chen giữa, không đưa DUT về trạng thái sạch giữa các bước.
+22. Kịch bản sâu: control tắt → DUT không làm gì, kể cả khi các thanh ghi khác giữ giá trị khác mặc định; setting đổi lúc chạy → giá trị mới có hiệu lực
+   đúng như spec nói, không cần reset; ít nhất một test đổi nhiều chiều cấu hình cùng lúc; kịch bản end-to-end spec mô tả có một test chạy trọn
+   (bên cạnh các test tách nhỏ, không thay chúng).
+23. Không bịa số: `expect`, check và failure mode chỉ dùng giá trị spec cho (số chu kỳ, số xung, độ rộng, địa chỉ, giá trị reset, giới hạn). Spec không
+   cho con số → mô tả hành vi không kèm số; khi kết quả PASS / FAIL phụ thuộc vào nó → hỏi (rule 15).
 Chỉ đọc (Read/Grep/Glob).
 <!-- /PLAN_SYSTEM -->
 
@@ -102,6 +121,9 @@ Kiểm tra:
 6. Độ sâu: phần nào có không gian kích thích lớn mà không có TC constrained_random; chuẩn công bố nào có bộ conformance mà plan không dùng; các tính năng
    dùng chung tài nguyên / FSM / clock domain nào chưa có TC combined.
 7. Requirement bị `excluded`: lý do có đúng là mô phỏng DUT không kiểm được không?
+8. Ma trận: mỗi ô `n/a` có lý do đúng spec không; group có bỏ sót control, setting đổi được lúc chạy, random domain hay tài nguyên dùng chung không;
+   một hàng `rows` có thật sự làm lộ ô nó ghi không (một hàng `boundary` phải dùng giá trị biên, một hàng `error` một input illegal thật).
+9. Số: `expect` / failure mode nào dùng con số spec không cho (số chu kỳ, số xung, độ rộng)? Đó là `must`.
 
 Mỗi finding: `tc_id` (TC liên quan, hoặc rỗng cho cả plan), `rule` (Q1…Q10 hoặc `inventory` / `depth` / `spec`), `severity` — `must` khi plan sẽ bỏ lọt
 một lỗi DUT có thật (chức năng không có check directed, failure mode không thể lộ ra, giá trị mong đợi tự chọn, thiếu tiền điều kiện) hoặc giả định
@@ -138,6 +160,12 @@ Chất lượng (đọc skill `tc-quality` — đường dẫn trong prompt — 
 - Giá trị mong đợi tính từ spec (hoặc model viết từ spec), so sánh bằng `===` / `!==`; mỗi lần chờ có timeout và timeout là check fail.
 - Gọi check chung của các monitor ở cuối mỗi TC (task do tb_top cung cấp); một vi phạm cố ý chỉ được che đúng checker đó, đúng các chu kỳ đó, có ghi ở header.
 - Mỗi chức năng trong `functions` có check riêng, message nêu tên chức năng, giá trị mong đợi và giá trị thấy (`$sformatf`).
+- Bảng case của plan (`rows`): mỗi hàng chạy dưới `` `TC_CASE("<id>") `` đặt ngay trước kích thích của nó (code kiểm mọi id có mặt); viết bảng
+  thành dữ liệu (mảng struct / `case`) và một vòng lặp khi các hàng cùng dạng; check của hàng nêu giá trị mong đợi và giá trị thấy. Một hàng fail
+  không dừng các hàng sau: không `return` sớm, mỗi hàng tự đưa DUT về trạng thái nó cần.
+- Phần `random` của plan: seed `s = tc_seed(<seed mặc định>)` rồi `` `TC_SEED(s) ``, số case `tc_rand_n(<count của plan>)`; mỗi case ngẫu nhiên
+  `` `TC_CASE($sformatf("r%0d", i)) ``, kích thích hợp lệ theo spec (ràng buộc như spec), kiểm bằng oracle của plan (model viết từ spec trong TC,
+  hoặc tự kiểm). Dùng `$urandom(s)` một lần rồi `$urandom()`; không phụ thuộc thứ tự TC.
 - TC `constrained_random`: chọn seed (plusarg `+SEED=` nếu có, không thì cố định), gọi `` `TC_SEED(seed) `` trước khi sinh kích thích, và dùng
   `$urandom(seed)` / `process::self().srandom(seed)` để chạy lại được.
 - Q3TUI đếm số lần mỗi `` `TC_CHECK `` thực sự chạy: một check không bao giờ được chạy tới (nằm trong nhánh / vòng lặp không xảy ra) bị báo là

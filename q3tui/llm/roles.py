@@ -50,7 +50,7 @@ FLOW_FRESH = re.compile(r"review")
 # The plain dv testbench too: tb_plan (its prompt carries the previous plan, the answers, the findings), tb_top, each
 # group of test cases and their fixes — on rv32iv they resumed the verifier's session (500–700k tokens of earlier
 # planning) and every turn of 11 group writers re-read it: 81M cached tokens, $31 for one tb step, the usage limit hit
-UNIT_LEVEL = re.compile(r"^(unit_|rtl_(?!review)|model_|tb_(stimulus|checker)$|vplan_|tb_plan(_questions(_\d+)?)?$|tb_top|tb_g\d|tb_fix_)")
+UNIT_LEVEL = re.compile(r"^(unit_|rtl_(?!review)|model_|tb_(stimulus|checker)$|vplan_|tb_plan(_questions(_\d+)?|_g\d+)?$|tb_top|tb_g\d|tb_fix_)")
 
 
 def unit_level(stage_name: str) -> bool:

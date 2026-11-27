@@ -114,7 +114,9 @@ def _text(s: str) -> dict:
 def _schema(props: dict[str, tuple[str, str]], required: list[str]) -> dict:
     return {
         "type": "object",
-        "properties": {k: ({"type": t, "description": d} if t != "array" else {"type": "array", "items": {"type": "object"}, "description": d})
+        # ("array": a list of objects; "array:string": a list of names)
+        "properties": {k: ({"type": t, "description": d} if not t.startswith("array") else
+                           {"type": "array", "items": {"type": t.split(":", 1)[1] if ":" in t else "object"}, "description": d})
                        for k, (t, d) in props.items()},
         "required": required,
     }
@@ -238,9 +240,18 @@ def assistant_tools(host: AssistantHost) -> list[SdkMcpTool]:
          "immediately (progress shows in the activity panel); wait=true waits until the run stops (done, review gate, "
          "error) and returns the outcome, so you can continue (e.g. approve) in the same turn.",
          _schema({"start": ("string", ""), "stop": ("string", ""), "only": ("string", ""),
-                  "regenerate": ("array", "step names to rebuild from scratch"), "wait": ("boolean", "")}, []), scope=lambda a: (a.get("only") or "the whole pipeline", "run"))
+                  "regenerate": ("array:string", "step names to rebuild from scratch, e.g. [\"testplan\"]"), "wait": ("boolean", "")}, []),
+         scope=lambda a: (a.get("only") or "the whole pipeline", "run"))
     async def _run(a):
-        regen = {str(x if isinstance(x, str) else x.get("name", "")) for x in a.get("regenerate") or []} - {""}
+        # (a step name, or an object naming it: an entry that names no step is an error, never a run without the regenerate —
+        # rv32iv: {"step": "testplan"} was dropped and the run did nothing, reported as a regenerate)
+        raw = a.get("regenerate") or []
+        regen = {str(x if isinstance(x, str) else (x.get("name") or x.get("step") or "")) for x in raw if isinstance(x, (str, dict))} - {""}
+        if raw and len(regen) < len(raw):
+            return f"error: regenerate takes step names (e.g. [\"testplan\"]); could not read {raw!r}: nothing was run"
+        unknown = sorted(regen - set(eng.by_name))
+        if unknown:
+            return f"error: no step {', '.join(unknown)} in this flow (steps: {', '.join(eng.by_name)}): nothing was run"
         args = (a.get("start") or None, a.get("stop") or None, a.get("only") or None, regen or None)
         if a.get("wait"):
             return await host.run_and_wait(*args)

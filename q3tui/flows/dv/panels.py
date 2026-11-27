@@ -42,7 +42,10 @@ def _tests(app: "Q3TUIApp") -> list[dict]:
     if _plain(app):
         return [{"tc_id": c.get("tc_id", ""), "name": c.get("name", ""), "kind": c.get("test_type") or "–", "requirement_ids": c.get("req_ids") or [],
                  "description": c.get("description", ""),
-                 "detail": "\n".join([*([f"- functions: {', '.join(c['functions'])}"] if c.get("functions") else []),
+                 "detail": "\n".join([*([f"- group: {c['group']}" + (f" (with {', '.join(c['with_groups'])})" if c.get("with_groups") else "")] if c.get("group") else []),
+                                      *([f"- functions: {', '.join(c['functions'])}"] if c.get("functions") else []),
+                                      *(f"- case {r['id']} {r['function']} / {r['kind']}: {r.get('stimulus', '')} ⇒ {r.get('expect', '')}" for r in c.get("rows") or []),
+                                      *([f"- random: {c['random']['domain']} × {c['random'].get('count', 100)} (oracle: {c['random'].get('oracle', '')})"] if c.get("random") else []),
                                       *([f"- observes: {c['observe']}"] if c.get("observe") else []),
                                       *(f"- FM{k}: {f}" for k, f in enumerate(c.get("failure_modes") or [], 1)),
                                       *([f"- only when `{c['conditional_param']}` is enabled"] if c.get("conditional_param") else [])])}
@@ -53,8 +56,53 @@ def _tests(app: "Q3TUIApp") -> list[dict]:
 
 
 def _test_rows(app: "Q3TUIApp") -> list[tuple]:
-    return [(t.get("tc_id", ""), t.get("tc_id", ""), t.get("name", ""), str(t.get("kind", "")), str(len(t.get("requirement_ids") or [])), short(t.get("description", ""), 70))
+    plan = {c.get("tc_id"): c for c in (artifact(app, PLAN, {}) or {}).get("test_cases", []) if isinstance(c, dict)} if _plain(app) else {}
+
+    def kind(t: dict) -> str:
+        c = plan.get(t.get("tc_id")) or {}
+        n = len(c.get("rows") or [])
+        return str(t.get("kind", "")) + (f" · {n} case(s)" if n else "") + (" · random" if c.get("random") else "")
+
+    return [(t.get("tc_id", ""), t.get("tc_id", ""), t.get("name", ""), kind(t), str(len(t.get("requirement_ids") or [])), short(t.get("description", ""), 70))
             for t in _tests(app)]
+
+
+def _test_groups(app: "Q3TUIApp") -> list[tuple[str, str, list[str]]]:
+    """The plain plan's groups, in its order, with their tests (a test of a group the plan does not list: a group of its own name)."""
+    if not _plain(app):
+        return []
+    plan = artifact(app, PLAN, {}) or {}
+    titles = {g["name"]: g.get("title", "") for g in plan.get("groups") or [] if isinstance(g, dict) and g.get("name")}
+    members: dict[str, list[str]] = {n: [] for n in titles}
+    for c in plan.get("test_cases") or []:
+        if isinstance(c, dict) and c.get("group"):
+            members.setdefault(c["group"], []).append(c.get("tc_id", ""))
+    return [(n, titles.get(n, ""), keys) for n, keys in members.items() if keys or n in titles]
+
+
+def _group_detail(app: "Q3TUIApp", name: str) -> str:
+    plan = artifact(app, PLAN, {}) or {}
+    g = next((g for g in plan.get("groups") or [] if isinstance(g, dict) and g.get("name") == name), {})
+    tests = [c for c in plan.get("test_cases") or [] if isinstance(c, dict) and c.get("group") == name]
+    m = next((m for m in plan.get("matrix") or [] if isinstance(m, dict) and m.get("group") == name), {})
+    cells = m.get("cells") or []
+    n = lambda s: sum(c.get("status") == s for c in cells)  # noqa: E731
+    lines = [f"**group {name}**", "", g.get("title", ""), "",
+             f"- tests: {len(tests)} · cases: {sum(len(c.get('rows') or []) for c in tests)} · random: {sum(1 for c in tests if c.get('random'))}"
+             + f" · with other groups: {sum(1 for c in tests if c.get('with_groups'))}",
+             f"- requirements: {', '.join(g.get('req_ids') or []) or '–'}"]
+    for k, label in (("controls", "controls"), ("live_settings", "live settings"), ("random_domains", "random domains"), ("shares", "shares")):
+        if g.get(k):
+            lines.append(f"- {label}: {', '.join(g[k])}")
+    if cells:
+        lines.append(f"- matrix: {len(cells)} cell(s) — {n('covered')} covered · {n('na')} n/a · {n('missing')} missing")
+        lines += [f"  - missing: {c.get('function') or '(group)'} / {c.get('kind')}" for c in cells if c.get("status") == "missing"]
+    if g.get("not_applicable"):
+        lines += ["", "**not applicable**"] + [f"- {x.get('function') or '(group)'} / {x.get('kind')}: {x.get('reason', '')}" for x in g["not_applicable"]]
+    found = [f for f in plan.get("review") or [] if isinstance(f, dict) and f.get("tc_id") in {c.get("tc_id") for c in tests}]
+    if found:
+        lines += ["", "**plan review**"] + [f"- [{f.get('severity')}] {f.get('tc_id')}: {f.get('problem', '')}" for f in found]
+    return "\n".join(lines)
 
 
 def _test_detail(app: "Q3TUIApp", key: str) -> str:
@@ -473,15 +521,17 @@ def _cov_urgent(app: "Q3TUIApp") -> int:
 def _tabs_for(kind: str) -> tuple[TabSpec, ...]:
     if kind == "dv_testplan":
         return (TabSpec("tests", "Tests", ("TC", "Name", "Kind", "REQs", "Description"), _test_rows, _test_detail,
-                        "the tests (the verification contract's, or the plain testbench's test plan) and the requirements each checks — approve the step once the open issues are answered",
-                        empty="no verification_contract.json / test_plan.json yet — run (r)"),
+                        "the tests (the verification contract's, or the plain testbench's test plan, by group: enter / space folds a group, [ folds all, ] unfolds all) "
+                        "and the requirements each checks — approve the step once the open issues are answered",
+                        empty="no verification_contract.json / test_plan.json yet — run (r)", groups=_test_groups, group_detail=_group_detail),
                 TabSpec("reqs", "Requirements", ("REQ", "Category", "Status", "Tests", "Text"), _req_rows, _req_detail,
                         "planned: a test checks it · open / blocked: an issue waits for your answer (the Questions tab) · not_observable / excluded: not simulated, and said so",
                         urgent=_req_urgent, empty="no verification_contract.json / test_plan.json yet — run (r)"))
     if kind == "dv_tb":
         return (TabSpec("cases", "Test cases", ("TC", "Name", "REQs", "Selected", "Compile", "Description"), _case_rows, _case_detail,
                         "plain testbench: each test case and whether it compiles with the RTL — the files are on the Files tab",
-                        urgent=_case_hint, empty="no selected_testplan.json — the plain testbench writes it (the UVM one has the Regions and Conformance tabs)"),
+                        urgent=_case_hint, empty="no selected_testplan.json — the plain testbench writes it (the UVM one has the Regions and Conformance tabs)",
+                        groups=_test_groups, group_detail=_group_detail),
                 TabSpec("worklist", "Regions", ("Region", "Kind", "Owner", "Done", "Where"), _item_rows, _item_detail,
                         "UVM testbench: the regions the agent (or you) implement — the stages never see the RTL",
                         urgent=_item_urgent, empty="no dv_worklist.json — the UVM testbench writes it"),

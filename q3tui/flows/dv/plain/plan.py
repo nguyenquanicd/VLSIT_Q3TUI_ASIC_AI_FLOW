@@ -9,11 +9,49 @@ from pydantic import BaseModel, Field
 from q3tui.steps.common import Question
 
 
+# The scenario kinds of the verification matrix (general: any IP). A row of a test's case table is one of them; the matrix asks for
+# normal / boundary / error per function, reset and stress per group, idle per control, live_change per setting the spec lets change while
+# the DUT runs, a random part per random domain and a combined test per pair of groups that share a resource.
+ROW_KINDS = ("normal", "boundary", "error", "reset", "idle", "live_change", "stress", "interaction")
+FUNCTION_KINDS = ("normal", "boundary", "error")
+GROUP_KINDS = ("reset", "stress")
+
+
+LATER_FIELDS = ("group", "with_groups", "rows", "random")  # (added after plans existed: empty, they do not change a test's hash)
+
+
+class TbRow(BaseModel):
+    id: str = Field("", description='Short case id inside the test, unique in it: "c1", "c2", … ("" = numbered by code)')
+    function: str = Field(description="The function of the inventory this case exercises (exactly its inventory name); for idle / live_change: the control or setting")
+    kind: str = Field("normal", json_schema_extra={"enum": list(ROW_KINDS)}, description=(
+        "Random stimulus is not a case kind: it is the test's `random` part. "
+        "normal (typical legal use) | boundary (0, 1, max, max+1, wrap, full / empty, first / last) | error (illegal / unsupported input, "
+        "protocol violation, the error the spec defines) | reset (reset while this is in progress: what the spec says survives / clears) | "
+        "idle (the control off: the DUT must do nothing, with the other settings non-default) | live_change (the setting written while the DUT "
+        "runs: the new value takes effect as the spec says) | stress (back-to-back, maximum rate, long run) | interaction (with another group's "
+        "activity at the same time)"))
+    stimulus: str = Field("", description="One line: the input of this case")
+    expect: str = Field("", description="One line: what the DUT must show, as the spec says it (no number the spec does not give)")
+
+
+class TbRandom(BaseModel):
+    domain: str = Field(description="The random domain of the group it draws from (exactly its name in the group's `random_domains`)")
+    oracle: str = Field(description="How each random case is checked: a reference model written from the spec, or a self-check (read back, round trip, invariant)")
+    count: int = Field(100, ge=1, description="Random cases per run by default (a plusarg raises it for a stress run)")
+
+
 class TbCase(BaseModel):
     tc_id: str = Field("", description='Test case id "TC-001", "TC-002", … (keep the ids of unchanged test cases; "" for new ones)')
+    group: str = Field("", description="The group of the plan this test belongs to (its `name`)")
+    with_groups: list[str] = Field(default_factory=list, description="Other groups this test runs at the same time (a combined test of groups that share a resource)")
+    rows: list[TbRow] = Field(default_factory=list, description=(
+        "The directed cases this test runs, a table: one row per function × scenario kind it covers. One test = one scenario and one setup; it "
+        "runs every row (a failing row does not stop the others)"))
+    random: TbRandom | None = Field(None, description="The random part, when the test also runs random legal cases from a seed (null: directed only)")
     name: str = Field(description="lower_snake_case name of the test, e.g. reset_boot_addr")
     description: str = Field("", description="One line: what is stimulated and what is checked")
-    req_ids: list[str] = Field(default_factory=list, description="REQ ids this test case checks")
+    req_ids: list[str] = Field(default_factory=list, description=(
+        "REQ ids this test case checks: only ids of the task's requirement list (labels written in the spec text are not these ids)"))
     conditional_param: str | None = Field(None, description="A top-level parameter that must be enabled for this test to apply (PR_… / PARA_…), else null")
     conditional_value: str | None = Field(None, description="The value it must have (null: any non-zero value)")
     failure_modes: list[str] = Field(default_factory=list, description=(
@@ -64,7 +102,44 @@ class ReqFunctions(BaseModel):
         "its `functions` with exactly this name"))
 
 
+class TbNA(BaseModel):
+    function: str = Field("", description='The function, control, setting, random domain or other group the cell is about ("" = the group as a whole)')
+    kind: str = Field(description="The scenario kind (normal, boundary, error, reset, idle, live_change, stress, random, interaction)")
+    reason: str = Field(description="Why no test needs it, from the spec (e.g. 'no illegal input: every 4-bit value is a defined command')")
+
+
+class TbGroup(BaseModel):
+    name: str = Field(description="lower_snake_case group name, e.g. fifo_flags, apb_access, vector_load_store")
+    title: str = Field("", description="One line: what the group verifies")
+    req_ids: list[str] = Field(default_factory=list, description="The requirements of the group (every requirement planned for is in exactly one group)")
+    controls: list[str] = Field(default_factory=list, description="Enables / modes that switch part of the group off: each needs an idle case (off: the DUT does nothing)")
+    live_settings: list[str] = Field(default_factory=list, description="Settings the spec lets change while the DUT runs: each needs a live_change case (empty when the spec allows none)")
+    random_domains: list[str] = Field(default_factory=list, description=(
+        "Large stimulus spaces worth random cases, short names (an instruction set, an address / data range, a command / transaction sequence): "
+        "each needs a test with a random part and its oracle"))
+    shares: list[str] = Field(default_factory=list, description="Resources this group uses that others use too (a bus, an interrupt line, a buffer, a pipeline, a register file): a pair of groups sharing one needs a combined test")
+    not_applicable: list[TbNA] = Field(default_factory=list, description="Matrix cells no test needs, each with its spec reason (usually few)")
+
+
+class TbMatrix(BaseModel):
+    """The first stage of a plan: what must be tested, before any test case (the verification matrix)."""
+    inventory: list[ReqFunctions] = Field(default_factory=list, description="For every requirement planned for: its functions (each instruction, register / field, mode, error case)")
+    groups: list[TbGroup] = Field(default_factory=list, description="The groups of the plan: every requirement planned for in exactly one")
+    excluded: list[TbExcluded] = Field(default_factory=list, description="Requirements no simulation of the DUT can check, each with its reason")
+    questions: list[Question] = Field(default_factory=list, description="Questions found (usually none)")
+
+
+class TbGroupPlan(BaseModel):
+    """The test cases of one group (the second stage: one batch per group)."""
+    test_cases: list[TbCase] = Field(default_factory=list, description=(
+        "The group's tests: new ones (tc_id \"\") and changed ones (their tc_id, the whole row). Unchanged tests are not repeated"))
+    not_applicable: list[TbNA] = Field(default_factory=list, description="Matrix cells of this group no test needs, each with its spec reason")
+    excluded: list[TbExcluded] = Field(default_factory=list, description="A requirement of the group no simulation can check (usually none)")
+    questions: list[Question] = Field(default_factory=list, description="Questions found (usually none)")
+
+
 class TbPlan(BaseModel):
+    groups: list[TbGroup] = Field(default_factory=list, description="The groups of the plan (usually made by the matrix stage; a whole plan may restate them)")
     inventory: list[ReqFunctions] = Field(default_factory=list, description=(
         "First, before the test cases: for every requirement you plan for, the functions it names (its function inventory). Code checks that each one is "
         "exercised by a test case that is not constrained_random (a random test adds depth; it does not replace the directed check of a function)"))
@@ -89,6 +164,8 @@ class TbPlanPatch(BaseModel):
         "Only new test cases (tc_id \"\") and changed ones (their tc_id, the whole row as it should be). Unchanged test cases are NOT repeated: "
         "they stay"))
     removed: list[TbRemoved] = Field(default_factory=list, description="Test cases to delete (tc_id and why); usually none")
+    groups: list[TbGroup] = Field(default_factory=list, description=(
+        "Only new groups and changed ones (by name, the whole group as it should be); the others stay"))
     excluded: list[TbExcluded] = Field(default_factory=list, description=(
         "Only requirements newly left out of simulation, with the reason (the ones already excluded stay; a requirement a test case covers is no "
         "longer excluded)"))
@@ -149,8 +226,32 @@ def normalize(cases: list[TbCase], known_reqs: set[str], previous: list[dict] | 
         if kind not in TEST_TYPES:
             warnings.append(f"{tid}: unknown test_type '{c.test_type}' (one of {', '.join(TEST_TYPES)}): taken as directed")
             kind = "directed"
-        funcs = list(dict.fromkeys(f.strip() for f in c.functions if f.strip()))
-        out.append(c.model_copy(update={"tc_id": tid, "name": name, "req_ids": ok, "failure_modes": fms, "test_type": kind, "functions": funcs}))
+        rows, w_rows = _rows(tid, c.rows)
+        warnings.extend(w_rows)
+        funcs = list(dict.fromkeys([*(f.strip() for f in c.functions if f.strip()), *(r.function for r in rows if r.kind not in ("idle", "live_change"))]))
+        group = fn_key(c.group)
+        out.append(c.model_copy(update={"tc_id": tid, "name": name, "req_ids": ok, "failure_modes": fms, "test_type": kind, "functions": funcs,
+                                        "group": group, "with_groups": [g for g in dict.fromkeys(fn_key(x) for x in c.with_groups) if g and g != group],
+                                        "rows": rows}))
+    return out, warnings
+
+
+def _rows(tid: str, rows: list[TbRow]) -> tuple[list[TbRow], list[str]]:
+    """Row ids unique in the test ("c1", "c2", …), kinds known (an unknown one is normal, with a warning)."""
+    out, warnings, used = [], [], set()
+    for r in rows:
+        kind = fn_key(r.kind)
+        if kind not in ROW_KINDS:
+            warnings.append(f"{tid}: case kind '{r.kind}' unknown (one of {', '.join(ROW_KINDS)}): taken as normal")
+            kind = "normal"
+        rid = re.sub(r"[^A-Za-z0-9_]+", "_", r.id).strip("_")
+        if not rid or rid in used:
+            n = len(used) + 1
+            while f"c{n}" in used:
+                n += 1
+            rid = f"c{n}"
+        used.add(rid)
+        out.append(r.model_copy(update={"id": rid, "kind": kind, "function": r.function.strip()}))
     return out, warnings
 
 
@@ -170,6 +271,176 @@ def normalize_inventory(inventory: list[ReqFunctions], known_reqs: set[str], old
     if not out and old:
         return list(old)
     return [{"req_id": k, "functions": v} for k, v in out.items() if v]
+
+
+def normalize_groups(groups: list[TbGroup], known_reqs: set[str]) -> tuple[list[dict], list[str]]:
+    """Group names file-safe and unique, unknown REQ ids dropped, a requirement in one group only (the first that names it)."""
+    out: dict[str, dict] = {}
+    seen: dict[str, str] = {}
+    warnings = []
+    for g in groups:
+        name = fn_key(g.name) or f"group_{len(out) + 1}"
+        reqs = []
+        for r in g.req_ids:
+            if r not in known_reqs:
+                warnings.append(f"group {name}: unknown requirement id {r} dropped")
+            elif r in seen and seen[r] != name:
+                warnings.append(f"{r} is in groups {seen[r]} and {name}: kept in {seen[r]}")
+            elif r not in reqs:
+                reqs.append(r)
+                seen[r] = name
+        d = g.model_dump()
+        d.update({"name": name, "req_ids": reqs, "not_applicable": [n for n in d["not_applicable"] if n.get("reason", "").strip()]})
+        if name in out:  # (the same group twice: merged)
+            o = out[name]
+            for k in ("req_ids", "controls", "live_settings", "random_domains", "shares"):
+                o[k] = list(dict.fromkeys([*o[k], *d[k]]))
+            o["not_applicable"] += d["not_applicable"]
+        else:
+            out[name] = d
+    return list(out.values()), warnings
+
+
+def merge_groups(old: list[dict], new: list[dict]) -> list[dict]:
+    """A patch's groups replace the ones with their name; the others stay. A requirement moved to a new group leaves its old one."""
+    named = {g["name"]: g for g in new}
+    moved = {r for g in new for r in g["req_ids"]}
+    out = [named.pop(g["name"], None) or {**g, "req_ids": [r for r in g["req_ids"] if r not in moved]} for g in old]
+    return out + list(named.values())
+
+
+def add_not_applicable(groups: list[dict], group: str, entries: list[TbNA]) -> None:
+    """A batch's `not_applicable` cells go to its group (only those with a reason)."""
+    g = next((g for g in groups if g["name"] == group), None)
+    if g is None:
+        return
+    have = {(fn_key(n["function"]), fn_key(n["kind"])) for n in g["not_applicable"]}
+    for e in entries:
+        k = (fn_key(e.function), fn_key(e.kind))
+        if e.reason.strip() and k not in have:
+            g["not_applicable"].append(e.model_dump())
+            have.add(k)
+
+
+def matrix(cases: list[dict], groups: list[dict], inventory: list[dict], excluded: set[str]) -> list[dict]:
+    """The verification matrix by code: per group, every cell (function × normal / boundary / error, the group's reset and stress, idle per
+    control, live_change per live setting, random per random domain, interaction per pair of groups sharing a resource) with its status:
+    covered (the tests that cover it), na (the reason) or missing. A cell is covered by any test's row of that function and kind (any group:
+    a function another group's test runs is run); the group's own cells (reset, stress, random, interaction) by the group's tests."""
+    funcs = {r["req_id"]: r["functions"] for r in inventory}
+    rows: dict[tuple[str, str], list[str]] = {}
+    for c in cases:
+        for r in c.get("rows") or []:
+            rows.setdefault((fn_key(r["function"]), r["kind"]), []).append(c["tc_id"])
+
+    def of_group(g: str) -> list[dict]:
+        return [c for c in cases if c.get("group") == g or g in (c.get("with_groups") or [])]
+
+    share: dict[str, set[str]] = {}
+    for g in groups:
+        for s in g.get("shares") or []:
+            share.setdefault(fn_key(s), set()).add(g["name"])
+    pairs: dict[str, dict[str, str]] = {}
+    for res, gs in share.items():
+        for a in gs:
+            for b in gs:
+                if a < b:
+                    pairs.setdefault(a, {}).setdefault(b, res)
+    out = []
+    for g in groups:
+        name = g["name"]
+        na = {(fn_key(n["function"]), fn_key(n["kind"])): n["reason"] for n in g.get("not_applicable") or []}
+        mine = of_group(name)
+        cells: list[dict] = []
+
+        def cell(function: str, kind: str, by: list[str]) -> None:
+            key = (fn_key(function), kind)
+            if by:
+                cells.append({"function": function, "kind": kind, "status": "covered", "by": sorted(set(by))})
+            elif key in na or (fn_key(function), "") in na:
+                cells.append({"function": function, "kind": kind, "status": "na", "reason": na.get(key) or na[(fn_key(function), "")]})
+            else:
+                cells.append({"function": function, "kind": kind, "status": "missing"})
+
+        for rid in g["req_ids"]:
+            if rid in excluded:
+                continue
+            for f in funcs.get(rid, []):
+                for k in FUNCTION_KINDS:
+                    cell(f, k, rows.get((fn_key(f), k), []))
+        for k in GROUP_KINDS:
+            cell("", k, [c["tc_id"] for c in mine if any(r["kind"] == k for r in c.get("rows") or [])
+                         or (k == "stress" and c.get("test_type") == "stress")])
+        for ctl in g.get("controls") or []:
+            cell(ctl, "idle", rows.get((fn_key(ctl), "idle"), []))
+        for s in g.get("live_settings") or []:
+            cell(s, "live_change", rows.get((fn_key(s), "live_change"), []))
+        for d in g.get("random_domains") or []:
+            cell(d, "random", [c["tc_id"] for c in mine if c.get("random") and fn_key(c["random"].get("domain", "")) == fn_key(d)])
+        for other, res in (pairs.get(name) or {}).items():
+            by = [c["tc_id"] for c in cases if {name, other} <= {c.get("group"), *(c.get("with_groups") or [])}]
+            cell(other, "interaction", by)
+            cells[-1]["shared"] = res
+        out.append({"group": name, "title": g.get("title", ""), "req_ids": g["req_ids"], "cells": cells})
+    return out
+
+
+def matrix_gaps(mat: list[dict]) -> dict[str, list[str]]:
+    """group -> its missing cells, one line each ('lw: boundary', 'reset', 'idle: irq_enable', 'interaction with apb_access (shares apb)')."""
+    out: dict[str, list[str]] = {}
+    for g in mat:
+        miss = []
+        for c in g["cells"]:
+            if c["status"] != "missing":
+                continue
+            if c["kind"] == "interaction":
+                miss.append(f"interaction with {c['function']} (shares {c.get('shared', '?')})")
+            else:
+                miss.append(f"{c['function']}: {c['kind']}" if c["function"] else c["kind"])
+        if miss:
+            out[g["group"]] = miss
+    return out
+
+
+def matrix_summary(mat: list[dict]) -> dict:
+    n = lambda s: sum(c["status"] == s for g in mat for c in g["cells"])  # noqa: E731
+    return {"cells": sum(len(g["cells"]) for g in mat), "covered": n("covered"), "na": n("na"), "missing": n("missing")}
+
+
+REVIEW_ROWS = 400  # case rows per plan reviewer (rv32iv: 1459 rows in one review read 1.7M tokens in 6 turns)
+
+
+def review_chunks(cases: list[dict], ids: set[str], rows: int = REVIEW_ROWS) -> list[set[str]]:
+    """The tests to review (`ids`) split for parallel reviewers: whole groups together, in the plan's order, about `rows` case rows each
+    (a group larger than that is split)."""
+    order: dict[str, list[dict]] = {}
+    for c in cases:
+        if c["tc_id"] in ids:
+            order.setdefault(c.get("group") or "", []).append(c)
+    out: list[set[str]] = []
+    cur: set[str] = set()
+    n = 0
+    for tests in order.values():
+        size = sum(1 + len(c.get("rows") or []) for c in tests)
+        if cur and n + size > rows:  # (a group that does not fit starts a new reviewer)
+            out.append(cur)
+            cur, n = set(), 0
+        for c in tests:
+            w = 1 + len(c.get("rows") or [])
+            if cur and n + w > rows:
+                out.append(cur)
+                cur, n = set(), 0
+            cur.add(c["tc_id"])
+            n += w
+    if cur:
+        out.append(cur)
+    return out
+
+
+def ungrouped(groups: list[dict], known_reqs: set[str], excluded: set[str]) -> list[str]:
+    """Requirements planned for (not excluded) that no group has."""
+    have = {r for g in groups for r in g["req_ids"]}
+    return sorted(r for r in known_reqs if r not in have and r not in excluded)
 
 
 def function_gaps(selected: list[dict], inventory: list[dict], excluded: set[str]) -> dict[str, list[str]]:
@@ -250,6 +521,14 @@ def quality_problems(c: TbCase | dict, text: str) -> list[str]:
     if missing:
         out.append("no `// FM<k>:` tag above the check that catches planned failure mode(s) "
                    + "; ".join(f"FM{k} ({fms[k - 1]})" for k in missing))
+    rows = (c.get("rows") if isinstance(c, dict) else [r.model_dump() for r in c.rows]) or []
+    absent = [r for r in rows if not re.search(rf'`TC_CASE\(\s*"{re.escape(r["id"])}"', text)]
+    if absent:
+        out.append("planned case(s) without their `TC_CASE(\"<id>\") before their stimulus: "
+                   + "; ".join(f"{r['id']} ({r['function']}: {r['kind']})" for r in absent[:12]) + (" …" if len(absent) > 12 else ""))
+    rnd = c.get("random") if isinstance(c, dict) else (c.random.model_dump() if c.random else None)
+    if rnd and not ("`TC_SEED" in text and "tc_rand_n(" in text):
+        out.append("the planned random part needs its seed logged with `TC_SEED(seed) and its case count from tc_rand_n(<default>)")
     return out
 
 

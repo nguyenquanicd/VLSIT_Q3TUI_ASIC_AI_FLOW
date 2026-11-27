@@ -106,6 +106,13 @@ def test_review_change_intent_model_cost(engine):
     assert (engine.project.cfg.llm.model, engine.project.cfg.llm.effort) == ("claude-sonnet-5-5", "medium")
     call(tools, "run_steps", only="spec", regenerate=["spec"])
     assert host.runs == [(None, None, "spec", {"spec"})]
+    # (an object naming the step is read too; an entry naming no step, or an unknown step, runs nothing: never a run without the regenerate)
+    call(tools, "run_steps", only="spec", regenerate=[{"step": "spec"}])
+    assert host.runs[-1] == (None, None, "spec", {"spec"})
+    assert call(tools, "run_steps", regenerate=[{"what": "spec"}])[0].startswith("error") and len(host.runs) == 2
+    assert "no step nope" in call(tools, "run_steps", regenerate=["nope"])[0] and len(host.runs) == 2
+    schema = next(t for t in tools if t.name == "run_steps").input_schema
+    assert schema["properties"]["regenerate"]["items"] == {"type": "string"}
     assert "$" in call(tools, "show_cost")[0]
 
 

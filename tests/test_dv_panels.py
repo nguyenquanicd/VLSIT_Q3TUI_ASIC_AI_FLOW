@@ -211,3 +211,47 @@ async def test_the_simulate_step_shows_the_verdicts(plain):
         rows = _rows(tabs["triage"])
         assert rows["TC-019"][1:3] == ["tb_bug", "→ tb"] and rows["TC-020"][1:4] == ["rtl_bug", "→ rtl flow", "m_core"]
         assert panels._verdict_urgent(app) == 1  # the RTL bug waits for the rtl flow
+
+
+async def test_the_plan_tests_fold_by_group(tmp_path):
+    """A plain plan with groups: one header row per group, folded at first; enter unfolds it (the cursor stays on the header), space on a
+    test folds its group again, `]` unfolds all; the header's detail is the group's summary."""
+    from q3tui.tui.vlsit_panels import GROUP_KEY
+
+    (tmp_path / "q3tui.yaml").write_text("pipeline: {flow: dv}\n")
+    (tmp_path / "schemas").mkdir()
+    plan = {"groups": [{"name": "alu", "title": "the ALU", "req_ids": ["REQ-001"], "not_applicable": [{"function": "add", "kind": "error", "reason": "none in spec"}]},
+                       {"name": "bus", "title": "the bus", "req_ids": ["REQ-002"]}],
+            "test_cases": [{"tc_id": "TC-001", "name": "add", "group": "alu", "req_ids": ["REQ-001"],
+                            "rows": [{"id": "c1", "function": "add", "kind": "normal"}, {"id": "c2", "function": "add", "kind": "boundary"}]},
+                           {"tc_id": "TC-002", "name": "add_rand", "group": "alu", "req_ids": ["REQ-001"], "random": {"domain": "ops", "oracle": "model", "count": 100}},
+                           {"tc_id": "TC-003", "name": "rd", "group": "bus", "req_ids": ["REQ-002"]}],
+            "matrix": [{"group": "alu", "cells": [{"function": "add", "kind": "normal", "status": "covered"}, {"function": "add", "kind": "reset", "status": "missing"}]}]}
+    (tmp_path / "schemas" / "test_plan.json").write_text(json.dumps(plan))
+    app = Q3TUIApp(Project.open(tmp_path))
+    async with app.run_test(size=(170, 50)) as pilot:
+        await pilot.pause()
+        tab = _tabs(app, "testplan")["tests"]
+        await pilot.pause()
+        assert list(_rows(tab)) == [GROUP_KEY + "alu", GROUP_KEY + "bus"]  # (folded at first)
+        assert _rows(tab)[GROUP_KEY + "alu"][:2] == ["▸ alu", "2 row(s)"]
+        table = tab.query_one(DataTable)
+        table.focus()
+        table.move_cursor(row=0)
+        await pilot.pause()
+        md = tab.tab.group_detail(app, "alu")
+        assert "tests: 2 · cases: 2 · random: 1" in md and "missing: add / reset" in md and "none in spec" in md
+        await pilot.press("enter")
+        await pilot.pause()
+        rows = _rows(tab)
+        assert list(rows) == [GROUP_KEY + "alu", "TC-001", "TC-002", GROUP_KEY + "bus"] and table.cursor_row == 0
+        assert rows["TC-001"][2] == "– · 2 case(s)" and rows["TC-002"][2] == "– · random"
+        table.move_cursor(row=1)
+        await pilot.press("space")
+        await pilot.pause()
+        assert list(_rows(tab)) == [GROUP_KEY + "alu", GROUP_KEY + "bus"] and table.cursor_row == 0
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert list(_rows(tab)) == [GROUP_KEY + "alu", "TC-001", "TC-002", GROUP_KEY + "bus", "TC-003"]
+        tab.refresh_view()  # (a refresh keeps what is folded)
+        assert len(_rows(tab)) == 5

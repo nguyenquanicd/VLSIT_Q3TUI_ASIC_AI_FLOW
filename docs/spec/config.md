@@ -137,6 +137,10 @@ An example config is in [`q3tui.example.yaml`](../../q3tui.example.yaml).
 
 ## Providers
 
+A provider that is busy — a rate or concurrency limit, an overload (HTTP 429 / 529; OpenCode Go refuses parallel requests past its
+concurrency limit at peak hours) — is waited out: the stage runs again after 20, 40, 80, 160, 300 s (`runtime.BUSY_WAITS`), then the error
+stands. Any other error fails the stage at once. Fewer stages at once (`tb.parallel`, `rtl.parallel`) avoid the limit.
+
 Every LLM stage runs on the Claude Agent SDK; `llm.provider` decides where its requests go (`q3tui/llm/provider.py`):
 
 | `llm.provider` | Requests go to | Needs |

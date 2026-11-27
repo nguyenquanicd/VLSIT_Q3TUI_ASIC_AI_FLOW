@@ -16,7 +16,7 @@ from pathlib import Path
 from q3tui.core.project import read_json, sha256_json, write_json
 from q3tui.flows.dv.plain import plan as tb_plan
 from q3tui.flows.dv.plain import task as tb_prompts
-from q3tui.flows.dv.plain.plan import QuestionSweep, TbPlan, TbPlanPatch
+from q3tui.flows.dv.plain.plan import QuestionSweep, TbGroupPlan, TbMatrix, TbPlan, TbPlanPatch
 from q3tui.flows.spec.lib import artifacts
 from q3tui.flows.spec.lib.base import VlsitStep
 from q3tui.llm.runtime import Stage
@@ -24,6 +24,7 @@ from q3tui.pipeline.base import StepContext, StepFailed
 from q3tui.steps.common import Question, assign_question_ids, drop_settled, load_answers, render_questions, settled_block, split_feedback
 
 PLAN = "test_plan.json"
+GAP_CELLS = 60  # the most missing matrix cells one group call is asked for (more: several calls in parallel)
 QA_ROUNDS = 2  # the question sweep before the plan: the whole spec, then once more for what the answers opened
 
 
@@ -58,13 +59,18 @@ class PlainPlan(VlsitStep):
 
     def _deny(self, ctx: StepContext, lay) -> list[Path]:
         p = ctx.project
-        return [lay.rtl, lay.sva, p.model_dir, p.arch_dir, p.rtl_dir, p.tb_dir]  # independence: spec + requirements only
+        # independence: spec + requirements only; and never the plan this step writes (the prompt carries the plan so far: a regenerate's
+        # group batches read the old file and copied its tests, with groups the new plan does not have)
+        return [lay.rtl, lay.sva, p.model_dir, p.arch_dir, p.rtl_dir, p.tb_dir,
+                artifacts.path(p, PLAN), artifacts.path(p, "selected_testplan.json")]
 
     async def _plan(self, ctx: StepContext, lay, spec: dict, params: dict, top: str | None, spec_files: list[str], answers: dict, settled: str,
                     feedback: list[str], previous: list[dict] | None, changes: list[str], uncovered: list[str], inventory: list[dict] | None = None,
                     missing_functions: dict[str, list[str]] | None = None, review: list[dict] | None = None,
-                    asked: list[str] | None = None, excluded: list[dict] | None = None) -> TbPlan | TbPlanPatch:
-        """The whole plan the first time (or on --regenerate); afterwards a patch: only the new, changed and removed test cases."""
+                    asked: list[str] | None = None, excluded: list[dict] | None = None, groups: list[dict] | None = None,
+                    missing_cells: dict[str, list[str]] | None = None, detail: set[str] | None = None) -> TbPlan | TbPlanPatch:
+        """The whole plan the first time (or on --regenerate); afterwards a patch: only the new, changed and removed test cases.
+        `detail`: the tests shown with their case tables (a review fix: those the findings name); the rest one line each."""
         qa_done = bool((ctx.engine.state.step_meta.get(self.name, {}).get("qa") or {}).get("rounds"))
         reqs = [(r["req_id"], r.get("category", ""), r.get("text", "")) for r in spec.get("requirements", []) if r.get("req_id")]
         skills, skill_dirs = tb_prompts.quality_skills(ctx.project)
@@ -74,7 +80,40 @@ class PlainPlan(VlsitStep):
             prompt=tb_prompts.plan_prompt(reqs=reqs, params=params, spec_files=spec_files, top=top, previous=previous, changes=changes,
                                           answers=answers, settled=settled, feedback=feedback, uncovered=uncovered, skills=skills,
                                           inventory=inventory, missing_functions=missing_functions, review=review, asked=asked, qa_done=qa_done,
-                                          excluded=excluded)))
+                                          excluded=excluded, groups=groups, missing_cells=missing_cells, detail=detail)))
+        return res.output
+
+    async def _matrix(self, ctx: StepContext, lay, spec: dict, params: dict, top: str | None, spec_files: list[str], answers: dict, settled: str,
+                      feedback: list[str], ungrouped: list[str] | None = None, groups: list[dict] | None = None, inventory: list[dict] | None = None,
+                      asked: list[str] | None = None) -> TbMatrix | None:
+        """Stage 1 of a new plan (stage `tb_plan`): the verification matrix — the function inventory, the groups (with their controls, live
+        settings, random domains, shared resources) and the excluded requirements; no test case yet. `ungrouped`: asked again for those."""
+        qa_done = bool((ctx.engine.state.step_meta.get(self.name, {}).get("qa") or {}).get("rounds"))
+        reqs = [(r["req_id"], r.get("category", ""), r.get("text", "")) for r in spec.get("requirements", []) if r.get("req_id")]
+        skills, skill_dirs = tb_prompts.quality_skills(ctx.project)
+        res = await ctx.llm(Stage(
+            name="tb_plan", system_prompt=tb_prompts.PLAN_SYSTEM, cwd=ctx.project.root, builtin_tools=["Read", "Grep", "Glob"],
+            output_model=TbMatrix, deny_dirs=self._deny(ctx, lay), add_dirs=skill_dirs, max_turns=ctx.cfg.tb.max_turns,
+            prompt=tb_prompts.matrix_prompt(reqs=reqs, params=params, spec_files=spec_files, top=top, answers=answers, settled=settled,
+                                            feedback=feedback, skills=skills, qa_done=qa_done, ungrouped=ungrouped, groups=groups,
+                                            inventory=inventory, asked=asked)))
+        return res.output
+
+    async def _group_plan(self, ctx: StepContext, lay, spec: dict, params: dict, spec_files: list[str], answers: dict, settled: str,
+                          feedback: list[str], group: dict, k: int, groups: list[dict], inventory: list[dict], cases: list[dict],
+                          missing: list[str] | None = None, asked: list[str] | None = None, part: int = 0) -> TbGroupPlan | None:
+        """Stage 2 (stage `tb_plan_g<k>`, one small session per group, in parallel): the group's tests with their case tables and random parts.
+        `cases`: the group's tests so far (a gap round: only what is missing is added); `missing`: the matrix cells code found uncovered;
+        `part`: which piece of a long gap list this call covers (stage `tb_plan_g<k>_c<part>`)."""
+        by_req = {r["req_id"]: r for r in spec.get("requirements", []) if r.get("req_id")}
+        reqs = [(r, by_req[r].get("category", ""), by_req[r].get("text", ""), by_req[r].get("source_section", "")) for r in group["req_ids"] if r in by_req]
+        skills, skill_dirs = tb_prompts.quality_skills(ctx.project)
+        res = await ctx.llm(Stage(
+            name=f"tb_plan_g{k + 1}" + (f"_c{part}" if part else ""), system_prompt=tb_prompts.PLAN_SYSTEM, cwd=ctx.project.root, builtin_tools=["Read", "Grep", "Glob"],
+            output_model=TbGroupPlan, deny_dirs=self._deny(ctx, lay), add_dirs=skill_dirs, max_turns=ctx.cfg.tb.max_turns,
+            prompt=tb_prompts.group_plan_prompt(group=group, reqs=reqs, params=params, spec_files=spec_files, answers=answers, settled=settled,
+                                                feedback=feedback, skills=skills, groups=groups, inventory=inventory, cases=cases,
+                                                missing=missing, asked=asked, part=part)))
         return res.output
 
     async def _sweep(self, ctx: StepContext, lay, spec: dict, params: dict, top: str | None, spec_files: list[str],
@@ -132,25 +171,42 @@ class PlainPlan(VlsitStep):
 
     async def _review_plan(self, ctx: StepContext, lay, spec: dict, spec_files: list[str], inventory: list[dict], cases: list[dict],
                            excluded: list[dict], k: int, asked: list[str] | None = None,
-                           changed: set[str] | None = None) -> tuple[list[dict], list[Question]]:
-        """A fresh, read-only reviewer of the plan (stage `tb_plan_review`: never the planner's session) against the tc-quality skill:
-        functions the inventory misses, failure modes no legal input can show, expected values the spec does not give, depth."""
+                           changed: set[str] | None = None, groups: list[dict] | None = None) -> tuple[list[dict], list[Question]]:
+        """Fresh, read-only reviewers of the plan (stage `tb_plan_review`, `…_c<j>`: never the planner's session) against the tc-quality skill:
+        functions the inventory misses, failure modes no legal input can show, expected values the spec does not give, depth. The tests to
+        review (`changed`, else all) are split by group into chunks of about tb_plan.REVIEW_ROWS case rows, reviewed in parallel: each reviewer
+        reads its tests in full and the rest by name (one reviewer of a 248-test plan read 1.7M tokens)."""
+        import anyio
+
         from q3tui.flows.dv.plain.plan import TbReview
 
         reqs = [(r["req_id"], r.get("category", ""), r.get("text", "")) for r in spec.get("requirements", []) if r.get("req_id")]
         skills, skill_dirs = tb_prompts.quality_skills(ctx.project)
-        res = await ctx.llm(Stage(
-            name="tb_plan_review" + (f"_{k + 1}" if k else ""), system_prompt=tb_prompts.PLAN_REVIEW_SYSTEM, cwd=ctx.project.root,
-            builtin_tools=["Read", "Grep", "Glob"], output_model=TbReview, deny_dirs=self._deny(ctx, lay), add_dirs=skill_dirs,
-            max_turns=ctx.cfg.tb.max_turns,
-            prompt=tb_prompts.plan_review_prompt(reqs=reqs, spec_files=spec_files, plan_path=ctx.project.rel(artifacts.path(ctx.project, PLAN)),
-                                                 inventory=inventory, cases=cases, excluded=excluded, skills=skills, asked=asked, changed=changed,
-                                                 qa_done=bool((ctx.engine.state.step_meta.get(self.name, {}).get("qa") or {}).get("rounds")))))
-        out = res.output
+        whole = changed is None
         ids = changed if changed is not None else {c["tc_id"] for c in cases}
+        chunks = tb_plan.review_chunks(cases, ids)
+        qa_done = bool((ctx.engine.state.step_meta.get(self.name, {}).get("qa") or {}).get("rounds"))
+        limiter = anyio.CapacityLimiter(max(1, ctx.cfg.tb.parallel))
+        outs: list[TbReview | None] = []
+
+        async def one(j: int, part: set[str]) -> None:
+            async with limiter:
+                res = await ctx.llm(Stage(
+                    name="tb_plan_review" + (f"_{k + 1}" if k else "") + (f"_c{j + 1}" if j else ""), system_prompt=tb_prompts.PLAN_REVIEW_SYSTEM,
+                    cwd=ctx.project.root, builtin_tools=["Read", "Grep", "Glob"], output_model=TbReview, deny_dirs=self._deny(ctx, lay),
+                    add_dirs=skill_dirs, max_turns=ctx.cfg.tb.max_turns,
+                    prompt=tb_prompts.plan_review_prompt(reqs=reqs, spec_files=spec_files, inventory=inventory, cases=cases, excluded=excluded,
+                                                         skills=skills, asked=asked, changed=part, groups=groups, qa_done=qa_done,
+                                                         whole=whole, part=(j + 1, len(chunks)) if len(chunks) > 1 else None)))
+                outs.append(res.output)
+
+        async with anyio.create_task_group() as tg:
+            for j, part in enumerate(chunks):
+                tg.start_soon(one, j, part)
         # (an update: findings on the test cases it changed only — the reviewer kept finding new things in parts nobody touched)
-        findings = [f.model_dump() for f in (out.findings if out else []) if (not f.tc_id and changed is None) or f.tc_id in ids]
-        return findings, list(out.questions) if out else []
+        findings = [f.model_dump() for out in outs if out for f in out.findings if (not f.tc_id and whole) or f.tc_id in ids]
+        questions = [q for out in outs if out for q in out.questions]
+        return findings, list({q.question: q for q in questions}.values())
 
     def _changes(self, old_snap: dict | None, new: dict, old_answers: dict | None, answers: dict) -> list[str]:
         if not old_snap:
@@ -213,20 +269,30 @@ class PlainPlan(VlsitStep):
         if need:
             changes = self._changes(old.get("snapshot"), snapshot, old.get("answers"), answers)
             inventory: list[dict] = list(old.get("inventory") or [])
-            ctx.emit("log", message="planning the test cases …" if not cases else "updating the test plan …")
-            if ctx.regenerate or not cases:  # (a plan made from scratch: nothing of the old one is a starting point)
-                cases, excluded, inventory = [], [], []
+            groups: list[dict] = list(old.get("groups") or [])
+            # a plan made from scratch (first run, --regenerate, or a plan made before groups existed): nothing of the old one is a starting point
+            fresh = bool(ctx.regenerate or not cases or not groups)
+            if cases and not groups and not ctx.regenerate:
+                ctx.emit("log", message="the test plan has no groups yet (made before the verification matrix): planning it again from the matrix")
+            ctx.emit("log", message="planning the test cases …" if fresh else "updating the test plan …")
+            if fresh:
+                cases, excluded, inventory, groups = [], [], [], []
             before = {c["tc_id"]: c for c in cases}  # (an update reviews only what it changed)
 
             def changed_since(base: dict[str, dict]) -> set[str]:
                 return {c["tc_id"] for c in cases if base.get(c["tc_id"]) != c}
 
-            def take(plan: TbPlan | TbPlanPatch) -> None:
-                """A whole plan (the first answer) or a patch (only what changes), renumbered against the plan before. Exclusions and the inventory
-                are merged: an update that did not restate them never drops them (rv32iv: REQ-043/061/078 were lost and planned again)."""
-                nonlocal cases, excluded, inventory
-                patch = isinstance(plan, TbPlanPatch)
-                full = tb_plan.apply_patch(cases, plan.test_cases, [r.tc_id for r in plan.removed]) if patch else plan.test_cases
+            def take(plan: TbPlan | TbPlanPatch | TbGroupPlan, group: str | None = None) -> None:
+                """A whole plan, a patch (only what changes) or a group's batch, renumbered against the plan before. Exclusions, the inventory and
+                the groups are merged: an update that did not restate them never drops them (rv32iv: REQ-043/061/078 were lost and planned again)."""
+                nonlocal cases, excluded, inventory, groups
+                patch = isinstance(plan, (TbPlanPatch, TbGroupPlan))
+                if group is not None:  # (a group's batch: its tests belong to it; a name the plan has no group of is this one)
+                    known = {g["name"] for g in groups}
+                    for c in plan.test_cases:
+                        c.group = c.group if c.group in known else group
+                removed = [r.tc_id for r in plan.removed] if isinstance(plan, TbPlanPatch) else []
+                full = tb_plan.apply_patch(cases, plan.test_cases, removed) if patch else plan.test_cases
                 norm, w = tb_plan.normalize(full, set(reqs), cases)
                 warnings.extend(w)
                 cases = [c.model_dump() for c in norm]
@@ -235,25 +301,112 @@ class PlainPlan(VlsitStep):
                 more, w_ex = tb_plan.normalize_excluded(plan.excluded, set(reqs), covered)
                 warnings.extend(w_ex)
                 excluded = [e for e in {e["req_id"]: e for e in [*excluded, *more]}.values() if e["req_id"] not in covered]
+                if isinstance(plan, TbGroupPlan):
+                    tb_plan.add_not_applicable(groups, group or "", plan.not_applicable)
+                    return
                 new_inv = tb_plan.normalize_inventory(plan.inventory, set(reqs))
                 inventory = tb_plan.merge_inventory(inventory, new_inv) if patch else (new_inv or inventory)
+                if plan.groups:
+                    new_g, w_g = tb_plan.normalize_groups(plan.groups, set(reqs))
+                    warnings.extend(w_g)
+                    groups = tb_plan.merge_groups(groups, new_g)
+
+            def take_matrix(m: TbMatrix | None) -> None:
+                nonlocal excluded, inventory, groups
+                if m is None:
+                    return
+                asked.extend(q for q in m.questions if q.question not in {a.question for a in asked})
+                more, w_ex = tb_plan.normalize_excluded(m.excluded, set(reqs), set())
+                warnings.extend(w_ex)
+                excluded = list({e["req_id"]: e for e in [*excluded, *more]}.values())
+                inventory = tb_plan.merge_inventory(inventory, tb_plan.normalize_inventory(m.inventory, set(reqs)))
+                new_g, w_g = tb_plan.normalize_groups(m.groups, set(reqs))
+                warnings.extend(w_g)
+                groups = tb_plan.merge_groups(groups, new_g)
 
             def gaps() -> tuple[list[str], dict[str, list[str]]]:
                 sel = [c for c in cases if tb_plan.applies(c, params)]
                 ex = {e["req_id"] for e in excluded}
                 return tb_plan.coverage(sel, spec, ex)["uncovered_req_ids"], tb_plan.function_gaps(sel, inventory, ex)
 
-            take(await self._plan(ctx, lay, spec, params, top, spec_files, answers_view, settled, general, cases or None, changes, [], inventory=inventory, excluded=excluded))
-            # requirements no test case covers, and inventory functions no directed test exercises: asked for again
-            for _ in range(min(1, ctx.cfg.tb.max_fix_attempts)):
+            def cell_gaps() -> dict[str, list[str]]:
+                sel = [c for c in cases if tb_plan.applies(c, params)]
+                return tb_plan.matrix_gaps(tb_plan.matrix(sel, groups, inventory, {e["req_id"] for e in excluded}))
+
+            async def batches(todo: dict[str, list[str] | None]) -> None:
+                """The groups' batches, in parallel (tb.parallel at once): a new group plans its tests; a group with gaps adds what is missing,
+                a long gap list in pieces of GAP_CELLS (one answer holds only so many tests: a weaker model's group left 300 cells)."""
+                import anyio
+
+                limiter = anyio.CapacityLimiter(max(1, ctx.cfg.tb.parallel))
+                got: list[tuple[str, int, TbGroupPlan | None]] = []
+                names = [g["name"] for g in groups]
+                snapshot_cases, q_asked = list(cases), [q.question for q in asked]
+                known = {c["tc_id"] for c in snapshot_cases}
+
+                async def one(g: dict, missing: list[str] | None, j: int) -> None:
+                    async with limiter:
+                        mine = [c for c in snapshot_cases if c.get("group") == g["name"]]
+                        ctx.emit("log", message=f"planning group {g['name']} ({len(g['req_ids'])} requirement(s))"
+                                 + (f" — what is missing ({len(missing)})" if missing else "") + " …")
+                        out = await self._group_plan(ctx, lay, spec, params, spec_files, answers_view, settled, general, g, names.index(g["name"]),
+                                                     groups, inventory, mine, missing=missing, asked=q_asked, part=j)
+                        if out is not None:  # (a new test's id is code's to give: two pieces of one group must not both say TC-150)
+                            for c in out.test_cases:
+                                if c.tc_id not in known:
+                                    c.tc_id = ""
+                        got.append((g["name"], j, out))
+
+                async with anyio.create_task_group() as tg:
+                    for g in groups:
+                        if g["name"] not in todo:
+                            continue
+                        m = todo[g["name"]]
+                        pieces = [m[i:i + GAP_CELLS] for i in range(0, len(m), GAP_CELLS)] if m else [None]
+                        for j, piece in enumerate(pieces):
+                            tg.start_soon(one, g, piece, j + 1 if len(pieces) > 1 else 0)
+                for name in names:  # (merged in the groups' order: the test ids follow the plan's order)
+                    for gname, _j, out in sorted(got, key=lambda t: t[1]):
+                        if gname == name and out is not None:
+                            take(out, group=name)
+
+            if fresh:
+                # stage 1: the verification matrix (inventory, groups, excluded); stage 2: one batch per group
+                take_matrix(await self._matrix(ctx, lay, spec, params, top, spec_files, answers_view, settled, general))
+                ex = {e["req_id"] for e in excluded}
+                left = tb_plan.ungrouped(groups, set(tb_plan.required_reqs(spec)), ex)
+                if left:
+                    ctx.emit("warning", message=f"asking for more: requirement(s) in no group: {', '.join(left[:12])}")
+                    take_matrix(await self._matrix(ctx, lay, spec, params, top, spec_files, answers_view, settled, general, ungrouped=left,
+                                                   groups=groups, inventory=inventory, asked=[q.question for q in asked]))
+                if not groups:
+                    raise StepFailed("the test plan's matrix stage returned no groups")
+                await batches({g["name"]: None for g in groups})
+            else:
+                take(await self._plan(ctx, lay, spec, params, top, spec_files, answers_view, settled, general, cases, changes, [], inventory=inventory,
+                                      excluded=excluded, groups=groups))
+            # requirements no test case covers, and matrix cells no test covers: asked for again, of the group they belong to
+            # (again while a round still covers something: up to tb.max_fix_attempts rounds)
+            last = None
+            for _ in range(ctx.cfg.tb.max_fix_attempts):
                 unc, fgaps = gaps()
-                if not (unc or fgaps):
-                    break
-                ctx.emit("warning", message="asking for more: " + "; ".join(
-                    ([f"no test case covers {', '.join(unc)}"] if unc else [])
-                    + ([f"{sum(map(len, fgaps.values()))} function(s) of the inventory have no directed test ({', '.join(list(fgaps)[:8])})"] if fgaps else [])))
-                take(await self._plan(ctx, lay, spec, params, top, spec_files, answers_view, settled, general, cases, [], unc, inventory=inventory,
-                                      missing_functions=fgaps, asked=[q.question for q in asked], excluded=excluded))
+                by_group: dict[str, list[str]] = {g: list(m) for g, m in cell_gaps().items()}
+
+                def owner(r: str) -> str | None:
+                    return next((g["name"] for g in groups if r in g["req_ids"]), None)
+
+                for r, fs in fgaps.items():  # (a function no directed test runs, whatever the rows say)
+                    if owner(r):
+                        by_group.setdefault(owner(r), []).insert(0, f"{r}: {', '.join(fs)} — no directed test runs it")
+                for r in unc:
+                    if owner(r):
+                        by_group.setdefault(owner(r), []).insert(0, f"{r}: no test case covers it")
+                n_missing = sum(map(len, by_group.values()))
+                if not by_group or (last is not None and n_missing >= last):
+                    break  # (nothing missing, or the last round covered nothing: asking again would not either)
+                last = n_missing
+                ctx.emit("warning", message="asking for more: " + "; ".join(f"{g}: {len(m)} missing" for g, m in list(by_group.items())[:8]))
+                await batches(by_group)
             # a fresh reviewer of the plan; its `must` findings go back to the planner, and the plan is reviewed again
             review: list[dict] = []
             rounds = ctx.cfg.tb.review_rounds
@@ -266,7 +419,7 @@ class PlainPlan(VlsitStep):
                 if todo is not None and not todo:
                     break  # (an update that changed no test case: nothing new to review)
                 found, qs = await self._review_plan(ctx, lay, spec, spec_files, inventory, cases, excluded, r, asked=[q.question for q in asked],
-                                                    changed=todo)
+                                                    changed=todo, groups=groups)
                 asked.extend(q for q in qs if q.question not in {a.question for a in asked})
                 # the findings that stand: the new ones, and the earlier ones on test cases this review did not read again
                 kept_review = ([f for f in kept_review if f.get("tc_id") not in todo] if todo is not None else []) + found
@@ -277,19 +430,24 @@ class PlainPlan(VlsitStep):
                 ctx.emit("warning", message=f"plan review: {len(must)} finding(s); planning again: " + "; ".join(f["problem"][:80] for f in must[:3]))
                 snap = {c["tc_id"]: c for c in cases}
                 take(await self._plan(ctx, lay, spec, params, top, spec_files, answers_view, settled, general, cases, [], [], inventory=inventory,
-                                      missing_functions=gaps()[1], review=must, asked=[q.question for q in asked], excluded=excluded))
-                if update:  # (the next review reads what the fix changed, and what its findings were about)
-                    todo = {t for t in changed_since(snap) | {f["tc_id"] for f in must if f.get("tc_id")} if t in {c["tc_id"] for c in cases}}
+                                      missing_functions=gaps()[1], review=must, asked=[q.question for q in asked], excluded=excluded,
+                                      groups=groups, missing_cells=cell_gaps(), detail={f["tc_id"] for f in must if f.get("tc_id")}))
+                # the next review reads what the fix changed, and what its findings were about (a new plan too: the rest was just reviewed)
+                todo = {t for t in changed_since(snap) | {f["tc_id"] for f in must if f.get("tc_id")} if t in {c["tc_id"] for c in cases}}
             _unc, left = gaps()
             if left:
                 warnings.append(f"{sum(map(len, left.values()))} function(s) of the inventory have no directed test: "
                                 + "; ".join(f"{r}: {', '.join(fs[:6])}" for r, fs in list(left.items())[:6]))
+            cells_left = cell_gaps()
+            if cells_left:
+                warnings.append(f"matrix: {sum(map(len, cells_left.values()))} cell(s) no test covers: "
+                                + "; ".join(f"{g}: {', '.join(m[:4])}" for g, m in list(cells_left.items())[:5]))
             if review:
                 warnings.append(f"plan review: {sum(f.get('severity') == 'must' for f in review)} must / {sum(f.get('severity') != 'must' for f in review)} "
                                 "should finding(s) left (test_plan.json `review`)")
             meta["plan"] = {"hash": plan_hash, "snapshot": snapshot, "answers": dict(answers), "cases": cases, "excluded": excluded,
-                            "inventory": inventory, "review": review, "function_gaps": left,
-                            "warnings": [w for w in warnings if w.startswith(("plan review:", f"{sum(map(len, left.values()))} function(s)"))]}
+                            "inventory": inventory, "groups": groups, "review": review, "function_gaps": left,
+                            "warnings": [w for w in warnings if w.startswith(("plan review:", "matrix:", f"{sum(map(len, left.values()))} function(s)"))]}
             wrote = True
         selected = [c for c in cases if tb_plan.applies(c, params)]
         warnings += tb_plan.plan_warnings(selected, reqs, {e["req_id"] for e in excluded}) if wrote else []
@@ -322,9 +480,11 @@ class PlainPlan(VlsitStep):
         sel = [c for c in cases if tb_plan.applies(c, params)]
         pm = engine.state.step_meta.get(self.name, {}).get("plan") or {}
         kinds = {k: sum((c.get("test_type") or "directed") == k for c in sel) for k in tb_plan.TEST_TYPES}
+        mat = tb_plan.matrix(sel, pm.get("groups") or [], pm.get("inventory") or [], {e["req_id"] for e in excluded})
         artifacts.write(project, PLAN, {"metadata": md, "test_cases": [{**c, "selected": tb_plan.applies(c, params)} for c in cases], "excluded": excluded, "coverage": cov,
                                             "test_types": kinds, "warnings": tb_plan.plan_warnings(sel, {}, {e["req_id"] for e in excluded}) + pm.get("warnings", []), "params": params,
-                                            "inventory": pm.get("inventory") or [], "function_gaps": pm.get("function_gaps") or {}, "review": pm.get("review") or []},
+                                            "inventory": pm.get("inventory") or [], "function_gaps": pm.get("function_gaps") or {}, "review": pm.get("review") or [],
+                                            "groups": pm.get("groups") or [], "matrix": mat, "matrix_summary": tb_plan.matrix_summary(mat)},
                         check=False)
 
     def _uncovered_question(self, cov: dict, answers: dict, q_raw: list[dict]) -> list[Question]:

@@ -466,7 +466,7 @@ async def run_stage(stage: Stage, cfg: Config, emit: StepEmitter) -> StageResult
     options = build_options(stage, cfg, emit)
     emit("stage", name=stage.name, status="llm_start", model=cfg.llm.model)
     try:
-        return await _run_stage(stage, cfg, emit, options)
+        return await _run_busy(stage, cfg, emit, options)
     except StageError as exc:
         if stage.resume and not stage.role and LOST_SESSION in str(exc).lower():
             # the session to continue is gone (another machine / config dir, cleaned up): once more, fresh
@@ -490,6 +490,31 @@ async def run_stage(stage: Stage, cfg: Config, emit: StepEmitter) -> StageResult
 
 
 LOST_SESSION = "no conversation found"
+
+# the provider is busy, not the request wrong: a rate / concurrency limit or an overload (OpenCode Go: 429 "reached the concurrency
+# limit" at peak hours, with several stages in parallel) — waited out and the stage run again, instead of failing the whole step
+BUSY = re.compile(r"\b(429|529)\b|rate.?limit|concurren|overloaded|too many requests", re.I)
+BUSY_WAITS = (20, 40, 80, 160, 300)  # seconds before each new attempt (a little jitter is added)
+
+
+async def _run_busy(stage: Stage, cfg: Config, emit: StepEmitter, options) -> StageResult:
+    import random
+
+    spent = 0.0
+    for k, wait in enumerate((*BUSY_WAITS, None)):
+        try:
+            result = await _run_stage(stage, cfg, emit, options)
+            result.cost_usd += spent
+            return result
+        except StageError as exc:
+            if wait is None or not BUSY.search(str(exc)):
+                exc.cost_usd += spent
+                raise
+            spent += exc.cost_usd
+            emit("warning", message=f"{stage.name}: the provider is busy ({str(exc).splitlines()[0][len(stage.name) + 2:][:120]}); "
+                                    f"trying again in {wait} s ({k + 1}/{len(BUSY_WAITS)})")
+            await anyio.sleep(wait + random.uniform(0, wait / 4))
+    raise AssertionError("unreachable")
 
 TEXT_JSON = """
 

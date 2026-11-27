@@ -13,6 +13,8 @@ from pathlib import Path
 CHECKS = re.compile(r"^TC_CHECKS\s+(\S+)\s+n=(\d+)", re.M)
 HIT = re.compile(r"^TC_HIT\s+(\S+)\s+(\S+):(\d+)\s+(\d+)", re.M)
 SEED = re.compile(r"^TC_SEED\s+(\S+)\s+(-?\d+)", re.M)
+CASES = re.compile(r"^TC_CASES\s+(\S+)\s+run=(\d+)\s+failed=(\d+)", re.M)
+CASE_FAIL = re.compile(r"^TC_CASE_FAIL\s+(\S+)\s+(\S+)", re.M)
 _CHECK = re.compile(r"`TC_CHECK\b")
 _FM = re.compile(r"//\s*FM(\d+)\b")
 
@@ -54,6 +56,10 @@ def parse(text: str, tc_id: str, tc_file: Path | None, failure_modes: list[str] 
             hits[key] = hits.get(key, 0) + int(h.group(4))
     seeds = [int(s.group(2)) for s in SEED.finditer(text) if s.group(1) == tc_id]
     out = {"checks_run": int(m.group(2)), "hits": hits, "seeds": seeds}
+    cm = next((x for x in CASES.finditer(text) if x.group(1) == tc_id), None)
+    if cm is not None:  # (a test with a case table / random cases: how many ran, which failed)
+        out["cases"] = {"run": int(cm.group(2)), "failed": int(cm.group(3)),
+                        "failed_ids": [x.group(2) for x in CASE_FAIL.finditer(text) if x.group(1) == tc_id]}
     if tc_file is not None and tc_file.is_file():
         src = tc_file.read_text(errors="replace")
         lines = checks_in(src)

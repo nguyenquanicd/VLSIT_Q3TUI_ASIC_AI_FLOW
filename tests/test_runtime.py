@@ -342,3 +342,28 @@ def test_when_the_structured_output_gives_up_the_result_comes_as_a_json_block(mo
     assert seen[0][1] is not None and seen[1][1] is None                       # no SDK structured output the second time
     assert "```json" in seen[1][0] and '"title"' in seen[1][0]                 # the schema is in the prompt
     assert any("asking for the result as a JSON block" in w.data["message"] for w in warnings)
+
+
+def test_a_busy_provider_is_waited_out_and_a_real_error_is_not(monkeypatch, tmp_path):
+    """A 429 / concurrency limit (OpenCode Go at peak hours): the stage runs again after a wait; any other error fails at once."""
+    calls = []
+    errors = ["t: Claude Code returned an error result: API Error: Request rejected (429) · Your workspace has reached the concurrency limit",
+              "t: API Error: 529 overloaded"]
+
+    async def fake(stage, cfg, emit, options):
+        calls.append(1)
+        if errors:
+            raise StageError(errors.pop(0), 0.05)
+        return runtime.StageResult("", Out(title="x", n=1), 0.1, 1, "s1")
+
+    monkeypatch.setattr(runtime, "_run_stage", fake)
+    monkeypatch.setattr(runtime, "BUSY_WAITS", (0, 0, 0))
+    res, warnings = run(stage(tmp_path))
+    assert res.output == Out(title="x", n=1) and len(calls) == 3 and res.cost_usd == pytest.approx(0.2)
+    assert sum("the provider is busy" in w.data["message"] for w in warnings) == 2
+    errors[:] = ["t: success — the model id does not exist"]
+    with pytest.raises(StageError, match="does not exist"):
+        run(stage(tmp_path))
+    errors[:] = ["t: 429"] * 5
+    with pytest.raises(StageError, match="429"):  # (it gives up after the waits)
+        run(stage(tmp_path))

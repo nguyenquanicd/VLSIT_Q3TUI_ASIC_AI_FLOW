@@ -2,7 +2,8 @@
 
 Result format (parsed by `simulate`): one line per test case `TC_RESULT <tc_id> PASS|FAIL` (`TC_DETAIL <tc_id> FAIL: <msg>`
 for every failed check), `TC_CHECKS <tc_id> n=<checks evaluated>`, one `TC_HIT <tc_id> <file>:<line> <n>` per check that ran (a check never
-reached does not appear: it checked nothing), `TC_SEED <tc_id> <seed>` for a random test, and one `TC_SUMMARY total=<n> failed=<n>`; a failed
+reached does not appear: it checked nothing), `TC_SEED <tc_id> <seed>` for a random test,
+`TC_CASES <tc_id> run=<n> failed=<n>` and one `TC_CASE_FAIL <tc_id> <case>` per failed case for a test that marks its cases (`TC_CASE`), and one `TC_SUMMARY total=<n> failed=<n>`; a failed
 test case makes the simulator exit with a non-zero status (`$fatal`)."""
 
 from __future__ import annotations
@@ -25,11 +26,30 @@ int    tc_chk_n    = 0;   // checks evaluated in the running test case
 int    tc_hit_n[string];  // "<file>:<line>" -> times that check was evaluated (TC_HIT lines: a check never reached checked nothing)
 
 // `TC_CHECK(cond, "message")`: a failed check marks the running test case FAIL (the test goes on to its next check); a condition that is X / Z fails too
-`define TC_CHECK(cond, msg) begin tc_chk_n++; tc_hit_n[$sformatf("%s:%0d", `__FILE__, `__LINE__)]++; if (cond) begin end else begin tc_fail_f = 1; $display("TC_DETAIL %s FAIL: %s", tc_id_s, msg); end end
-// `TC_SEED(seed)`: a random test logs the seed it runs with (the report lists it; +SEED=<n> runs it again).
+string tc_case_s  = "";  // the case of the test running now (`TC_CASE): a failed check names it
+bit    tc_case_run[string];  // cases this test ran
+bit    tc_case_bad[string];  // cases with a failed check
+
+function automatic string tc_case_tag();
+  return (tc_case_s == "") ? "" : {"[", tc_case_s, "] "};
+endfunction
+// tc_rand_n(n): the number of random cases to run (+TC_RAND=<n> overrides the test's default n); tc_seed(s): +SEED=<n> overrides the seed
+function automatic int tc_rand_n(int n);
+  int v;
+  return $value$plusargs("TC_RAND=%d", v) ? v : n;
+endfunction
+function automatic int unsigned tc_seed(int unsigned s);
+  int unsigned v;
+  return $value$plusargs("SEED=%d", v) ? v : s;
+endfunction
+
+`define TC_CHECK(cond, msg) begin tc_chk_n++; tc_hit_n[$sformatf("%s:%0d", `__FILE__, `__LINE__)]++; if (cond) begin end else begin tc_fail_f = 1; if (tc_case_s != "") tc_case_bad[tc_case_s] = 1; $display("TC_DETAIL %s FAIL: %s%s", tc_id_s, tc_case_tag(), msg); end end
+// `TC_CASE("c3")`: the case of the plan's table (or a random case, e.g. $sformatf("r%0d", i)) that starts now; its checks are reported under it
 // Every macro here is one begin…end statement: it is right with or without a `;` after it
+`define TC_CASE(id) begin tc_case_s = id; tc_case_run[tc_case_s] = 1; end
+// `TC_SEED(seed)`: a random test logs the seed it runs with (the report lists it; +SEED=<n> runs it again).
 `define TC_SEED(seed) begin $display("TC_SEED %s %0d", tc_id_s, seed); end
-`define TC_REPORT begin tc_total_n++; $display("TC_CHECKS %s n=%0d", tc_id_s, tc_chk_n); foreach (tc_hit_n[k]) $display("TC_HIT %s %s %0d", tc_id_s, k, tc_hit_n[k]); tc_hit_n.delete(); tc_chk_n = 0; if (tc_fail_f) begin tc_failed_n++; $display("TC_RESULT %s FAIL", tc_id_s); end else $display("TC_RESULT %s PASS", tc_id_s); end
+`define TC_REPORT begin tc_total_n++; $display("TC_CHECKS %s n=%0d", tc_id_s, tc_chk_n); foreach (tc_hit_n[k]) $display("TC_HIT %s %s %0d", tc_id_s, k, tc_hit_n[k]); tc_hit_n.delete(); tc_chk_n = 0; if (tc_case_run.num() > 0) $display("TC_CASES %s run=%0d failed=%0d", tc_id_s, tc_case_run.num(), tc_case_bad.num()); foreach (tc_case_bad[k]) $display("TC_CASE_FAIL %s %s", tc_id_s, k); tc_case_run.delete(); tc_case_bad.delete(); tc_case_s = ""; if (tc_fail_f) begin tc_failed_n++; $display("TC_RESULT %s FAIL", tc_id_s); end else $display("TC_RESULT %s PASS", tc_id_s); end
 // `TC_SUMMARY`: the totals; a failed test case makes the simulator exit with a non-zero status (a failure is never only a log line)
 `define TC_SUMMARY begin $display("TC_SUMMARY total=%0d failed=%0d", tc_total_n, tc_failed_n); if (tc_failed_n != 0) $fatal(1, "TC_SUMMARY: %0d test case(s) failed", tc_failed_n); end
 """

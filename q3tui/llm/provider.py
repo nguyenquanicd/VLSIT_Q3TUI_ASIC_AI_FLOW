@@ -69,6 +69,9 @@ def stage_env(cfg, model: str) -> dict[str, str]:
         out["ANTHROPIC_API_KEY"] = key
         if cfg.llm.api_base:
             out["ANTHROPIC_BASE_URL"] = cfg.llm.api_base
+            # another endpoint that speaks the Claude API (OpenCode Go: https://opencode.ai/inference/go/anthropic) takes the key as a
+            # bearer token; it also keeps a Claude login out of those requests (the token comes first in Claude Code)
+            out["ANTHROPIC_AUTH_TOKEN"] = key
         return out
     from q3tui.llm import gateway
 

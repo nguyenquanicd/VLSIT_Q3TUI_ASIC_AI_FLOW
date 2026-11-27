@@ -93,11 +93,42 @@ change the expected behavior.
   instruction set, each register, mode and error case: `inventory` in `test_plan.json`). Code checks that each one is in the `functions` of a test case
   that is not `constrained_random` (a random test adds depth, it does not replace a directed check — rv32iv's first plan reached `lui`, `auipc` and every
   ALU op only through its random program) and asks the planner once more for the missing ones; what is still missing is `function_gaps`, with a warning.
-  **Plan review**: a fresh, read-only reviewer (stage `tb_plan_review`, the skill `tc-quality`, the spec, never the planner's session) checks the
+  **Verification matrix, then one batch per group** (a new plan, `--regenerate`, or a plan made before groups existed): stage 1 (`tb_plan`,
+  `TbMatrix`) returns the inventory, the **groups** (related requirements with one setup / interface; every requirement in exactly one) and the
+  excluded requirements, no test case yet. Each group names its `controls` (enables / modes), `live_settings` (only what the spec lets change while
+  the DUT runs), `random_domains` (large stimulus spaces) and `shares` (resources other groups use: a bus, an interrupt line, a buffer). Code makes
+  the matrix from it (`plan.matrix`): every function × `normal` / `boundary` / `error`; per group `reset` (mid-operation) and `stress`; `idle` per
+  control; `live_change` per live setting; `random` per random domain; `interaction` per pair of groups sharing a resource. A cell no test needs is
+  `not_applicable` with its spec reason. Stage 2 plans each group in its own small session (`tb_plan_g<k>`, `tb.parallel` at once) with only its
+  requirements, functions and cells. A **test is one scenario with a case table** (`rows`: id, function, kind, stimulus, expect — each row one
+  matrix cell) and an optional **random part** (`random`: the domain, its oracle — a reference model from the spec or a self-check — and the default
+  case count); the plan also has a `stress` test mixing groups' scenarios with resets between them. Code checks every cell (and every requirement in
+  a group): a missing cell goes back to its group's batch, with the group's tests so far, again while a round still covers something (up to
+  `tb.max_fix_attempts` rounds); a long gap list is asked for in pieces of `GAP_CELLS` (60) cells, in parallel (`tb_plan_g<k>_c<j>`; a new test's
+  id is code's to give). The matrix stage is told to keep groups to about 5 requirements / 100 cells (one answer holds one group's tests: a weaker
+  model's 8-requirement group left 300 cells). The planning stages never read `test_plan.json` / `selected_testplan.json` (denied: the prompt
+  carries the plan so far; a regenerate's batches copied the old file's tests), and a batch's test naming a group the plan has none of is that
+  batch's group. What is left is `matrix` / `matrix_summary` in `test_plan.json`, with a warning. Expected values and checks use only numbers the spec gives (rule 23). Updates stay one patch call (`groups`
+  in `TbPlanPatch` replace by name). The scenario kinds and depth rules (a disabled feature stays quiet, a setting changed while running, settings
+  varied together, groups sharing a resource together, a mixed stress test, one end-to-end scenario, no invented numbers) and the per-group
+  batches are adapted from the chipstack testplan prompts; the code-checked matrix is ours.
+  **Per-case results**: a test marks each row with `` `TC_CASE("c3") `` (code checks every planned row id is in the file) and each random case with
+  `` `TC_CASE($sformatf("r%0d", i)) ``; a failed check names its case (`TC_DETAIL TC-012 FAIL: [c3] …`) and `TC_REPORT` prints
+  `TC_CASES <tc> run=<n> failed=<k>` and `TC_CASE_FAIL <tc> <case>` (`dv_check_activity.json` `cases`, the report's "Cases passed"). A random
+  part takes its seed from `tc_seed(<default>)` (`+SEED=<n>`) and its count from `tc_rand_n(<default>)` (`+TC_RAND=<n>` for a stress run). The
+  testbench writers work one plan group per writer (split past `tb.tests_per_agent`). The tb option `groups` (`pipeline.step_options.tb.groups: [<group>, …]`)
+  writes only those groups' tests (a pilot before the whole plan; the others stay unselected, their files kept); an unknown group fails the step.
+  **Plan review**: fresh, read-only reviewers (stage `tb_plan_review`, the skill `tc-quality`, the spec, never the planner's session) check the
   inventory against the requirements, failure modes no legal input can show (a swap of a commutative op's operands), expected values the spec does not
   give (a `spec_gap` question instead), missing preconditions / bounds / FSM encodings, internal signals the spec does not name, and depth (a large
   stimulus space without a constrained-random test; a published standard whose conformance suite is not used). Its `must` findings go back to the
-  planner, then the plan is reviewed again, up to `tb.review_rounds`; what is left is `review` in `test_plan.json`, with a warning.
+  planner, then the plan is reviewed again, up to `tb.review_rounds`; what is left is `review` in `test_plan.json`, with a warning. A large plan is
+  split for the review (`plan.review_chunks`): whole groups together, about `REVIEW_ROWS` (400) case rows per reviewer (`tb_plan_review_c<j>`), in
+  parallel (`tb.parallel`); each reads its tests in full, its groups and their inventory, and the other tests by name (one reviewer of rv32iv's
+  248-test plan read 1.7M tokens). A later round reads only what the fix changed and what the findings named, and the fix call sees those tests in
+  full and the others one line each. The planning prompts name the spec files to Grep (a Grep of `spec/` is blocked: it holds `spec/ref/`), the case
+  kinds (random stimulus is a test's `random` part, not a row; `kind` is an enum in the schema) and say that only the task's REQ ids count (labels in
+  the spec text, e.g. `REQ-RESET-003`, are not ids).
 - **Test quality** (the playbook skill `tc-quality`, `flows/dv/skills/tc-quality/SKILL.md`; yours in `config/skills/` wins): a test case is worth
   something only if a plausible DUT bug makes it fail. The planner, the writers and the reviewer all get the skill (rules Q1–Q10: observe the DUT,
   never the testbench's own drives or constants; prove the precondition of a "cleared / did not happen" check; observe where the bug would differ;
@@ -285,9 +316,9 @@ Read-only tables over what the steps wrote, before the usual Files / Questions t
 
 | Step | Tab | Rows (from) | Warns when |
 |---|---|---|---|
-| `testplan` | **Tests** | each test: id, name, kind, number of REQs, description (the contract's tests, or the plain test plan); the detail pane has the REQs |  – |
+| `testplan` | **Tests** | each test: id, name, kind (plain: with its number of cases and `random`), number of REQs, description (the contract's tests, or the plain test plan); the detail pane has the REQs and the case table. Plain: by plan group, a header row per group, folded at first (enter / space folds or unfolds one, `[` all, `]` none); a header's detail is the group: its REQs, controls / live settings / random domains / shares, its matrix cells (missing ones listed), the n/a cells with their reasons, the plan review's findings on its tests |  – |
 | `testplan` | **Requirements** | each requirement: category, status (planned / open / blocked / not_observable / …), the tests that check it (the contract's, or the spec's with the plan's coverage) | a requirement is open, blocked or draft (answer on the Questions tab) |
-| `tb` | **Test cases** | plain: each test case: selected, compile ✔ / ✘, file (`selected_testplan.json`) | a selected test case does not compile |
+| `tb` | **Test cases** | plain: each test case: selected, compile ✔ / ✘, file (`selected_testplan.json`), folded by plan group as on Tests | a selected test case does not compile |
 | `tb` | **Regions** | each region of the testbench the agent (or you) implement: kind, owner, done (`dv_worklist.json`) | regions are still open |
 | `tb` | **Conformance** | where the released RTL differs from the contract, and the validation findings (`dut_integration.json`, `dv_validation.json`) | a finding has severity error |
 | `prepare` | **Programs** | each test that loads files: ready / missing / external / not built, the files (`sw_manifest.json`) | a test's files are not ready |
